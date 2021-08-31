@@ -71,7 +71,7 @@ buildOptsParser cmd =
           help
               "Like --file-watch, but polling the filesystem instead of using events") <|>
      pure NoFileWatch) <*>
-    switch
+    flag True True
         (long "watch-all" <>
          help "Watch all local files not taking targets into account") <*>
     many (cmdOption
