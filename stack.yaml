@@ -23,3 +23,7 @@ ghc-options:
 drop-packages:
 # See https://github.com/commercialhaskell/stack/pull/4712
 - cabal-install
+
+flags:
+  lukko:
+    ofd-locking: false
