@@ -5,7 +5,7 @@
 #
 # https://docs.haskellstack.org/en/stable/travis_ci/
 #
-# Copy these contents into the root directory of your Github project in a file
+# Copy these contents into the root directory of your GitHub project in a file
 # named .travis.yml
 
 # Choose a build environment
@@ -23,7 +23,7 @@ cache:
 addons:
   apt:
     packages:
-      - libgmp-dev
+    - libgmp-dev
 
 before_install:
 # Download and unpack the stack executable

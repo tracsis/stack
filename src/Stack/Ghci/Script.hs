@@ -14,14 +14,14 @@ module Stack.Ghci.Script
   , scriptToFile
   ) where
 
-import           Data.ByteString.Builder (toLazyByteString)
-import           Data.List
+import           Data.ByteString.Builder ( toLazyByteString )
+import qualified Data.List as L
 import qualified Data.Set as S
+import           Distribution.ModuleName hiding ( toFilePath )
 import           Path
-import           Stack.Prelude
-import           System.IO (hSetBinaryMode)
+import           Stack.Prelude hiding ( Module )
+import           System.IO ( hSetBinaryMode )
 
-import           Distribution.ModuleName hiding (toFilePath)
 
 newtype GhciScript = GhciScript { unGhciScript :: [GhciCommand] }
 
@@ -71,8 +71,8 @@ commandToBuilder (Add modules)
   | S.null modules = mempty
   | otherwise      =
        ":add "
-    <> mconcat (intersperse " " $
-         fmap (fromString . quoteFileName . either (mconcat . intersperse "." . components) toFilePath)
+    <> mconcat (L.intersperse " " $
+         fmap (fromString . quoteFileName . either (mconcat . L.intersperse "." . components) toFilePath)
               (S.toAscList modules))
     <> "\n"
 
@@ -83,8 +83,8 @@ commandToBuilder (Module modules)
   | S.null modules = ":module +\n"
   | otherwise      =
        ":module + "
-    <> mconcat (intersperse " "
-        $ fromString . quoteFileName . mconcat . intersperse "." . components <$> S.toAscList modules)
+    <> mconcat (L.intersperse " "
+        $ fromString . quoteFileName . mconcat . L.intersperse "." . components <$> S.toAscList modules)
     <> "\n"
 
 -- | Make sure that a filename with spaces in it gets the proper quotes.

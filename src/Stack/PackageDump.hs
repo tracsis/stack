@@ -1,22 +1,22 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE NoImplicitPrelude  #-}
 {-# LANGUAGE DeriveDataTypeable #-}
-module Stack.PackageDump
-    ( Line
-    , eachSection
-    , eachPair
-    , DumpPackage (..)
-    , conduitDumpPackage
-    , ghcPkgDump
-    , ghcPkgDescribe
-    , sinkMatching
-    , pruneDeps
-    ) where
+{-# LANGUAGE FlexibleContexts   #-}
+{-# LANGUAGE RankNTypes         #-}
+{-# LANGUAGE OverloadedStrings  #-}
+{-# LANGUAGE TupleSections      #-}
 
-import           Stack.Prelude
+module Stack.PackageDump
+  ( Line
+  , eachSection
+  , eachPair
+  , DumpPackage (..)
+  , conduitDumpPackage
+  , ghcPkgDump
+  , ghcPkgDescribe
+  , sinkMatching
+  , pruneDeps
+  ) where
+
 import           Data.Attoparsec.Args
 import           Data.Attoparsec.Text as P
 import           Data.Conduit
@@ -24,13 +24,40 @@ import qualified Data.Conduit.List as CL
 import qualified Data.Conduit.Text as CT
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import qualified RIO.Text as T
 import qualified Distribution.Text as C
-import           Path.Extra (toFilePathNoTrailingSep)
+import           Path.Extra ( toFilePathNoTrailingSep )
+import           RIO.Process hiding ( readProcess )
+import qualified RIO.Text as T
 import           Stack.GhcPkg
-import           Stack.Types.Config (HasCompiler (..), GhcPkgExe (..), DumpPackage (..))
+import           Stack.Prelude
+import           Stack.Types.Config
+                   ( HasCompiler (..), GhcPkgExe (..), DumpPackage (..) )
 import           Stack.Types.GhcPkgId
-import           RIO.Process hiding (readProcess)
+
+-- | Type representing exceptions thrown by functions exported by the
+-- "Stack.PackageDump" module.
+data PackageDumpException
+    = MissingSingleField Text (Map Text [Line])
+    | Couldn'tParseField Text [Line]
+    deriving (Show, Typeable)
+
+instance Exception PackageDumpException where
+    displayException (MissingSingleField name values) = unlines $
+        concat
+            [ "Error: [S-4257]\n"
+            , "Expected single value for field name "
+            , show name
+            , " when parsing ghc-pkg dump output:"
+            ]
+        : map (\(k, v) -> "    " ++ show (k, v)) (Map.toList values)
+    displayException (Couldn'tParseField name ls) = concat
+        [ "Error: [S-2016]\n"
+        , "Couldn't parse the field "
+        , show name
+        , " from lines: "
+        , show ls
+        , "."
+        ]
 
 -- | Call ghc-pkg dump with appropriate flags and stream to the given @Sink@, for a single database
 ghcPkgDump
@@ -62,8 +89,9 @@ ghcPkgCmdArgs
 ghcPkgCmdArgs pkgexe@(GhcPkgExe pkgPath) cmd mpkgDbs sink = do
     case reverse mpkgDbs of
         (pkgDb:_) -> createDatabase pkgexe pkgDb -- TODO maybe use some retry logic instead?
-        _ -> return ()
-    sinkProcessStdout (toFilePath pkgPath) args sink'
+        _ -> pure ()
+    -- https://github.com/haskell/process/issues/251
+    snd <$> sinkProcessStderrStdout (toFilePath pkgPath) args CL.sinkNull sink'
   where
     args = concat
         [ case mpkgDbs of
@@ -136,21 +164,6 @@ sinkMatching allowed =
             Just version' | version /= version' -> False
             _ -> True
 
-data PackageDumpException
-    = MissingSingleField Text (Map Text [Line])
-    | Couldn'tParseField Text [Line]
-    deriving Typeable
-instance Exception PackageDumpException
-instance Show PackageDumpException where
-    show (MissingSingleField name values) = unlines $
-      return (concat
-        [ "Expected single value for field name "
-        , show name
-        , " when parsing ghc-pkg dump output:"
-        ]) ++ map (\(k, v) -> "    " ++ show (k, v)) (Map.toList values)
-    show (Couldn'tParseField name ls) =
-        "Couldn't parse the field " ++ show name ++ " from lines: " ++ show ls
-
 -- | Convert a stream of bytes into a stream of @DumpPackage@s
 conduitDumpPackage :: MonadThrow m
                    => ConduitM Text DumpPackage m ()
@@ -159,14 +172,14 @@ conduitDumpPackage = (.| CL.catMaybes) $ eachSection $ do
     let m = Map.fromList pairs
     let parseS k =
             case Map.lookup k m of
-                Just [v] -> return v
+                Just [v] -> pure v
                 _ -> throwM $ MissingSingleField k m
         -- Can't fail: if not found, same as an empty list. See:
-        -- https://github.com/fpco/stack/issues/182
+        -- https://github.com/commercialhaskell/stack/issues/182
         parseM k = Map.findWithDefault [] k m
 
         parseDepend :: MonadThrow m => Text -> m (Maybe GhcPkgId)
-        parseDepend "builtin_rts" = return Nothing
+        parseDepend "builtin_rts" = pure Nothing
         parseDepend bs =
             liftM Just $ parseGhcPkgId bs'
           where
@@ -178,7 +191,7 @@ conduitDumpPackage = (.| CL.catMaybes) $ eachSection $ do
                             Just x -> (x, True)
                     Just x -> (x, True)
     case Map.lookup "id" m of
-        Just ["builtin_rts"] -> return Nothing
+        Just ["builtin_rts"] -> pure Nothing
         _ -> do
             name <- parseS "name" >>= parsePackageNameThrowing . T.unpack
             version <- parseS "version" >>= parseVersionThrowing . T.unpack
@@ -204,14 +217,14 @@ conduitDumpPackage = (.| CL.catMaybes) $ eachSection $ do
             let parseQuoted key =
                     case mapM (P.parseOnly (argsParser NoEscaping)) val of
                         Left{} -> throwM (Couldn'tParseField key val)
-                        Right dirs -> return (concat dirs)
+                        Right dirs -> pure (concat dirs)
                   where
                     val = parseM key
             libDirPaths <- parseQuoted libDirKey
             haddockInterfaces <- parseQuoted "haddock-interfaces"
             haddockHtml <- parseQuoted "haddock-html"
 
-            return $ Just DumpPackage
+            pure $ Just DumpPackage
                 { dpGhcPkgId = ghcPkgId
                 , dpPackageIdent = PackageIdentifier name version
                 , dpParentLibIdent = parentLib
@@ -255,12 +268,12 @@ eachSection inner =
     CL.map (T.filter (/= '\r')) .| CT.lines .| start
   where
 
-    peekText = await >>= maybe (return Nothing) (\bs ->
+    peekText = await >>= maybe (pure Nothing) (\bs ->
         if T.null bs
             then peekText
-            else leftover bs >> return (Just bs))
+            else leftover bs >> pure (Just bs))
 
-    start = peekText >>= maybe (return ()) (const go)
+    start = peekText >>= maybe (pure ()) (const go)
 
     go = do
         x <- toConsumer $ takeWhileC (/= "---") .| inner
@@ -275,23 +288,23 @@ eachPair :: Monad m
 eachPair inner =
     start
   where
-    start = await >>= maybe (return ()) start'
+    start = await >>= maybe (pure ()) start'
 
     start' bs1 =
         toConsumer (valSrc .| inner key) >>= yield >> start
       where
         (key, bs2) = T.break (== ':') bs1
         (spaces, bs3) = T.span (== ' ') $ T.drop 1 bs2
-        indent = T.length key + 1 + T.length spaces
+        ind = T.length key + 1 + T.length spaces
 
         valSrc
             | T.null bs3 = noIndent
-            | otherwise = yield bs3 >> loopIndent indent
+            | otherwise = yield bs3 >> loopIndent ind
 
     noIndent = do
         mx <- await
         case mx of
-            Nothing -> return ()
+            Nothing -> pure ()
             Just bs -> do
                 let (spaces, val) = T.span (== ' ') bs
                 if T.length spaces == 0
@@ -303,7 +316,7 @@ eachPair inner =
     loopIndent i =
         loop
       where
-        loop = await >>= maybe (return ()) go
+        loop = await >>= maybe (pure ()) go
 
         go bs
             | T.length spaces == i && T.all (== ' ') spaces =
@@ -317,7 +330,7 @@ takeWhileC :: Monad m => (a -> Bool) -> ConduitM a a m ()
 takeWhileC f =
     loop
   where
-    loop = await >>= maybe (return ()) go
+    loop = await >>= maybe (pure ()) go
 
     go x
         | f x = yield x >> loop

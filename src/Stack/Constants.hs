@@ -1,141 +1,154 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE CPP               #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TemplateHaskell #-} -- keep TH usage here
+{-# LANGUAGE TemplateHaskell   #-} -- keep TH usage here
 
 -- | Constants used throughout the project.
 
 module Stack.Constants
-    (buildPlanDir
-    ,buildPlanCacheDir
-    ,haskellFileExts
-    ,haskellDefaultPreprocessorExts
-    ,stackDotYaml
-    ,stackWorkEnvVar
-    ,stackRootEnvVar
-    ,stackRootOptionName
-    ,deprecatedStackRootOptionName
-    ,inContainerEnvVar
-    ,inNixShellEnvVar
-    ,stackProgNameUpper
-    ,wiredInPackages
-    ,cabalPackageName
-    ,implicitGlobalProjectDirDeprecated
-    ,implicitGlobalProjectDir
-    ,defaultUserConfigPathDeprecated
-    ,defaultUserConfigPath
-    ,defaultGlobalConfigPathDeprecated
-    ,defaultGlobalConfigPath
-    ,platformVariantEnvVar
-    ,compilerOptionsCabalFlag
-    ,ghcColorForceFlag
-    ,minTerminalWidth
-    ,maxTerminalWidth
-    ,defaultTerminalWidth
-    ,osIsWindows
-    ,relFileSetupHs
-    ,relFileSetupLhs
-    ,relFileHpackPackageConfig
-    ,relDirGlobalAutogen
-    ,relDirAutogen
-    ,relDirLogs
-    ,relFileCabalMacrosH
-    ,relDirBuild
-    ,relDirBin
-    ,relDirPantry
-    ,relDirPrograms
-    ,relDirUpperPrograms
-    ,relDirStackProgName
-    ,relDirStackWork
-    ,relFileReadmeTxt
-    ,relDirScript
-    ,relFileConfigYaml
-    ,relDirSnapshots
-    ,relDirGlobalHints
-    ,relFileGlobalHintsYaml
-    ,relDirInstall
-    ,relDirCompilerTools
-    ,relDirHoogle
-    ,relFileDatabaseHoo
-    ,relDirPkgdb
-    ,relFileStorage
-    ,relDirLoadedSnapshotCache
-    ,bindirSuffix
-    ,docDirSuffix
-    ,relDirHpc
-    ,relDirLib
-    ,relDirShare
-    ,relDirLibexec
-    ,relDirEtc
-    ,setupGhciShimCode
-    ,relDirSetupExeCache
-    ,relDirSetupExeSrc
-    ,relFileConfigure
-    ,relDirDist
-    ,relFileSetupMacrosH
-    ,relDirSetup
-    ,relFileSetupLower
-    ,relDirMingw
-    ,relDirMingw32
-    ,relDirMingw64
-    ,relDirLocal
-    ,relDirUsr
-    ,relDirInclude
-    ,relFileIndexHtml
-    ,relDirAll
-    ,relFilePackageCache
-    ,relFileDockerfile
-    ,relDirHaskellStackGhci
-    ,relFileGhciScript
-    ,relDirCombined
-    ,relFileHpcIndexHtml
-    ,relDirCustom
-    ,relDirPackageConfInplace
-    ,relDirExtraTixFiles
-    ,relDirInstalledPackages
-    ,backupUrlRelPath
-    ,relDirDotLocal
-    ,relDirDotSsh
-    ,relDirDotStackProgName
-    ,relDirUnderHome
-    ,relDirSrc
-    ,relFileLibtinfoSo5
-    ,relFileLibtinfoSo6
-    ,relFileLibncurseswSo6
-    ,relFileLibgmpSo10
-    ,relFileLibgmpSo3
-    ,relDirNewCabal
-    ,relFileSetupExe
-    ,relFileSetupUpper
-    ,relFile7zexe
-    ,relFile7zdll
-    ,relFileMainHs
-    ,relFileStack
-    ,relFileStackDotExe
-    ,relFileStackDotTmpDotExe
-    ,relFileStackDotTmp
-    ,ghcShowOptionsOutput
-    ,hadrianScriptsWindows
-    ,hadrianScriptsPosix
-    ,usrLibDirs
-    ,testGhcEnvRelFile
-    ,relFileBuildLock
-    ,stackDeveloperModeDefault
-    )
-    where
+  ( buildPlanDir
+  , buildPlanCacheDir
+  , haskellFileExts
+  , haskellDefaultPreprocessorExts
+  , stackDotYaml
+  , stackWorkEnvVar
+  , stackRootEnvVar
+  , stackXdgEnvVar
+  , stackRootOptionName
+  , stackGlobalConfigOptionName
+  , pantryRootEnvVar
+  , deprecatedStackRootOptionName
+  , inContainerEnvVar
+  , inNixShellEnvVar
+  , stackProgNameUpper
+  , wiredInPackages
+  , cabalPackageName
+  , implicitGlobalProjectDirDeprecated
+  , implicitGlobalProjectDir
+  , defaultUserConfigPathDeprecated
+  , defaultUserConfigPath
+  , defaultGlobalConfigPathDeprecated
+  , defaultGlobalConfigPath
+  , platformVariantEnvVar
+  , compilerOptionsCabalFlag
+  , ghcColorForceFlag
+  , minTerminalWidth
+  , maxTerminalWidth
+  , defaultTerminalWidth
+  , osIsWindows
+  , relFileSetupHs
+  , relFileSetupLhs
+  , relFileHpackPackageConfig
+  , relDirGlobalAutogen
+  , relDirAutogen
+  , relDirLogs
+  , relFileCabalMacrosH
+  , relDirBuild
+  , relDirBin
+  , relDirPantry
+  , relDirPrograms
+  , relDirUpperPrograms
+  , relDirStackProgName
+  , relDirStackWork
+  , relFileReadmeTxt
+  , relDirScript
+  , relFileConfigYaml
+  , relDirSnapshots
+  , relDirGlobalHints
+  , relFileGlobalHintsYaml
+  , relDirInstall
+  , relDirCompilerTools
+  , relDirHoogle
+  , relFileDatabaseHoo
+  , relDirPkgdb
+  , relFileStorage
+  , relDirLoadedSnapshotCache
+  , bindirSuffix
+  , docDirSuffix
+  , relDirHpc
+  , relDirLib
+  , relDirShare
+  , relDirLibexec
+  , relDirEtc
+  , setupGhciShimCode
+  , relDirSetupExeCache
+  , relDirSetupExeSrc
+  , relFileConfigure
+  , relDirDist
+  , relFileSetupMacrosH
+  , relDirSetup
+  , relFileSetupLower
+  , relDirMingw
+  , relDirMingw32
+  , relDirMingw64
+  , relDirLocal
+  , relDirUsr
+  , relDirInclude
+  , relFileIndexHtml
+  , relDirAll
+  , relFilePackageCache
+  , relFileDockerfile
+  , relDirHaskellStackGhci
+  , relFileGhciScript
+  , relDirCombined
+  , relFileHpcIndexHtml
+  , relDirCustom
+  , relDirPackageConfInplace
+  , relDirExtraTixFiles
+  , relDirInstalledPackages
+  , backupUrlRelPath
+  , relDirDotLocal
+  , relDirDotSsh
+  , relDirDotStackProgName
+  , relDirUnderHome
+  , relDirSrc
+  , relFileLibtinfoSo5
+  , relFileLibtinfoSo6
+  , relFileLibncurseswSo6
+  , relFileLibgmpSo10
+  , relFileLibgmpSo3
+  , relDirNewCabal
+  , relFileSetupExe
+  , relFileSetupUpper
+  , relFile7zexe
+  , relFile7zdll
+  , relFileMainHs
+  , relFileStack
+  , relFileStackDotExe
+  , relFileStackDotTmpDotExe
+  , relFileStackDotTmp
+  , ghcShowOptionsOutput
+  , hadrianScriptsWindows
+  , hadrianScriptsPosix
+  , usrLibDirs
+  , testGhcEnvRelFile
+  , relFileBuildLock
+  , stackDeveloperModeDefault
+  , globalFooter
+  ) where
 
-import           Data.ByteString.Builder (byteString)
-import           Data.Char (toUpper)
-import           Data.FileEmbed (embedFile, makeRelativeToProject)
+import           Data.ByteString.Builder ( byteString )
+import           Data.Char ( toUpper )
+import           Data.FileEmbed ( embedFile, makeRelativeToProject )
 import qualified Data.Set as Set
-import           Distribution.Package (mkPackageName)
-import qualified Hpack.Config as Hpack
-import qualified Language.Haskell.TH.Syntax as TH (runIO, lift)
+import           Distribution.Package ( mkPackageName )
+import           Hpack.Config ( packageConfig )
+import qualified Language.Haskell.TH.Syntax as TH ( runIO, lift )
 import           Path as FL
 import           Stack.Prelude
-import           Stack.Types.Compiler
-import           System.Permissions (osIsWindows)
-import           System.Process (readProcess)
+import           Stack.Types.Compiler ( WhichCompiler (..) )
+import           System.Permissions ( osIsWindows )
+import           System.Process ( readProcess )
+
+-- | Type representing exceptions thrown by functions exported by the
+-- "Stack.Constants" module.
+data ConstantsException
+  = WiredInPackagesNotParsedBug
+  deriving (Show, Typeable)
+
+instance Exception ConstantsException where
+  displayException WiredInPackagesNotParsedBug = bugReport "[S-6057]"
+    "Parse error in wiredInPackages."
 
 -- | Extensions used for Haskell modules. Excludes preprocessor ones.
 haskellFileExts :: [Text]
@@ -149,7 +162,7 @@ haskellDefaultPreprocessorExts = ["gc", "chs", "hsc", "x", "y", "ly", "cpphs"]
 stackProgNameUpper :: String
 stackProgNameUpper = map toUpper stackProgName
 
--- | The filename used for the stack config file.
+-- | The filename used for the Stack project-level configuration file.
 stackDotYaml :: Path Rel File
 stackDotYaml = $(mkRelFile "stack.yaml")
 
@@ -161,11 +174,23 @@ stackWorkEnvVar = "STACK_WORK"
 stackRootEnvVar :: String
 stackRootEnvVar = "STACK_ROOT"
 
--- | Option name for the global stack root.
+-- | Environment variable used to indicate XDG directories should be used.
+stackXdgEnvVar :: String
+stackXdgEnvVar = "STACK_XDG"
+
+-- | Option name for the global Stack root.
 stackRootOptionName :: String
 stackRootOptionName = "stack-root"
 
--- | Deprecated option name for the global stack root.
+-- | Option name for the global Stack configuration file.
+stackGlobalConfigOptionName :: String
+stackGlobalConfigOptionName = "global-config"
+
+-- | Environment variable used to override the location of the Pantry store
+pantryRootEnvVar :: String
+pantryRootEnvVar = "PANTRY_ROOT"
+
+-- | Deprecated option name for the global Stack root.
 --
 -- Deprecated since stack-1.1.0.
 --
@@ -174,33 +199,63 @@ stackRootOptionName = "stack-root"
 deprecatedStackRootOptionName :: String
 deprecatedStackRootOptionName = "global-stack-root"
 
--- | Environment variable used to indicate stack is running in container.
+-- | Environment variable used to indicate Stack is running in container.
 inContainerEnvVar :: String
 inContainerEnvVar = stackProgNameUpper ++ "_IN_CONTAINER"
 
--- | Environment variable used to indicate stack is running in container.
+-- | Environment variable used to indicate Stack is running in container.
 -- although we already have STACK_IN_NIX_EXTRA_ARGS that is set in the same conditions,
 -- it can happen that STACK_IN_NIX_EXTRA_ARGS is set to empty.
 inNixShellEnvVar :: String
 inNixShellEnvVar = map toUpper stackProgName ++ "_IN_NIX_SHELL"
 
--- See https://downloads.haskell.org/~ghc/7.10.1/docs/html/libraries/ghc/src/Module.html#integerPackageKey
+-- | The comment to \'see
+-- https://downloads.haskell.org/~ghc/7.10.1/docs/html/libraries/ghc/src/Module.html#integerPackageKey\'
+-- appears to be out of date.
+--
+-- See \'Note [About units]\' and \'Wired-in units\' at
+-- https://gitlab.haskell.org/ghc/ghc/-/blob/master/compiler/GHC/Unit.hs.
+--
+-- The \'wired-in packages\' appear to have been replaced by those that have (e.g)
+--
+-- > ghc-options: -this-unit-id ghc-prim
+--
+-- in their Cabal file because they are \'magic\'.
 wiredInPackages :: Set PackageName
-wiredInPackages =
-    maybe (error "Parse error in wiredInPackages") Set.fromList mparsed
-  where
-    mparsed = mapM parsePackageName
-      [ "ghc-prim"
-      , "integer-gmp"
-      , "integer-simple"
-      , "base"
-      , "rts"
-      , "template-haskell"
-      , "dph-seq"
-      , "dph-par"
-      , "ghc"
-      , "interactive"
-      ]
+wiredInPackages = case mparsed of
+  Just parsed -> Set.fromList parsed
+  Nothing -> impureThrow WiredInPackagesNotParsedBug
+ where
+  mparsed = mapM parsePackageName
+    [ "ghc-prim"
+      -- A magic package
+    , "integer-gmp"
+      -- No longer magic > 1.0.3.0. With GHC 9.2.5 at least, there seems to be
+      -- no problem in using it.
+    , "integer-simple"
+      -- A magic package
+    , "base"
+      -- A magic package
+    , "rts"
+      -- Said to be not a \'real\' package
+    , "template-haskell"
+      -- A magic package
+    , "dph-seq"
+      -- Deprecated in favour of dph-prim-seq, which does not appear to be
+      -- magic. With GHC 9.2.5 at least, there seems to be no problem in using
+      -- it.
+    , "dph-par"
+      --  Deprecated in favour of dph-prim-par, which does not appear to be
+      -- magic. With GHC 9.2.5 at least, there seems to be no problem in using
+      -- it.
+    , "ghc"
+      -- A magic package
+    , "interactive"
+      -- Could not identify information about this package name. With GHC 9.2.5
+      -- at least, there seems to be no problem in using it.
+    , "ghc-bignum"
+      -- A magic package
+    ]
 
 -- | Just to avoid repetition and magic strings.
 cabalPackageName :: PackageName
@@ -287,7 +342,7 @@ relFileSetupLhs :: Path Rel File
 relFileSetupLhs = $(mkRelFile "Setup.lhs")
 
 relFileHpackPackageConfig :: Path Rel File
-relFileHpackPackageConfig = $(mkRelFile Hpack.packageConfig)
+relFileHpackPackageConfig = $(mkRelFile packageConfig)
 
 relDirGlobalAutogen :: Path Rel Dir
 relDirGlobalAutogen = $(mkRelDir "global-autogen")
@@ -562,3 +617,8 @@ relFileBuildLock = $(mkRelFile "build-lock")
 -- | What should the default be for stack-developer-mode
 stackDeveloperModeDefault :: Bool
 stackDeveloperModeDefault = STACK_DEVELOPER_MODE_DEFAULT
+
+-- | The footer to the help for Stack's subcommands
+globalFooter :: String
+globalFooter =
+  "Command 'stack --help' for global options that apply to all subcommands."

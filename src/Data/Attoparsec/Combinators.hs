@@ -1,9 +1,15 @@
 {-# LANGUAGE NoImplicitPrelude #-}
+
 -- | More readable combinators for writing parsers.
 
-module Data.Attoparsec.Combinators where
+module Data.Attoparsec.Combinators
+  ( alternating
+  , appending
+  , concating
+  , pured
+  ) where
 
-import Stack.Prelude
+import           Stack.Prelude
 
 -- | Concatenate two parsers.
 appending :: (Applicative f,Semigroup a)
@@ -19,6 +25,6 @@ alternating a b = a <|> b
 pured :: (Applicative g,Applicative f) => g a -> g (f a)
 pured = fmap pure
 
--- | Concatting the result of an action.
+-- | Concating the result of an action.
 concating :: (Monoid m,Applicative f) => f [m] -> f m
 concating = fmap mconcat

@@ -1,13 +1,16 @@
 import StackTest
-import System.Directory (createDirectoryIfMissing,withCurrentDirectory, getCurrentDirectory)
-import System.Exit (exitFailure)
-import System.FilePath ((</>))
-import Data.List (filter)
-import System.IO (hPutStrLn, withFile, IOMode(..))
-import Control.Monad (when)
+import System.Directory
+         ( createDirectoryIfMissing, withCurrentDirectory, getCurrentDirectory )
+import System.Exit ( exitFailure )
+import System.FilePath ( (</>) )
+import Data.List ( filter )
+import System.IO ( hPutStrLn, withFile, IOMode (..) )
+import Control.Monad ( when )
 
 main :: IO ()
 main = when isLinux $ do
+    runShell "git config --global protocol.file.allow always"
+
     let
       gitInit = do
          runShell "git init ."

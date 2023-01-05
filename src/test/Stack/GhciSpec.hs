@@ -8,7 +8,7 @@ module Stack.GhciSpec where
 import Test.Hspec
 
 spec :: Spec
-spec = return ()
+spec = pure ()
 
 {- Commented out as part of the fix for https://github.com/commercialhaskell/stack/issues/3309
    Not sure if maintaining this test is worth the effort.
@@ -107,7 +107,7 @@ spec = do
           let res = scriptToLazyByteString $ renderScriptIntero packages_multiplePackages Nothing []
           res `shouldBeLE` interoScript_multipleProjectsWithLib
 
--- Exptected Intero scripts
+-- Expected Intero scripts
 
 interoScript_projectWithLib :: Text
 interoScript_projectWithLib = [text|

@@ -1,18 +1,19 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE GADTs #-}
+{-# LANGUAGE NoImplicitPrelude          #-}
+{-# LANGUAGE DataKinds                  #-}
+{-# LANGUAGE DerivingStrategies         #-}
+{-# LANGUAGE FlexibleInstances          #-}
+{-# LANGUAGE GADTs                      #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE QuasiQuotes #-}
-{-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE MultiParamTypeClasses      #-}
+{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE QuasiQuotes                #-}
+{-# LANGUAGE RecordWildCards            #-}
+{-# LANGUAGE StandaloneDeriving         #-}
+{-# LANGUAGE TemplateHaskell            #-}
+{-# LANGUAGE TupleSections              #-}
+{-# LANGUAGE TypeFamilies               #-}
+{-# LANGUAGE TypeOperators              #-}
+{-# LANGUAGE UndecidableInstances       #-}
 {-# OPTIONS_GHC -Wno-unused-top-binds -Wno-identities #-}
 
 -- | Work with SQLite database used for caches across a single project.
@@ -27,19 +28,22 @@ module Stack.Storage.Project
 
 import qualified Data.ByteString as S
 import qualified Data.Set as Set
-import Database.Persist.Sqlite
-import Database.Persist.TH
+import           Database.Persist.Sqlite
+import           Database.Persist.TH
 import qualified Pantry.Internal as SQLite
-import Path
-import Stack.Prelude hiding (MigrationFailure)
-import Stack.Storage.Util
-import Stack.Types.Build
-import Stack.Types.Cache
-import Stack.Types.Config (HasBuildConfig, buildConfigL, bcProjectStorage, ProjectStorage (..))
-import Stack.Types.GhcPkgId
+import           Path
+import           Stack.Prelude
+import           Stack.Storage.Util
+                   ( handleMigrationException, updateList, updateSet )
+import           Stack.Types.Build
+import           Stack.Types.Cache
+import           Stack.Types.Config
+                   ( HasBuildConfig, ProjectStorage (..), bcProjectStorage
+                   , buildConfigL
+                   )
+import           Stack.Types.GhcPkgId
 
 share [ mkPersist sqlSettings
-      , mkDeleteCascade sqlSettings
       , mkMigrate "migrateAll"
     ]
     [persistLowerCase|
@@ -54,27 +58,27 @@ ConfigCacheParent sql="config_cache"
   deriving Show
 
 ConfigCacheDirOption
-  parent ConfigCacheParentId sql="config_cache_id"
+  parent ConfigCacheParentId sql="config_cache_id" OnDeleteCascade
   index Int
   value String sql="option"
   UniqueConfigCacheDirOption parent index
   deriving Show
 
 ConfigCacheNoDirOption
-  parent ConfigCacheParentId sql="config_cache_id"
+  parent ConfigCacheParentId sql="config_cache_id" OnDeleteCascade
   index Int
   value String sql="option"
   UniqueConfigCacheNoDirOption parent index
   deriving Show
 
 ConfigCacheDep
-  parent ConfigCacheParentId sql="config_cache_id"
+  parent ConfigCacheParentId sql="config_cache_id" OnDeleteCascade
   value GhcPkgId sql="ghc_pkg_id"
   UniqueConfigCacheDep parent value
   deriving Show
 
 ConfigCacheComponent
-  parent ConfigCacheParentId sql="config_cache_id"
+  parent ConfigCacheParentId sql="config_cache_id" OnDeleteCascade
   value S.ByteString sql="component"
   UniqueConfigCacheComponent parent value
   deriving Show
@@ -86,7 +90,8 @@ initProjectStorage ::
     => Path Abs File -- ^ storage file
     -> (ProjectStorage -> RIO env a)
     -> RIO env a
-initProjectStorage fp f = SQLite.initStorage "Stack" migrateAll fp $ f . ProjectStorage
+initProjectStorage fp f = handleMigrationException $
+    SQLite.initStorage "Stack" migrateAll fp $ f . ProjectStorage
 
 -- | Run an action in a database transaction
 withProjectStorage ::
@@ -130,7 +135,7 @@ readConfigCache (Entity parentId ConfigCacheParent {..}) = do
         selectList [ConfigCacheComponentParent ==. parentId] []
     let configCachePathEnvVar = configCacheParentPathEnvVar
     let configCacheHaddock = configCacheParentHaddock
-    return ConfigCache {..}
+    pure ConfigCache {..}
 
 -- | Load 'ConfigCache' from the database.
 loadConfigCache ::
@@ -141,11 +146,11 @@ loadConfigCache key =
     withProjectStorage $ do
         mparent <- getBy key
         case mparent of
-            Nothing -> return Nothing
+            Nothing -> pure Nothing
             Just parentEntity@(Entity _ ConfigCacheParent {..})
                 | configCacheParentActive ->
                     Just <$> readConfigCache parentEntity
-                | otherwise -> return Nothing
+                | otherwise -> pure Nothing
 
 -- | Insert or update 'ConfigCache' to the database.
 saveConfigCache ::
@@ -177,7 +182,7 @@ saveConfigCache key@(UniqueConfigCacheParent dir type_) new =
                         , ConfigCacheParentActive =. True
                         , ConfigCacheParentPathEnvVar =. configCachePathEnvVar new
                         ]
-                    return (parentId, Just old)
+                    pure (parentId, Just old)
         updateList
             ConfigCacheDirOption
             ConfigCacheDirOptionParent

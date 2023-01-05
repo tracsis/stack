@@ -1,6 +1,7 @@
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell   #-}
+
 module Stack.Constants.Config
   ( distDirFromDir
   , rootDistDirFromDir
@@ -11,6 +12,7 @@ module Stack.Constants.Config
   , projectDockerSandboxDir
   , configCabalMod
   , configSetupConfigMod
+  , configPackageProjectRoot
   , buildCachesDir
   , testSuccessFile
   , testBuiltFile
@@ -21,21 +23,21 @@ module Stack.Constants.Config
   , templatesDir
   ) where
 
-import Stack.Prelude
-import Stack.Constants
-import Stack.Types.Config
-import Path
+import           Path
+import           Stack.Constants
+import           Stack.Prelude
+import           Stack.Types.Config
 
 -- | Output .o/.hi directory.
 objectInterfaceDirL :: HasBuildConfig env => Getting r env (Path Abs Dir)
-objectInterfaceDirL = to $ \env -> -- FIXME is this idomatic lens code?
+objectInterfaceDirL = to $ \env -> -- FIXME is this idiomatic lens code?
   let workDir = view workDirL env
       root = view projectRootL env
    in root </> workDir </> $(mkRelDir "odir/")
 
 -- | GHCi files directory.
 ghciDirL :: HasBuildConfig env => Getting r env (Path Abs Dir)
-ghciDirL = to $ \env -> -- FIXME is this idomatic lens code?
+ghciDirL = to $ \env -> -- FIXME is this idiomatic lens code?
   let workDir = view workDirL env
       root = view projectRootL env
    in root </> workDir </> $(mkRelDir "ghci/")
@@ -85,6 +87,15 @@ configSetupConfigMod dir =
         (</> $(mkRelFile "stack-setup-config-mod"))
         (distDirFromDir dir)
 
+-- | The filename used for the project root from the last build of a package
+configPackageProjectRoot :: (MonadThrow m, MonadReader env m, HasEnvConfig env)
+                     => Path Abs Dir      -- ^ Package directory.
+                     -> m (Path Abs File)
+configPackageProjectRoot dir =
+    liftM
+        (</> $(mkRelFile "stack-project-root"))
+        (distDirFromDir dir)
+
 -- | Directory for HPC work.
 hpcDirFromDir
     :: (MonadThrow m, MonadReader env m, HasEnvConfig env)
@@ -105,7 +116,7 @@ setupConfigFromDir :: (MonadThrow m, MonadReader env m, HasEnvConfig env)
                    -> m (Path Abs File)
 setupConfigFromDir fp = do
     dist <- distDirFromDir fp
-    return $ dist </> $(mkRelFile "setup-config")
+    pure $ dist </> $(mkRelFile "setup-config")
 
 -- | Package's build artifacts directory.
 distDirFromDir :: (MonadThrow m, MonadReader env m, HasEnvConfig env)
@@ -130,7 +141,7 @@ rootDistRelativeDir
   => m (Path Rel Dir)
 rootDistRelativeDir = do
     workDir <- view workDirL
-    return $ workDir </> $(mkRelDir "dist")
+    pure $ workDir </> $(mkRelDir "dist")
 
 -- | Package's working directory.
 workDirFromDir :: (MonadReader env m, HasConfig env)
@@ -155,7 +166,7 @@ distRelativeDir = do
         PackageIdentifier cabalPackageName cabalPkgVer
     platformAndCabal <- useShaPathOnWindows (platform </> envDir)
     allDist <- rootDistRelativeDir
-    return $ allDist </> platformAndCabal
+    pure $ allDist </> platformAndCabal
 
 -- | Docker sandbox from project root.
 projectDockerSandboxDir :: (MonadReader env m, HasConfig env)
@@ -163,7 +174,7 @@ projectDockerSandboxDir :: (MonadReader env m, HasConfig env)
   -> m (Path Abs Dir)  -- ^ Docker sandbox
 projectDockerSandboxDir projectRoot = do
   workDir <- view workDirL
-  return $ projectRoot </> workDir </> $(mkRelDir "docker/")
+  pure $ projectRoot </> workDir </> $(mkRelDir "docker/")
 
 -- | Image staging dir from project root.
 imageStagingDir :: (MonadReader env m, HasConfig env, MonadThrow m)
@@ -173,4 +184,4 @@ imageStagingDir :: (MonadReader env m, HasConfig env, MonadThrow m)
 imageStagingDir projectRoot imageIdx = do
   workDir <- view workDirL
   idxRelDir <- parseRelDir (show imageIdx)
-  return $ projectRoot </> workDir </> $(mkRelDir "image") </> idxRelDir
+  pure $ projectRoot </> workDir </> $(mkRelDir "image") </> idxRelDir

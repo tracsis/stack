@@ -1,6 +1,7 @@
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE OverloadedStrings #-}
+
 -- |
 -- Wrapper functions of 'Network.HTTP.Simple' and 'Network.HTTP.Client' to
 -- add the 'User-Agent' HTTP request header to each request.
@@ -29,9 +30,11 @@ module Network.HTTP.StackClient
   , applyDigestAuth
   , displayDigestAuthException
   , Request
-  , RequestBody(RequestBodyBS, RequestBodyLBS)
-  , Response
-  , HttpException
+  , RequestBody (RequestBodyBS, RequestBodyLBS)
+  , Response (..)
+  , HttpException (..)
+  , HttpExceptionContent (..)
+  , notFound404
   , hAccept
   , hContentLength
   , hContentMD5
@@ -40,7 +43,7 @@ module Network.HTTP.StackClient
   , partFileRequestBody
   , partBS
   , partLBS
-  , setGithubHeaders
+  , setGitHubHeaders
   , download
   , redownload
   , verifiedDownload
@@ -57,30 +60,47 @@ module Network.HTTP.StackClient
   , setForceDownload
   ) where
 
-import           Control.Monad.State (get, put, modify)
-import           Data.Aeson (FromJSON)
+import           Control.Monad.State ( get, put, modify )
+import           Data.Aeson ( FromJSON )
 import qualified Data.ByteString as Strict
-import           Data.Conduit (ConduitM, ConduitT, awaitForever, (.|), yield, await)
-import           Data.Conduit.Lift (evalStateC)
+import           Data.Conduit
+                   ( ConduitM, ConduitT, awaitForever, (.|), yield, await )
+import           Data.Conduit.Lift ( evalStateC )
 import qualified Data.Conduit.List as CL
-import           Data.Monoid (Sum (..))
+import           Data.Monoid ( Sum (..) )
 import qualified Data.Text as T
-import           Data.Time.Clock (NominalDiffTime, diffUTCTime, getCurrentTime)
-import           Network.HTTP.Client (Request, RequestBody(..), Response, parseRequest, getUri, path, checkResponse, parseUrlThrow)
-import           Network.HTTP.Simple (setRequestCheckStatus, setRequestMethod, setRequestBody, setRequestHeader, addRequestHeader, HttpException(..), getResponseBody, getResponseStatusCode, getResponseHeaders)
-import           Network.HTTP.Types (hAccept, hContentLength, hContentMD5, methodPut)
-import           Network.HTTP.Conduit (requestHeaders)
-import           Network.HTTP.Client.TLS (getGlobalManager, applyDigestAuth, displayDigestAuthException)
-import           Network.HTTP.Download hiding (download, redownload, verifiedDownload)
+import           Data.Time.Clock
+                   ( NominalDiffTime, diffUTCTime, getCurrentTime )
+import           Network.HTTP.Client
+                   ( HttpException (..), HttpExceptionContent (..), Request
+                   , RequestBody (..), Response (..), checkResponse, getUri
+                   , parseRequest, parseUrlThrow, path
+                   )
+import           Network.HTTP.Client.MultipartFormData
+                   ( formDataBody, partBS, partFileRequestBody, partLBS )
+import           Network.HTTP.Client.TLS
+                   ( applyDigestAuth, displayDigestAuthException
+                   , getGlobalManager
+                   )
+import           Network.HTTP.Conduit ( requestHeaders )
+import           Network.HTTP.Download
+                   hiding ( download, redownload, verifiedDownload )
 import qualified Network.HTTP.Download as Download
+import           Network.HTTP.Simple
+                   ( addRequestHeader, getResponseBody, getResponseHeaders
+                   , getResponseStatusCode, setRequestBody
+                   , setRequestCheckStatus, setRequestHeader, setRequestMethod
+                   )
 import qualified Network.HTTP.Simple
-import           Network.HTTP.Client.MultipartFormData (formDataBody, partFileRequestBody, partBS, partLBS)
+import           Network.HTTP.Types
+                   ( hAccept, hContentLength, hContentMD5, methodPut
+                   , notFound404
+                   )
 import           Path
-import           Prelude (until, (!!))
+import           Prelude ( until, (!!) )
 import           RIO
-import           RIO.PrettyPrint
-import           Text.Printf (printf)
-
+import           RIO.PrettyPrint ( HasTerm )
+import           Text.Printf ( printf )
 
 setUserAgent :: Request -> Request
 setUserAgent = setRequestHeader "User-Agent" ["The Haskell Stack"]
@@ -112,8 +132,8 @@ withResponse
 withResponse = Network.HTTP.Simple.withResponse . setUserAgent
 
 -- | Set the user-agent request header
-setGithubHeaders :: Request -> Request
-setGithubHeaders = setRequestHeader "Accept" ["application/vnd.github.v3+json"]
+setGitHubHeaders :: Request -> Request
+setGitHubHeaders = setRequestHeader "Accept" ["application/vnd.github.v3+json"]
 
 -- | Download the given URL to the given location. If the file already exists,
 -- no download is performed. Otherwise, creates the parent directory, downloads
@@ -168,7 +188,8 @@ verifiedDownloadWithProgress
   -> Maybe Int
   -> RIO env Bool
 verifiedDownloadWithProgress req destpath lbl msize =
-  verifiedDownload req destpath (chattyDownloadProgress lbl msize)
+    verifiedDownload req destpath (chattyDownloadProgress lbl msize)
+
 
 chattyDownloadProgress
   :: ( HasLogFunc env

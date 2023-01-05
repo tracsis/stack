@@ -1,31 +1,37 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+
 module Stack.Unpack
   ( unpackPackages
   ) where
 
-import Stack.Prelude
-import qualified RIO.Text as T
+import           Path ( (</>), parseRelDir )
+import           Path.IO ( doesDirExist )
+import           RIO.List ( intercalate )
 import qualified RIO.Map as Map
+import           RIO.Process ( HasProcessContext )
 import qualified RIO.Set as Set
-import RIO.List (intercalate)
-import RIO.Process (HasProcessContext)
-import Path ((</>), parseRelDir)
-import Path.IO (doesDirExist)
+import qualified RIO.Text as T
+import           Stack.Prelude
 
+-- | Type representing exceptions thrown by functions exported by the
+-- "Stack.Unpack" module.
 data UnpackException
   = UnpackDirectoryAlreadyExists (Set (Path Abs Dir))
   | CouldNotParsePackageSelectors [String]
-    deriving Typeable
-instance Exception UnpackException
-instance Show UnpackException where
-    show (UnpackDirectoryAlreadyExists dirs) = unlines
-        $ "Unable to unpack due to already present directories:"
+  deriving (Show, Typeable)
+
+instance Exception UnpackException where
+    displayException (UnpackDirectoryAlreadyExists dirs) = unlines
+        $ "Error: [S-3515]"
+        : "Unable to unpack due to already present directories:"
         : map (("    " ++) . toFilePath) (Set.toList dirs)
-    show (CouldNotParsePackageSelectors strs) = unlines
-      $ "The following package selectors are not valid package names or identifiers:"
-      : map ("- " ++) strs
+    displayException (CouldNotParsePackageSelectors strs) = unlines
+        $ "Error: [S-2628]"
+        : "The following package selectors are not valid package names or \
+          \identifiers:"
+        : map ("- " ++) strs
 
 -- | Intended to work for the command line command.
 unpackPackages

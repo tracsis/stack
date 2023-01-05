@@ -1,40 +1,56 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Stack.Ls
   ( lsCmd
   , lsParser
-  , listDependenciesCmd
   ) where
 
-import Control.Exception (throw)
-import Data.Aeson
-import Data.Array.IArray ((//), elems)
-import Stack.Prelude hiding (Snapshot (..), SnapName (..))
+import           Data.Aeson
+import           Data.Array.IArray ( (//), elems )
+import           Distribution.Package ( mkPackageName )
 import qualified Data.Aeson.Types as A
 import qualified Data.List as L
-import Data.Text hiding (pack, intercalate)
+import           Data.Text hiding ( filter, intercalate, pack, reverse )
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import qualified Data.Vector as V
-import Network.HTTP.StackClient (httpJSON, addRequestHeader, getResponseBody, parseRequest, hAccept)
+import           Network.HTTP.StackClient
+                   ( httpJSON, addRequestHeader, getResponseBody, parseRequest
+                   , hAccept
+                   )
 import qualified Options.Applicative as OA
-import Options.Applicative (idm)
-import Options.Applicative.Builder.Extra (boolFlags)
-import Path
-import RIO.PrettyPrint (useColorL)
-import RIO.PrettyPrint.DefaultStyles (defaultStyles)
-import RIO.PrettyPrint.Types (StyleSpec)
-import RIO.PrettyPrint.StylesUpdate (StylesUpdate (..), stylesUpdateL)
-import Stack.Dot
-import Stack.Runners
-import Stack.Options.DotParser (listDepsOptsParser)
-import Stack.Types.Config
-import System.Console.ANSI.Codes (SGR (Reset), setSGRCode, sgrToCode)
-import System.Process.Pager (pageText)
-import System.Directory (listDirectory)
+import           Options.Applicative ( idm )
+import           Options.Applicative.Builder.Extra ( boolFlags )
+import           Path
+import           RIO.List ( sort )
+import           Stack.Constants ( osIsWindows, globalFooter )
+import           Stack.Dot
+import           Stack.Prelude hiding ( Snapshot (..), SnapName (..) )
+import           Stack.Runners
+import           Stack.Options.DotParser ( listDepsOptsParser )
+import           Stack.Setup.Installed
+                   ( Tool (..), filterTools, listInstalled, toolString )
+import           Stack.Types.Config
+import           System.Console.ANSI.Codes
+                   ( SGR (Reset), setSGRCode, sgrToCode )
+import           System.Process.Pager ( pageText )
+import           System.Directory ( listDirectory )
+import           System.IO ( putStrLn )
+
+-- | Type representing exceptions thrown by functions exported by the "Stack.Ls"
+-- module.
+newtype LsException
+    = ParseFailure [Value]
+    deriving (Show, Typeable)
+
+instance Exception LsException where
+    displayException (ParseFailure val) =
+        "Error: [S-3421]\n"
+        ++ "Failure to parse values as a snapshot: "
+        ++ show val
 
 data LsView
     = Local
@@ -50,6 +66,7 @@ data LsCmds
     = LsSnapshot SnapshotOpts
     | LsDependencies ListDepsOpts
     | LsStyles ListStylesOpts
+    | LsTools ListToolsOpts
 
 data SnapshotOpts = SnapshotOpts
     { soptViewType :: LsView
@@ -63,12 +80,17 @@ data ListStylesOpts = ListStylesOpts
     , coptExample :: Bool
     } deriving (Eq, Ord, Show)
 
+newtype ListToolsOpts = ListToolsOpts
+    { toptFilter  :: String
+    }
+
 newtype LsCmdOpts = LsCmdOpts
     { lsView :: LsCmds
     }
 
 lsParser :: OA.Parser LsCmdOpts
-lsParser = LsCmdOpts <$> OA.hsubparser (lsSnapCmd <> lsDepsCmd <> lsStylesCmd)
+lsParser = LsCmdOpts
+    <$> OA.hsubparser (lsSnapCmd <> lsDepsCmd <> lsStylesCmd <> lsToolsCmd)
 
 lsCmdOptsParser :: OA.Parser LsCmds
 lsCmdOptsParser = LsSnapshot <$> lsViewSnapCmd
@@ -78,6 +100,9 @@ lsDepOptsParser = LsDependencies <$> listDepsOptsParser
 
 lsStylesOptsParser :: OA.Parser LsCmds
 lsStylesOptsParser = LsStyles <$> listStylesOptsParser
+
+lsToolsOptsParser :: OA.Parser LsCmds
+lsToolsOptsParser = LsTools <$> listToolsOptsParser
 
 listStylesOptsParser :: OA.Parser ListStylesOpts
 listStylesOptsParser = ListStylesOpts
@@ -98,6 +123,16 @@ listStylesOptsParser = ListStylesOpts
                   \report"
                   idm
 
+listToolsOptsParser :: OA.Parser ListToolsOpts
+listToolsOptsParser = ListToolsOpts
+    <$> OA.strOption
+            ( OA.long "filter"
+           <> OA.metavar "TOOL_NAME"
+           <> OA.value ""
+           <> OA.help "Filter by a tool name (eg 'ghc', 'ghc-git' or 'msys2') \
+                      \- case sensitive. The default is no filter"
+            )
+
 lsViewSnapCmd :: OA.Parser SnapshotOpts
 lsViewSnapCmd =
     SnapshotOpts <$>
@@ -109,31 +144,35 @@ lsViewSnapCmd =
          OA.help "Only show nightly snapshots")
 
 lsSnapCmd :: OA.Mod OA.CommandFields LsCmds
-lsSnapCmd =
-    OA.command
-        "snapshots"
-        (OA.info
-             lsCmdOptsParser
-             (OA.progDesc "View local snapshot (default option)"))
+lsSnapCmd = OA.command "snapshots" $
+  OA.info lsCmdOptsParser $
+       OA.progDesc "View snapshots (local by default)"
+    <> OA.footer localSnapshotMsg
 
 lsDepsCmd :: OA.Mod OA.CommandFields LsCmds
-lsDepsCmd =
-    OA.command
-        "dependencies"
-        (OA.info lsDepOptsParser (OA.progDesc "View the dependencies"))
+lsDepsCmd = OA.command "dependencies" $
+    OA.info lsDepOptsParser $
+         OA.progDesc "View the dependencies"
+      <> OA.footer globalFooter
 
 lsStylesCmd :: OA.Mod OA.CommandFields LsCmds
 lsStylesCmd =
     OA.command
         "stack-colors"
         (OA.info lsStylesOptsParser
-                 (OA.progDesc "View stack's output styles"))
+                 (OA.progDesc "View Stack's output styles"))
     <>
     OA.command
         "stack-colours"
         (OA.info lsStylesOptsParser
-                 (OA.progDesc "View stack's output styles (alias for \
+                 (OA.progDesc "View Stack's output styles (alias for \
                               \'stack-colors')"))
+
+lsToolsCmd :: OA.Mod OA.CommandFields LsCmds
+lsToolsCmd =
+    OA.command
+        "tools"
+        (OA.info lsToolsOptsParser (OA.progDesc "View Stack's installed tools"))
 
 data Snapshot = Snapshot
     { snapId :: Text
@@ -162,16 +201,10 @@ toSnapshot [String sid, String stitle, String stime] =
     , snapTitle = stitle
     , snapTime = stime
     }
-toSnapshot val = throw $ ParseFailure val
-
-newtype LsException =
-    ParseFailure [Value]
-    deriving (Show, Typeable)
-
-instance Exception LsException
+toSnapshot val = impureThrow $ ParseFailure val
 
 parseSnapshot :: Value -> A.Parser Snapshot
-parseSnapshot = A.withArray "array of snapshot" (return . toSnapshot . V.toList)
+parseSnapshot = A.withArray "array of snapshot" (pure . toSnapshot . V.toList)
 
 displayTime :: Snapshot -> [Text]
 displayTime Snapshot {..} = [snapTime]
@@ -197,7 +230,7 @@ renderData False content = T.putStr content
 displaySnapshotData :: Bool -> SnapshotData -> IO ()
 displaySnapshotData term sdata =
     case L.reverse $ snaps sdata of
-        [] -> return ()
+        [] -> pure ()
         xs ->
             let snaps = T.concat $ L.map displaySingleSnap xs
             in renderData term snaps
@@ -225,7 +258,10 @@ handleLocal :: LsCmdOpts -> RIO Runner ()
 handleLocal lsOpts = do
     (instRoot :: Path Abs Dir) <- withConfig YesReexec $ withDefaultEnvConfig installationRootDeps
     isStdoutTerminal <- view terminalL
-    let snapRootDir = parent $ parent instRoot
+    let parentInstRoot = parent instRoot
+        snapRootDir
+          | osIsWindows = parentInstRoot
+          | otherwise   = parent parentInstRoot
     snapData' <- liftIO $ listDirectory $ toFilePath snapRootDir
     let snapData = L.sort snapData'
     case lsView lsOpts of
@@ -240,8 +276,9 @@ handleLocal lsOpts = do
                     displayLocalSnapshot isStdoutTerminal $
                     L.filter (L.isPrefixOf "night") snapData
                 _ -> liftIO $ displayLocalSnapshot isStdoutTerminal snapData
-        LsDependencies _ -> return ()
-        LsStyles _ -> return ()
+        LsDependencies _ -> pure ()
+        LsStyles _ -> pure ()
+        LsTools _ -> pure ()
 
 handleRemote
     :: HasRunner env
@@ -264,8 +301,9 @@ handleRemote lsOpts = do
                     displaySnapshotData isStdoutTerminal $
                     filterSnapshotData snapData Nightly
                 _ -> liftIO $ displaySnapshotData isStdoutTerminal snapData
-        LsDependencies _ -> return ()
-        LsStyles _ -> return ()
+        LsDependencies _ -> pure ()
+        LsStyles _ -> pure ()
+        LsTools _ -> pure ()
   where
     urlInfo = "https://www.stackage.org/snapshots"
 
@@ -276,31 +314,32 @@ lsCmd lsOpts =
             case soptViewType of
                 Local -> handleLocal lsOpts
                 Remote -> handleRemote lsOpts
-        LsDependencies depOpts -> listDependenciesCmd False depOpts
+        LsDependencies depOpts -> listDependencies depOpts
         LsStyles stylesOpts -> withConfig NoReexec $ listStylesCmd stylesOpts
-
--- | List the dependencies
-listDependenciesCmd :: Bool -> ListDepsOpts -> RIO Runner ()
-listDependenciesCmd deprecated opts = do
-    when
-        deprecated
-        (logWarn
-             "DEPRECATED: Use ls dependencies instead. Will be removed in next major version.")
-    listDependencies opts
+        LsTools toolsOpts -> withConfig NoReexec $ listToolsCmd toolsOpts
 
 lsViewLocalCmd :: OA.Mod OA.CommandFields LsView
-lsViewLocalCmd =
-    OA.command
-        "local"
-        (OA.info (pure Local) (OA.progDesc "View local snapshot"))
+lsViewLocalCmd = OA.command "local" $
+  OA.info (pure Local) $
+       OA.progDesc "View local snapshots"
+    <> OA.footer localSnapshotMsg
 
 lsViewRemoteCmd :: OA.Mod OA.CommandFields LsView
-lsViewRemoteCmd =
-    OA.command
-        "remote"
-        (OA.info (pure Remote) (OA.progDesc "View remote snapshot"))
+lsViewRemoteCmd = OA.command "remote" $
+  OA.info (pure Remote) $
+       OA.progDesc "View remote snapshots"
+    <> OA.footer pagerMsg
 
--- | List stack's output styles
+pagerMsg :: String
+pagerMsg =
+  "On a terminal, uses a pager, if one is available. Respects the PAGER \
+  \environment variable (subject to that, prefers pager 'less' to 'more')."
+
+localSnapshotMsg :: String
+localSnapshotMsg =
+  "A local snapshot is identified by a hash code. " <> pagerMsg
+
+-- | List Stack's output styles
 listStylesCmd :: ListStylesOpts -> RIO Config ()
 listStylesCmd opts = do
     lc <- ask
@@ -325,3 +364,17 @@ listStylesCmd opts = do
         example = " " <> ansi <> "Example" <> reset
         ansi = fromString $ setSGRCode sgrs
         reset = fromString $ setSGRCode [Reset]
+
+-- | List Stack's installed tools, sorted (see instance of 'Ord' for 'Tool').
+listToolsCmd :: ListToolsOpts -> RIO Config ()
+listToolsCmd opts = do
+    localPrograms <- view $ configL.to configLocalPrograms
+    installed <- sort <$> listInstalled localPrograms
+    let wanted = case toptFilter opts of
+            [] -> installed
+            "ghc-git" -> [t | t@(ToolGhcGit _ _) <- installed]
+            pkgName -> filtered pkgName installed
+    liftIO $ mapM_ (putStrLn . toolString) wanted
+  where
+    filtered pkgName installed = Tool <$>
+        filterTools (mkPackageName pkgName) (const True) installed

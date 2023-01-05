@@ -1,7 +1,7 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE OverloadedLists #-}
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE OverloadedLists   #-}
+{-# LANGUAGE TemplateHaskell   #-}
 
 -- | Test suite for the GhciScript DSL
 module Stack.Ghci.ScriptSpec where
@@ -23,7 +23,7 @@ spec = do
     describe "Script DSL" $ do
 
       describe "script" $ do
-        it "should seperate commands with a newline" $ do
+        it "should separate commands with a newline" $ do
           let dir = $(mkAbsDir $ defaultDrive FP.</> "src" FP.</> "package-a")
               script = cmdCdGhc dir
                     <> cmdAdd [Left (fromString "Lib.A")]

@@ -1,18 +1,19 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE GADTs #-}
+{-# LANGUAGE NoImplicitPrelude          #-}
+{-# LANGUAGE DataKinds                  #-}
+{-# LANGUAGE DerivingStrategies         #-}
+{-# LANGUAGE FlexibleInstances          #-}
+{-# LANGUAGE GADTs                      #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE QuasiQuotes #-}
-{-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE MultiParamTypeClasses      #-}
+{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE QuasiQuotes                #-}
+{-# LANGUAGE RecordWildCards            #-}
+{-# LANGUAGE StandaloneDeriving         #-}
+{-# LANGUAGE TemplateHaskell            #-}
+{-# LANGUAGE TupleSections              #-}
+{-# LANGUAGE TypeFamilies               #-}
+{-# LANGUAGE TypeOperators              #-}
+{-# LANGUAGE UndecidableInstances       #-}
 {-# OPTIONS_GHC -Wno-unused-top-binds -Wno-identities #-}
 
 -- | Work with SQLite database used for caches across an entire user account.
@@ -32,27 +33,56 @@ module Stack.Storage.User
 
 import qualified Data.Set as Set
 import qualified Data.Text as T
-import Data.Time.Clock (UTCTime)
-import Database.Persist.Sqlite
-import Database.Persist.TH
-import Distribution.Text (simpleParse, display)
-import Foreign.C.Types (CTime (..))
+import           Data.Time.Clock ( UTCTime )
+import           Database.Persist.Sqlite
+import           Database.Persist.TH
+import           Distribution.Text ( simpleParse, display )
+import           Foreign.C.Types ( CTime (..) )
 import qualified Pantry.Internal as SQLite
-import Path
-import Path.IO (resolveFile', resolveDir')
+import           Path
+import           Path.IO ( resolveFile', resolveDir' )
 import qualified RIO.FilePath as FP
-import Stack.Prelude hiding (MigrationFailure)
-import Stack.Storage.Util
-import Stack.Types.Build
-import Stack.Types.Cache
-import Stack.Types.Compiler
-import Stack.Types.CompilerBuild (CompilerBuild)
-import Stack.Types.Config (HasConfig, configL, configUserStorage, CompilerPaths (..), GhcPkgExe (..), UserStorage (..))
-import System.Posix.Types (COff (..))
-import System.PosixCompat.Files (getFileStatus, fileSize, modificationTime)
+import           Stack.Prelude hiding ( MigrationFailure )
+import           Stack.Storage.Util ( handleMigrationException, updateSet )
+import           Stack.Types.Build
+import           Stack.Types.Cache
+import           Stack.Types.Compiler
+import           Stack.Types.CompilerBuild ( CompilerBuild )
+import           Stack.Types.Config
+                   ( CompilerPaths (..), GhcPkgExe (..), HasConfig
+                   , UserStorage (..), configL, configUserStorage
+                   )
+import           System.Posix.Types ( COff (..) )
+import           System.PosixCompat.Files
+                   ( fileSize, getFileStatus, modificationTime )
+
+-- | Type representing exceptions thrown by functions exported by the
+-- "Stack.Storage.User" module.
+data StorageUserException
+    = CompilerFileMetadataMismatch
+    | GlobalPackageCacheFileMetadataMismatch
+    | GlobalDumpParseFailure
+    | CompilerCacheArchitectureInvalid Text
+    deriving (Show, Typeable)
+
+instance Exception StorageUserException where
+    displayException CompilerFileMetadataMismatch =
+        "Error: [S-8196]\n"
+        ++ "Compiler file metadata mismatch, ignoring cache."
+    displayException GlobalPackageCacheFileMetadataMismatch =
+        "Error: [S-5378]\n"
+        ++ "Global package cache file metadata mismatch, ignoring cache."
+    displayException GlobalDumpParseFailure =
+        "Error: [S-2673]\n"
+        ++ "Global dump did not parse correctly."
+    displayException
+      (CompilerCacheArchitectureInvalid compilerCacheArch) = concat
+        [ "Error: [S-8441]\n"
+        , "Invalid arch: "
+        , show compilerCacheArch
+        ]
 
 share [ mkPersist sqlSettings
-      , mkDeleteCascade sqlSettings
       , mkMigrate "migrateAll"
     ]
     [persistLowerCase|
@@ -68,13 +98,13 @@ PrecompiledCacheParent sql="precompiled_cache"
   deriving Show
 
 PrecompiledCacheSubLib
-  parent PrecompiledCacheParentId sql="precompiled_cache_id"
+  parent PrecompiledCacheParentId sql="precompiled_cache_id" OnDeleteCascade
   value FilePath sql="sub_lib"
   UniquePrecompiledCacheSubLib parent value
   deriving Show
 
 PrecompiledCacheExe
-  parent PrecompiledCacheParentId sql="precompiled_cache_id"
+  parent PrecompiledCacheParentId sql="precompiled_cache_id" OnDeleteCaseCascade
   value FilePath sql="exe"
   UniquePrecompiledCacheExe parent value
   deriving Show
@@ -127,7 +157,8 @@ initUserStorage ::
     => Path Abs File -- ^ storage file
     -> (UserStorage -> RIO env a)
     -> RIO env a
-initUserStorage fp f = SQLite.initStorage "Stack" migrateAll fp $ f . UserStorage
+initUserStorage fp f = handleMigrationException $
+    SQLite.initStorage "Stack" migrateAll fp $ f . UserStorage
 
 -- | Run an action in a database transaction
 withUserStorage ::
@@ -172,7 +203,7 @@ readPrecompiledCache key = do
         pcExes <-
             mapM (parseRelFile . precompiledCacheExeValue . entityVal) =<<
             selectList [PrecompiledCacheExeParent ==. parentId] []
-        return (parentId, PrecompiledCache {..})
+        pure (parentId, PrecompiledCache {..})
 
 -- | Load 'PrecompiledCache' from the database.
 loadPrecompiledCache ::
@@ -200,7 +231,7 @@ savePrecompiledCache key@(UniquePrecompiledCacheParent precompiledCacheParentPla
                         [ PrecompiledCacheParentLibrary =.
                           precompiledCacheParentLibrary
                         ]
-                    return (parentId, Just old)
+                    pure (parentId, Just old)
         updateSet
             PrecompiledCacheSubLib
             PrecompiledCacheSubLibParent
@@ -230,7 +261,7 @@ loadDockerImageExeCache imageId exePath exeTimestamp =
     fmap (dockerImageExeCacheCompatible . entityVal) <$>
     getBy (DockerImageExeCacheUnique imageId (toFilePath exePath) exeTimestamp)
 
--- | Sest the record of whether an executable is compatible with a Docker image
+-- | Sets the record of whether an executable is compatible with a Docker image
 saveDockerImageExeCache ::
        (HasConfig env, HasLogFunc env)
     => Text
@@ -274,12 +305,12 @@ loadCompilerPaths compiler build sandboxed = do
     when
       (compilerCacheGhcSize /= sizeToInt64 (fileSize compilerStatus) ||
        compilerCacheGhcModified /= timeToInt64 (modificationTime compilerStatus))
-      (throwString "Compiler file metadata mismatch, ignoring cache")
+      (throwIO CompilerFileMetadataMismatch)
     globalDbStatus <- liftIO $ getFileStatus $ compilerCacheGlobalDb FP.</> "package.cache"
     when
       (compilerCacheGlobalDbCacheSize /= sizeToInt64 (fileSize globalDbStatus) ||
        compilerCacheGlobalDbCacheModified /= timeToInt64 (modificationTime globalDbStatus))
-      (throwString "Global package cache file metadata mismatch, ignoring cache")
+      (throwIO GlobalPackageCacheFileMetadataMismatch)
 
     -- We could use parseAbsFile instead of resolveFile' below to
     -- bypass some system calls, at the cost of some really wonky
@@ -292,11 +323,11 @@ loadCompilerPaths compiler build sandboxed = do
     cabalVersion <- parseVersionThrowing $ T.unpack compilerCacheCabalVersion
     globalDump <-
       case readMaybe $ T.unpack compilerCacheGlobalDump of
-        Nothing -> throwString "Global dump did not parse correctly"
+        Nothing -> throwIO GlobalDumpParseFailure
         Just globalDump -> pure globalDump
     arch <-
       case simpleParse $ T.unpack compilerCacheArch of
-        Nothing -> throwString $ "Invalid arch: " ++ show compilerCacheArch
+        Nothing -> throwIO $ CompilerCacheArchitectureInvalid compilerCacheArch
         Just arch -> pure arch
 
     pure CompilerPaths

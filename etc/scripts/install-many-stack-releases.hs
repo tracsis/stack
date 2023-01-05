@@ -11,7 +11,7 @@
 
 -- # Usage summary
 --
--- This is a hacky script to install many stack releases to a target
+-- This is a hacky script to install many Stack releases to a target
 -- directory. By default it installs all releases `>= 1.0` (this can be
 -- changed by adjusting `minVersion` in the code). To use this on
 -- standard 64 bit linux systems, do the following:
@@ -19,7 +19,7 @@
 --     ./install-many-stack-releases.hs ~/.local/bin
 --
 -- It will then populate this folder with binaries like `stack-1.6.3`,
--- by downloading and unpacking stack releases to a temporary directory.
+-- by downloading and unpacking Stack releases to a temporary directory.
 -- It will only download releases that do not already have binaries in
 -- the target directory.
 --
@@ -65,8 +65,8 @@ main = do
     (dir:_) -> do
       exists <- doesDirectoryExist dir
       unless exists $ fail $ unwords [show dir, "is not a directory or does not exist."]
-      return dir
-    _ -> fail "Expected the first CLI argument to be the target directory to place stack binaries."
+      pure dir
+    _ -> fail "Expected the first CLI argument to be the target directory to place Stack binaries."
   -- Parse platform from CLI args, with default.
   platform <- case tail args of
     [] -> do
@@ -75,8 +75,8 @@ main = do
         , show defaultPlatform
         , "\n"
         ]
-      return defaultPlatform
-    [x] -> return x
+      pure defaultPlatform
+    [x] -> pure x
     _ -> fail "Expected at most two CLI argument, specifying target directory and target platform."
   -- Constants + common computation of urls / paths
   let minVersion = makeVersion [1, 0, 0]
@@ -96,10 +96,10 @@ main = do
   -- Don't download super old versions
   let (newerVersions, olderVersions) =
         partition (>= minVersion) (mapMaybe readVersion releasesWithoutPrefix)
-  putStrLn "The following releases look like stack releases that are older than minVersion:"
+  putStrLn "The following releases look like Stack releases that are older than minVersion:"
   print (map showVersion olderVersions)
   putStrLn ""
-  putStrLn "The following releases look like recent enough stack releases:"
+  putStrLn "The following releases look like recent enough Stack releases:"
   print (map showVersion newerVersions)
   putStrLn ""
   -- Check which releases already exist.
@@ -147,14 +147,14 @@ readProcessIsSuccess :: FilePath -> [String] -> IO Bool
 readProcessIsSuccess name args = do
   (ec, out, err) <- readProcessWithExitCode name args ""
   case ec of
-    ExitSuccess -> return True
+    ExitSuccess -> pure True
     ExitFailure code -> do
       putStrLn $ unwords $ ["Running", name, "with args", show args, "failed with code", show code]
       putStrLn "stdout:"
       putStrLn out
       putStrLn "stderr:"
       putStrLn err
-      return False
+      pure False
 
 -- Damn, base has some ugly stuff... 'parseVersion' yields multiple
 -- parses treating numeric portions as version tags.. WTF. Seems like

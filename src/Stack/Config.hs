@@ -1,14 +1,15 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE ConstraintKinds     #-}
+{-# LANGUAGE DataKinds           #-}
+{-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE LambdaCase          #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeFamilies        #-}
 
 -- | The general Stack configuration that starts everything off. This should
--- be smart to falback if there is no stack.yaml, instead relying on
+-- be smart to fallback if there is no stack.yaml, instead relying on
 -- whatever files are available.
 --
 -- If there is no stack.yaml, and there is a cabal.config, we
@@ -18,55 +19,60 @@
 -- probably default to behaving like cabal, possibly with spitting out
 -- a warning that "you should run `stk init` to make things better".
 module Stack.Config
-  (loadConfig
-  ,loadConfigYaml
-  ,packagesParser
-  ,getImplicitGlobalProjectDir
-  ,getSnapshots
-  ,makeConcreteResolver
-  ,checkOwnership
-  ,getInContainer
-  ,getInNixShell
-  ,defaultConfigYaml
-  ,getProjectConfig
-  ,withBuildConfig
-  ,withNewLogFunc
+  ( loadConfig
+  , loadConfigYaml
+  , packagesParser
+  , getImplicitGlobalProjectDir
+  , getSnapshots
+  , makeConcreteResolver
+  , checkOwnership
+  , getInContainer
+  , getInNixShell
+  , defaultConfigYaml
+  , getProjectConfig
+  , withBuildConfig
+  , withNewLogFunc
   ) where
 
-import           Control.Monad.Extra (firstJustM)
-import           Stack.Prelude
-import           Pantry.Internal.AesonExtended
-import           Data.Array.IArray ((!), (//))
+import           Control.Monad.Extra ( firstJustM )
+import           Data.Array.IArray ( (!), (//) )
 import qualified Data.ByteString as S
-import           Data.ByteString.Builder (byteString)
-import           Data.Coerce (coerce)
+import           Data.ByteString.Builder ( byteString )
+import           Data.Coerce ( coerce )
 import qualified Data.IntMap as IntMap
 import qualified Data.Map as Map
 import qualified Data.Map.Merge.Strict as MS
 import qualified Data.Monoid
-import           Data.Monoid.Map (MonoidMap(..))
+import           Data.Monoid.Map ( MonoidMap (..) )
 import qualified Data.Text as T
 import qualified Data.Yaml as Yaml
-import           Distribution.System (OS (..), Platform (..), buildPlatform, Arch(OtherArch))
+import           Distribution.System
+                   ( Arch (OtherArch), OS (..), Platform (..), buildPlatform )
 import qualified Distribution.Text
-import           Distribution.Version (simplifyVersionRange, mkVersion')
-import           GHC.Conc (getNumProcessors)
-import           Network.HTTP.StackClient (httpJSON, parseUrlThrow, getResponseBody)
-import           Options.Applicative (Parser, help, long, metavar, strOption)
+import           Distribution.Version ( simplifyVersionRange )
+import           GHC.Conc ( getNumProcessors )
+import           Network.HTTP.StackClient
+                   ( httpJSON, parseUrlThrow, getResponseBody )
+import           Options.Applicative ( Parser, help, long, metavar, strOption )
+import           Pantry.Internal.AesonExtended
 import           Path
-import           Path.Extra (toFilePathNoTrailingSep)
-import           Path.Find (findInParents)
+import           Path.Extra ( toFilePathNoTrailingSep )
+import           Path.Find ( findInParents )
 import           Path.IO
-import qualified Paths_stack as Meta
+import           RIO.List ( unzip )
+import           RIO.Process
+import           RIO.Time ( toGregorian )
+import           Stack.Build.Haddock ( shouldHaddockDeps )
 import           Stack.Config.Build
 import           Stack.Config.Docker
 import           Stack.Config.Nix
 import           Stack.Constants
-import           Stack.Build.Haddock (shouldHaddockDeps)
-import           Stack.Lock (lockCachedWanted)
-import           Stack.Storage.Project (initProjectStorage)
-import           Stack.Storage.User (initUserStorage)
+import           Stack.Lock ( lockCachedWanted )
+import           Stack.Prelude
 import           Stack.SourceMap
+import           Stack.Storage.Project ( initProjectStorage )
+import           Stack.Storage.User ( initUserStorage )
+import           Stack.Storage.Util ( handleMigrationException )
 import           Stack.Types.Build
 import           Stack.Types.Compiler
 import           Stack.Types.Config
@@ -75,23 +81,20 @@ import           Stack.Types.Nix
 import           Stack.Types.Resolver
 import           Stack.Types.SourceMap
 import           Stack.Types.Version
-import           System.Console.ANSI (hSupportsANSIWithoutEmulation, setSGRCode)
+                   ( IntersectingVersionRange (..), VersionCheck (..)
+                   , stackVersion, withinRange
+                   )
+import           System.Console.ANSI
+                   ( hSupportsANSIWithoutEmulation, setSGRCode )
 import           System.Environment
-import           System.Info.ShortPathName (getShortPathName)
-import           System.PosixCompat.Files (fileOwner, getFileStatus)
-import           System.PosixCompat.User (getEffectiveUserID)
-import           RIO.List (unzip)
-import           RIO.PrettyPrint (Style (Highlight, Secondary),
-                   logLevelToStyle, stylesUpdateL, useColorL)
-import           RIO.PrettyPrint.StylesUpdate (StylesUpdate (..))
-import           RIO.PrettyPrint.DefaultStyles (defaultStyles)
-import           RIO.Process
-import           RIO.Time (toGregorian)
+import           System.Info.ShortPathName ( getShortPathName )
+import           System.PosixCompat.Files ( fileOwner, getFileStatus )
+import           System.PosixCompat.User ( getEffectiveUserID )
 
 -- | If deprecated path exists, use it and print a warning.
 -- Otherwise, return the new path.
-tryDeprecatedPath
-    :: HasLogFunc env
+tryDeprecatedPath ::
+       HasLogFunc env
     => Maybe T.Text -- ^ Description of file for warning (if Nothing, no deprecation warning is displayed)
     -> (Path Abs a -> RIO env Bool) -- ^ Test for existence
     -> Path Abs a -- ^ New path
@@ -100,13 +103,13 @@ tryDeprecatedPath
 tryDeprecatedPath mWarningDesc exists new old = do
     newExists <- exists new
     if newExists
-        then return (new, True)
+        then pure (new, True)
         else do
             oldExists <- exists old
             if oldExists
                 then do
                     case mWarningDesc of
-                        Nothing -> return ()
+                        Nothing -> pure ()
                         Just desc ->
                             logWarn $
                                 "Warning: Location of " <> display desc <> " at '" <>
@@ -114,14 +117,14 @@ tryDeprecatedPath mWarningDesc exists new old = do
                                 "' is deprecated; rename it to '" <>
                                 fromString (toFilePath new) <>
                                 "' instead"
-                    return (old, True)
-                else return (new, False)
+                    pure (old, True)
+                else pure (new, False)
 
 -- | Get the location of the implicit global project directory.
 -- If the directory already exists at the deprecated location, its location is returned.
 -- Otherwise, the new location is returned.
-getImplicitGlobalProjectDir
-    :: HasLogFunc env
+getImplicitGlobalProjectDir ::
+       HasLogFunc env
     => Config -> RIO env (Path Abs Dir)
 getImplicitGlobalProjectDir config =
     --TEST no warning printed
@@ -141,39 +144,38 @@ getSnapshots = do
     logDebug $ "Downloading snapshot versions file from " <> display latestUrlText
     result <- httpJSON latestUrl
     logDebug "Done downloading and parsing snapshot versions file"
-    return $ getResponseBody result
+    pure $ getResponseBody result
 
 -- | Turn an 'AbstractResolver' into a 'Resolver'.
-makeConcreteResolver
-    :: HasConfig env
+makeConcreteResolver ::
+       HasConfig env
     => AbstractResolver
     -> RIO env RawSnapshotLocation
 makeConcreteResolver (ARResolver r) = pure r
 makeConcreteResolver ar = do
     r <-
         case ar of
-            ARResolver r -> assert False $ makeConcreteResolver (ARResolver r)
             ARGlobal -> do
                 config <- view configL
                 implicitGlobalDir <- getImplicitGlobalProjectDir config
                 let fp = implicitGlobalDir </> stackDotYaml
                 iopc <- loadConfigYaml (parseProjectAndConfigMonoid (parent fp)) fp
                 ProjectAndConfigMonoid project _ <- liftIO iopc
-                return $ projectResolver project
+                pure $ projectResolver project
             ARLatestNightly -> RSLSynonym . Nightly . snapshotsNightly <$> getSnapshots
             ARLatestLTSMajor x -> do
                 snapshots <- getSnapshots
                 case IntMap.lookup x $ snapshotsLts snapshots of
-                    Nothing -> throwString $ "No LTS release found with major version " ++ show x
-                    Just y -> return $ RSLSynonym $ LTS x y
+                    Nothing -> throwIO $ NoLTSWithMajorVersion x
+                    Just y -> pure $ RSLSynonym $ LTS x y
             ARLatestLTS -> do
                 snapshots <- getSnapshots
                 if IntMap.null $ snapshotsLts snapshots
-                   then throwString "No LTS releases found"
+                   then throwIO NoLTSFound
                    else let (x, y) = IntMap.findMax $ snapshotsLts snapshots
-                        in return $ RSLSynonym $ LTS x y
+                        in pure $ RSLSynonym $ LTS x y
     logInfo $ "Selected resolver: " <> display r
-    return r
+    pure r
 
 -- | Get the latest snapshot resolver available.
 getLatestResolver :: HasConfig env => RIO env RawSnapshotLocation
@@ -184,9 +186,9 @@ getLatestResolver = do
     pure $ RSLSynonym $ fromMaybe (Nightly (snapshotsNightly snapshots)) mlts
 
 -- Interprets ConfigMonoid options.
-configFromConfigMonoid
-    :: HasRunner env
-    => Path Abs Dir -- ^ stack root, e.g. ~/.stack
+configFromConfigMonoid ::
+       HasRunner env
+    => Path Abs Dir -- ^ Stack root, e.g. ~/.stack
     -> Path Abs File -- ^ user config file path, e.g. ~/.stack/config.yaml
     -> Maybe AbstractResolver
     -> ProjectConfig (Project, Path Abs File)
@@ -209,7 +211,7 @@ configFromConfigMonoid
              PCProject _ -> True
              PCGlobalProject -> True
              PCNoProject _ -> False
-     configWorkDir0 <- maybe (return relDirStackWork) (liftIO . parseRelDir) mstackWorkEnv
+     configWorkDir0 <- maybe (pure relDirStackWork) (liftIO . parseRelDir) mstackWorkEnv
      let configWorkDir = fromFirst configWorkDir0 configMonoidWorkDir
          configLatestSnapshot = fromFirst
            "https://s3.amazonaws.com/haddock.stackage.org/snapshots.json"
@@ -245,9 +247,9 @@ configFromConfigMonoid
          configCompilerCheck = fromFirst MatchMinor configMonoidCompilerCheck
 
      case arch of
-         OtherArch "aarch64" -> return ()
+         OtherArch "aarch64" -> pure ()
          OtherArch unk -> logWarn $ "Warning: Unknown value for architecture setting: " <> displayShow unk
-         _ -> return ()
+         _ -> pure ()
 
      configPlatformVariant <- liftIO $
          maybe PlatformVariantNone PlatformVariant <$> lookupEnv platformVariantEnvVar
@@ -262,7 +264,7 @@ configFromConfigMonoid
              (Just False, True) ->
                  throwM NixRequiresSystemGhc
              _ ->
-                 return
+                 pure
                      (fromFirst
                          (dockerEnable configDocker || nixEnable configNix)
                          configMonoidSystemGHC)
@@ -271,15 +273,15 @@ configFromConfigMonoid
          throwM ManualGHCVariantSettingsAreIncompatibleWithSystemGHC
 
      rawEnv <- liftIO getEnvironment
-     pathsEnv <- either throwM return
+     pathsEnv <- either throwM pure
                $ augmentPathMap (map toFilePath configMonoidExtraPath)
                                 (Map.fromList (map (T.pack *** T.pack) rawEnv))
      origEnv <- mkProcessContext pathsEnv
-     let configProcessContextSettings _ = return origEnv
+     let configProcessContextSettings _ = pure origEnv
 
      configLocalProgramsBase <- case getFirst configMonoidLocalProgramsBase of
        Nothing -> getDefaultLocalProgramsBase configStackRoot configPlatform origEnv
-       Just path -> return path
+       Just path -> pure path
      let localProgramsFilePath = toFilePath configLocalProgramsBase
      when (osIsWindows && ' ' `elem` localProgramsFilePath) $ do
        ensureDir configLocalProgramsBase
@@ -288,11 +290,12 @@ configFromConfigMonoid
        shortLocalProgramsFilePath <-
          liftIO $ getShortPathName localProgramsFilePath
        when (' ' `elem` shortLocalProgramsFilePath) $ do
-         logError $ "Stack's 'programs' path contains a space character and " <>
-           "has no alternative short ('8 dot 3') name. This will cause " <>
-           "problems with packages that use the GNU project's 'configure' " <>
-           "shell script. Use the 'local-programs-path' configuration option " <>
-           "to specify an alternative path. The current path is: " <>
+         logError $ "Error: [S-8432]\n"<>
+           "Stack's 'programs' path contains a space character and has no " <>
+           "alternative short ('8 dot 3') name. This will cause problems " <>
+           "with packages that use the GNU project's 'configure' shell " <>
+           "script. Use the 'local-programs-path' configuration option to " <>
+           "specify an alternative path. The current path is: " <>
            display (T.pack localProgramsFilePath)
      platformOnlyDir <- runReaderT platformOnlyRelDir (configPlatform, configPlatformVariant)
      let configLocalPrograms = configLocalProgramsBase </> platformOnlyDir
@@ -301,7 +304,7 @@ configFromConfigMonoid
          case getFirst configMonoidLocalBinPath of
              Nothing -> do
                  localDir <- getAppUserDataDir "local"
-                 return $ localDir </> relDirBin
+                 pure $ localDir </> relDirBin
              Just userPath ->
                  (case mproject of
                      -- Not in a project
@@ -317,7 +320,7 @@ configFromConfigMonoid
      configJobs <-
         case getFirst configMonoidJobs of
             Nothing -> liftIO getNumProcessors
-            Just i -> return i
+            Just i -> pure i
      let configConcurrentTests = fromFirst True configMonoidConcurrentTests
 
      let configTemplateParams = configMonoidTemplateParameters
@@ -332,16 +335,18 @@ configFromConfigMonoid
          configRebuildGhcOptions = fromFirstFalse configMonoidRebuildGhcOptions
          configApplyGhcOptions = fromFirst AGOLocals configMonoidApplyGhcOptions
          configAllowNewer = fromFirst False configMonoidAllowNewer
+         configAllowNewerDeps = coerce configMonoidAllowNewerDeps
          configDefaultTemplate = getFirst configMonoidDefaultTemplate
          configDumpLogs = fromFirst DumpWarningLogs configMonoidDumpLogs
          configSaveHackageCreds = fromFirst True configMonoidSaveHackageCreds
          configHackageBaseUrl = fromFirst "https://hackage.haskell.org/" configMonoidHackageBaseUrl
          configHideSourcePaths = fromFirstTrue configMonoidHideSourcePaths
          configRecommendUpgrade = fromFirstTrue configMonoidRecommendUpgrade
+         configNoRunCompile = fromFirstFalse configMonoidNoRunCompile
 
      configAllowDifferentUser <-
         case getFirst configMonoidAllowDifferentUser of
-            Just True -> return True
+            Just True -> pure True
             _ -> getInContainer
 
      configRunner' <- view runnerL
@@ -354,7 +359,7 @@ configFromConfigMonoid
          useColor' = runnerUseColor configRunner'
          mUseColor = do
             colorWhen <- getFirst configMonoidColorWhen
-            return $ case colorWhen of
+            pure $ case colorWhen of
                 ColorNever  -> False
                 ColorAlways -> True
                 ColorAuto  -> useAnsi
@@ -365,17 +370,22 @@ configFromConfigMonoid
                & useColorL .~ useColor''
          go = runnerGlobalOpts configRunner'
 
-     hsc <-
-       case getFirst configMonoidPackageIndices of
-         Nothing -> pure defaultHackageSecurityConfig
-         Just [hsc] -> pure hsc
-         Just x -> error $ "When overriding the default package index, you must provide exactly one value, received: " ++ show x
-     mpantryRoot <- liftIO $ lookupEnv "PANTRY_ROOT"
+     pic <-
+         case getFirst configMonoidPackageIndex of
+             Nothing ->
+                 case getFirst configMonoidPackageIndices of
+                     Nothing -> pure defaultPackageIndexConfig
+                     Just [pic] -> do
+                         logWarn $ fromString packageIndicesWarning
+                         pure pic
+                     Just x -> throwIO $ MultiplePackageIndices x
+             Just pic -> pure pic
+     mpantryRoot <- liftIO $ lookupEnv pantryRootEnvVar
      pantryRoot <-
        case mpantryRoot of
          Just dir ->
            case parseAbsDir dir of
-             Nothing -> throwString $ "Failed to parse PANTRY_ROOT environment variable (expected absolute directory): " ++ show dir
+             Nothing -> throwIO $ ParseAbsolutePathException pantryRootEnvVar dir
              Just x -> pure x
          Nothing -> pure $ configStackRoot </> relDirPantry
 
@@ -402,17 +412,18 @@ configFromConfigMonoid
 
      withNewLogFunc go useColor'' stylesUpdate' $ \logFunc -> do
        let configRunner = configRunner'' & logFuncL .~ logFunc
-       withLocalLogFunc logFunc $ withPantryConfig
-         pantryRoot
-         hsc
-         (maybe HpackBundled HpackCommand $ getFirst configMonoidOverrideHpack)
-         clConnectionCount
-         (fromFirst defaultCasaRepoPrefix configMonoidCasaRepoPrefix)
-         defaultCasaMaxPerRequest
-         snapLoc
-         (\configPantryConfig -> initUserStorage
-           (configStackRoot </> relFileStorage)
-           (\configUserStorage -> inner Config {..}))
+       withLocalLogFunc logFunc $ handleMigrationException $
+         withPantryConfig
+           pantryRoot
+           pic
+           (maybe HpackBundled HpackCommand $ getFirst configMonoidOverrideHpack)
+           clConnectionCount
+           (fromFirst defaultCasaRepoPrefix configMonoidCasaRepoPrefix)
+           defaultCasaMaxPerRequest
+           snapLoc
+           (\configPantryConfig -> initUserStorage
+             (configStackRoot </> relFileStorage)
+             (\configUserStorage -> inner Config {..}))
 
 -- | Runs the provided action with the given 'LogFunc' in the environment
 withLocalLogFunc :: HasLogFunc env => LogFunc -> RIO env a -> RIO env a
@@ -453,23 +464,24 @@ getDefaultLocalProgramsBase :: MonadThrow m
                             -> ProcessContext
                             -> m (Path Abs Dir)
 getDefaultLocalProgramsBase configStackRoot configPlatform override =
-  let
-    defaultBase = configStackRoot </> relDirPrograms
-  in
     case configPlatform of
       -- For historical reasons, on Windows a subdirectory of LOCALAPPDATA is
       -- used instead of a subdirectory of STACK_ROOT. Unifying the defaults would
       -- mean that Windows users would manually have to move data from the old
       -- location to the new one, which is undesirable.
-      Platform _ Windows ->
-        case Map.lookup "LOCALAPPDATA" $ view envVarsL override of
-          Just t ->
-            case parseAbsDir $ T.unpack t of
-              Nothing -> throwM $ stringException ("Failed to parse LOCALAPPDATA environment variable (expected absolute directory): " ++ show t)
-              Just lad ->
-                return $ lad </> relDirUpperPrograms </> relDirStackProgName
-          Nothing -> return defaultBase
-      _ -> return defaultBase
+        Platform _ Windows -> do
+            let envVars = view envVarsL override
+            case T.unpack <$> Map.lookup "LOCALAPPDATA" envVars of
+                Just t -> case parseAbsDir t of
+                    Nothing ->
+                        throwM $ ParseAbsolutePathException "LOCALAPPDATA" t
+                    Just lad ->
+                        pure $ lad </> relDirUpperPrograms </>
+                               relDirStackProgName
+                Nothing -> pure defaultBase
+        _ -> pure defaultBase
+  where
+    defaultBase = configStackRoot </> relDirPrograms
 
 -- | Load the configuration, using current directory, environment variables,
 -- and defaults as necessary.
@@ -479,7 +491,7 @@ loadConfig inner = do
     mproject <- loadProjectConfig mstackYaml
     mresolver <- view $ globalOptsL.to globalResolver
     configArgs <- view $ globalOptsL.to globalConfigMonoid
-    (stackRoot, userOwnsStackRoot) <- determineStackRootAndOwnership configArgs
+    (configRoot, stackRoot, userOwnsStackRoot) <- determineStackRootAndOwnership configArgs
 
     let (mproject', addConfigMonoid) =
           case mproject of
@@ -487,7 +499,7 @@ loadConfig inner = do
             PCGlobalProject -> (PCGlobalProject, id)
             PCNoProject deps -> (PCNoProject deps, id)
 
-    userConfigPath <- getDefaultUserConfigPath stackRoot
+    userConfigPath <- getDefaultUserConfigPath configRoot
     extraConfigs0 <- getExtraConfigs userConfigPath >>=
         mapM (\file -> loadConfigYaml (parseConfigMonoid (parent file)) file)
     let extraConfigs =
@@ -506,7 +518,7 @@ loadConfig inner = do
             (mconcat $ configArgs : addConfigMonoid extraConfigs)
 
     withConfig $ \config -> do
-      unless (mkVersion' Meta.version `withinRange` configRequireStackVersion config)
+      unless (stackVersion `withinRange` configRequireStackVersion config)
           (throwM (BadStackVersionException (configRequireStackVersion config)))
       unless (configAllowDifferentUser config) $ do
           unless userOwnsStackRoot $
@@ -517,8 +529,8 @@ loadConfig inner = do
 
 -- | Load the build configuration, adds build-specific values to config loaded by @loadConfig@.
 -- values.
-withBuildConfig
-  :: RIO BuildConfig a
+withBuildConfig ::
+     RIO BuildConfig a
   -> RIO Config a
 withBuildConfig inner = do
     config <- ask
@@ -538,13 +550,13 @@ withBuildConfig inner = do
     (project', stackYamlFP) <- case configProject config of
       PCProject (project, fp) -> do
           forM_ (projectUserMsg project) (logWarn . fromString)
-          return (project, fp)
+          pure (project, fp)
       PCNoProject extraDeps -> do
           p <-
             case mresolver of
               Nothing -> throwIO NoResolverWhenUsingNoProject
               Just _ -> getEmptyProject mresolver extraDeps
-          return (p, configUserConfigPath config)
+          pure (p, configUserConfigPath config)
       PCGlobalProject -> do
             logDebug "Run from outside a project, using implicit global project config"
             destDir <- getImplicitGlobalProjectDir config
@@ -566,8 +578,8 @@ withBuildConfig inner = do
                                  display (projectResolver project) <>
                                  " from implicit global project's config file: " <>
                                  fromString dest'
-                           Just _ -> return ()
-                   return (project, dest)
+                           Just _ -> pure ()
+                   pure (project, dest)
                else do
                    logInfo ("Writing implicit global project config file to: " <> fromString dest')
                    logInfo "Note: You can change the snapshot via the resolver field there."
@@ -575,18 +587,19 @@ withBuildConfig inner = do
                    liftIO $ do
                        writeBinaryFileAtomic dest $ byteString $ S.concat
                            [ "# This is the implicit global project's config file, which is only used when\n"
-                           , "# 'stack' is run outside of a real project.  Settings here do _not_ act as\n"
-                           , "# defaults for all projects.  To change stack's default settings, edit\n"
+                           , "# 'stack' is run outside of a real project. Settings here do _not_ act as\n"
+                           , "# defaults for all projects. To change Stack's default settings, edit\n"
                            , "# '", encodeUtf8 (T.pack $ toFilePath $ configUserConfigPath config), "' instead.\n"
                            , "#\n"
-                           , "# For more information about stack's configuration, see\n"
+                           , "# For more information about Stack's configuration, see\n"
                            , "# http://docs.haskellstack.org/en/stable/yaml_configuration/\n"
                            , "#\n"
                            , Yaml.encode p]
-                       writeBinaryFileAtomic (parent dest </> relFileReadmeTxt)
-                           "This is the implicit global project, which is used only when 'stack' is run\n\
-                           \outside of a real project.\n"
-                   return (p, dest)
+                       writeBinaryFileAtomic (parent dest </> relFileReadmeTxt) $
+                           "This is the implicit global project, which is " <>
+                           "used only when 'stack' is run\noutside of a " <>
+                           "real project.\n"
+                   pure (p, dest)
     mcompiler <- view $ globalOptsL.to globalCompiler
     let project = project'
             { projectCompiler = mcompiler <|> projectCompiler project'
@@ -617,12 +630,12 @@ withBuildConfig inner = do
       r <- case mresolver of
             Just resolver -> do
                 logInfo ("Using resolver: " <> display resolver <> " specified on command line")
-                return resolver
+                pure resolver
             Nothing -> do
                 r'' <- getLatestResolver
                 logInfo ("Using latest snapshot resolver: " <> display r'')
-                return r''
-      return Project
+                pure r''
+      pure Project
         { projectUserMsg = Nothing
         , projectPackages = []
         , projectDependencies = map (RPLImmutable . flip RPLIHackage Nothing) extraDeps
@@ -651,6 +664,14 @@ fillProjectWanted stackYamlFP config project locCache snapCompiler snapPackages 
       let resolved = ResolvedPath fp abs'
       pp <- mkProjectPackage YesPrintWarnings resolved (boptsHaddock bopts)
       pure (cpName $ ppCommon pp, pp)
+
+    -- prefetch git repos to avoid cloning per subdirectory
+    -- see https://github.com/commercialhaskell/stack/issues/5411
+    let gitRepos = mapMaybe (\case
+                              (RPLImmutable (RPLIRepo repo rpm)) -> Just (repo, rpm)
+                              _ -> Nothing) (projectDependencies project)
+    logDebug ("Prefetching git repos: " <> display (T.pack (show gitRepos)))
+    fetchReposRaw gitRepos
 
     (deps0, mcompleted) <- fmap unzip . forM (projectDependencies project) $ \rpl -> do
       (pl, mCompleted) <- case rpl of
@@ -720,38 +741,49 @@ fillProjectWanted stackYamlFP config project locCache snapCompiler snapPackages 
 -- exception.
 checkDuplicateNames :: MonadThrow m => [(PackageName, PackageLocation)] -> m ()
 checkDuplicateNames locals =
-    case filter hasMultiples $ Map.toList $ Map.fromListWith (++) $ map (second return) locals of
-        [] -> return ()
+    case filter hasMultiples $ Map.toList $ Map.fromListWith (++) $ map (second pure) locals of
+        [] -> pure ()
         x -> throwM $ DuplicateLocalPackageNames x
   where
     hasMultiples (_, _:_:_) = True
     hasMultiples _ = False
 
 
--- | Get the stack root, e.g. @~/.stack@, and determine whether the user owns it.
+-- | Get the Stack root, e.g. @~/.stack@, and determine whether the user owns it.
 --
 -- On Windows, the second value is always 'True'.
 determineStackRootAndOwnership
     :: (MonadIO m)
     => ConfigMonoid
     -- ^ Parsed command-line arguments
-    -> m (Path Abs Dir, Bool)
+    -> m (Path Abs Dir, Path Abs Dir, Bool)
 determineStackRootAndOwnership clArgs = liftIO $ do
-    stackRoot <- do
+    (configRoot, stackRoot) <- do
         case getFirst (configMonoidStackRoot clArgs) of
-            Just x -> return x
+            Just x -> pure (x, x)
             Nothing -> do
                 mstackRoot <- lookupEnv stackRootEnvVar
                 case mstackRoot of
-                    Nothing -> getAppUserDataDir stackProgName
+                    Nothing -> do
+                      wantXdg <- fromMaybe "" <$> lookupEnv stackXdgEnvVar
+                      if not (null wantXdg)
+                        then do
+                          xdgRelDir <- parseRelDir stackProgName
+                          (,)
+                            <$> getXdgDir XdgConfig (Just xdgRelDir)
+                            <*> getXdgDir XdgData (Just xdgRelDir)
+                        else do
+                          oldStyleRoot <- getAppUserDataDir stackProgName
+                          pure (oldStyleRoot, oldStyleRoot)
                     Just x -> case parseAbsDir x of
-                        Nothing -> throwString ("Failed to parse STACK_ROOT environment variable (expected absolute directory): " ++ show x)
-                        Just parsed -> return parsed
+                        Nothing ->
+                            throwIO $ ParseAbsolutePathException stackRootEnvVar x
+                        Just parsed -> pure (parsed, parsed)
 
     (existingStackRootOrParentDir, userOwnsIt) <- do
         mdirAndOwnership <- findInParents getDirAndOwnership stackRoot
         case mdirAndOwnership of
-            Just x -> return x
+            Just x -> pure x
             Nothing -> throwIO (BadStackRoot stackRoot)
 
     when (existingStackRootOrParentDir /= stackRoot) $
@@ -762,8 +794,9 @@ determineStackRootAndOwnership clArgs = liftIO $ do
                     stackRoot
                     existingStackRootOrParentDir
 
+    configRoot' <- canonicalizePath configRoot
     stackRoot' <- canonicalizePath stackRoot
-    return (stackRoot', userOwnsIt)
+    pure (configRoot', stackRoot', userOwnsIt)
 
 -- | @'checkOwnership' dir@ throws 'UserDoesn'tOwnDirectory' if @dir@
 -- isn't owned by the current user.
@@ -775,33 +808,33 @@ checkOwnership :: (MonadIO m) => Path Abs Dir -> m ()
 checkOwnership dir = do
     mdirAndOwnership <- firstJustM getDirAndOwnership [dir, parent dir]
     case mdirAndOwnership of
-        Just (_, True) -> return ()
+        Just (_, True) -> pure ()
         Just (dir', False) -> throwIO (UserDoesn'tOwnDirectory dir')
         Nothing ->
             (throwIO . NoSuchDirectory) $ (toFilePathNoTrailingSep . parent) dir
 
 -- | @'getDirAndOwnership' dir@ returns @'Just' (dir, 'True')@ when @dir@
 -- exists and the current user owns it in the sense of 'isOwnedByUser'.
-getDirAndOwnership
-    :: (MonadIO m)
+getDirAndOwnership ::
+       (MonadIO m)
     => Path Abs Dir
     -> m (Maybe (Path Abs Dir, Bool))
 getDirAndOwnership dir = liftIO $ forgivingAbsence $ do
     ownership <- isOwnedByUser dir
-    return (dir, ownership)
+    pure (dir, ownership)
 
 -- | Check whether the current user (determined with 'getEffectiveUserId') is
 -- the owner for the given path.
 --
--- Will always return 'True' on Windows.
+-- Will always pure 'True' on Windows.
 isOwnedByUser :: MonadIO m => Path Abs t -> m Bool
 isOwnedByUser path = liftIO $ do
     if osIsWindows
-        then return True
+        then pure True
         else do
             fileStatus <- getFileStatus (toFilePath path)
             user <- getEffectiveUserID
-            return (user == fileOwner fileStatus)
+            pure (user == fileOwner fileStatus)
 
 -- | 'True' if we are currently running inside a Docker container.
 getInContainer :: (MonadIO m) => m Bool
@@ -822,48 +855,49 @@ getExtraConfigs userConfigPath = do
   liftIO $ do
     env <- getEnvironment
     mstackConfig <-
-        maybe (return Nothing) (fmap Just . parseAbsFile)
+        maybe (pure Nothing) (fmap Just . parseAbsFile)
       $ lookup "STACK_CONFIG" env
     mstackGlobalConfig <-
-        maybe (return Nothing) (fmap Just . parseAbsFile)
+        maybe (pure Nothing) (fmap Just . parseAbsFile)
       $ lookup "STACK_GLOBAL_CONFIG" env
     filterM doesFileExist
         $ fromMaybe userConfigPath mstackConfig
-        : maybe [] return (mstackGlobalConfig <|> defaultStackGlobalConfigPath)
+        : maybe [] pure (mstackGlobalConfig <|> defaultStackGlobalConfigPath)
 
 -- | Load and parse YAML from the given config file. Throws
 -- 'ParseConfigFileException' when there's a decoding error.
-loadConfigYaml
-    :: HasLogFunc env
+loadConfigYaml ::
+       HasLogFunc env
     => (Value -> Yaml.Parser (WithJSONWarnings a)) -> Path Abs File -> RIO env a
 loadConfigYaml parser path = do
     eres <- loadYaml parser path
     case eres of
-        Left err -> liftIO $ throwM (ParseConfigFileException path err)
-        Right res -> return res
+        Left err -> liftIO $
+            throwM $ PrettyException (ParseConfigFileException path err)
+        Right res -> pure res
 
 -- | Load and parse YAML from the given file.
-loadYaml
-    :: HasLogFunc env
+loadYaml ::
+       HasLogFunc env
     => (Value -> Yaml.Parser (WithJSONWarnings a)) -> Path Abs File -> RIO env (Either Yaml.ParseException a)
 loadYaml parser path = do
     eres <- liftIO $ Yaml.decodeFileEither (toFilePath path)
     case eres  of
-        Left err -> return (Left err)
+        Left err -> pure (Left err)
         Right val ->
             case Yaml.parseEither parser val of
-                Left err -> return (Left (Yaml.AesonException err))
+                Left err -> pure (Left (Yaml.AesonException err))
                 Right (WithJSONWarnings res warnings) -> do
                     logJSONWarnings (toFilePath path) warnings
-                    return (Right res)
+                    pure (Right res)
 
 -- | Get the location of the project config file, if it exists.
 getProjectConfig :: HasLogFunc env
                  => StackYamlLoc
                  -- ^ Override stack.yaml
                  -> RIO env (ProjectConfig (Path Abs File))
-getProjectConfig (SYLOverride stackYaml) = return $ PCProject stackYaml
-getProjectConfig SYLGlobalProject = return PCGlobalProject
+getProjectConfig (SYLOverride stackYaml) = pure $ PCProject stackYaml
+getProjectConfig SYLGlobalProject = pure PCGlobalProject
 getProjectConfig SYLDefault = do
     env <- liftIO getEnvironment
     case lookup "STACK_YAML" env of
@@ -880,9 +914,9 @@ getProjectConfig SYLDefault = do
         logDebug $ "Checking for project config at: " <> fromString fp'
         exists <- doesFileExist fp
         if exists
-            then return $ Just fp
-            else return Nothing
-getProjectConfig (SYLNoProject extraDeps) = return $ PCNoProject extraDeps
+            then pure $ Just fp
+            else pure Nothing
+getProjectConfig (SYLNoProject extraDeps) = pure $ PCNoProject extraDeps
 
 -- | Find the project config file location, respecting environment variables
 -- and otherwise traversing parents. If no config is found, we supply a default
@@ -901,21 +935,21 @@ loadProjectConfig mstackYaml = do
             PCProject <$> load fp
         PCGlobalProject -> do
             logDebug "No project config file found, using defaults."
-            return PCGlobalProject
+            pure PCGlobalProject
         PCNoProject extraDeps -> do
             logDebug "Ignoring config files"
-            return $ PCNoProject extraDeps
+            pure $ PCNoProject extraDeps
   where
     load fp = do
         iopc <- loadConfigYaml (parseProjectAndConfigMonoid (parent fp)) fp
         ProjectAndConfigMonoid project config <- liftIO iopc
-        return (project, fp, config)
+        pure (project, fp, config)
 
--- | Get the location of the default stack configuration file.
+-- | Get the location of the default Stack configuration file.
 -- If a file already exists at the deprecated location, its location is returned.
 -- Otherwise, the new location is returned.
-getDefaultGlobalConfigPath
-    :: HasLogFunc env
+getDefaultGlobalConfigPath ::
+       HasLogFunc env
     => RIO env (Maybe (Path Abs File))
 getDefaultGlobalConfigPath =
     case (defaultGlobalConfigPath, defaultGlobalConfigPathDeprecated) of
@@ -926,14 +960,14 @@ getDefaultGlobalConfigPath =
                 doesFileExist
                 new
                 old
-        (Just new,Nothing) -> return (Just new)
-        _ -> return Nothing
+        (Just new,Nothing) -> pure (Just new)
+        _ -> pure Nothing
 
 -- | Get the location of the default user configuration file.
 -- If a file already exists at the deprecated location, its location is returned.
 -- Otherwise, the new location is returned.
-getDefaultUserConfigPath
-    :: HasLogFunc env
+getDefaultUserConfigPath ::
+       HasLogFunc env
     => Path Abs Dir -> RIO env (Path Abs File)
 getDefaultUserConfigPath stackRoot = do
     (path, exists) <- tryDeprecatedPath
@@ -944,34 +978,34 @@ getDefaultUserConfigPath stackRoot = do
     unless exists $ do
         ensureDir (parent path)
         liftIO $ writeBinaryFileAtomic path defaultConfigYaml
-    return path
+    pure path
 
 packagesParser :: Parser [String]
 packagesParser = many (strOption
                    (long "package" <>
-                     metavar "PACKAGE(S)" <>
-                     help "Additional package(s) that must be installed"))
+                     metavar "PACKAGE" <>
+                     help "Add a package (can be specified multiple times)"))
 
-defaultConfigYaml :: IsString s => s
+defaultConfigYaml :: (IsString s, Semigroup s) => s
 defaultConfigYaml =
-  "# This file contains default non-project-specific settings for 'stack', used\n\
-  \# in all projects.  For more information about stack's configuration, see\n\
-  \# http://docs.haskellstack.org/en/stable/yaml_configuration/\n\
-  \\n\
-  \# The following parameters are used by \"stack new\" to automatically fill fields\n\
-  \# in the cabal config. We recommend uncommenting them and filling them out if\n\
-  \# you intend to use 'stack new'.\n\
-  \# See https://docs.haskellstack.org/en/stable/yaml_configuration/#templates\n\
-  \templates:\n\
-  \  params:\n\
-  \#    author-name:\n\
-  \#    author-email:\n\
-  \#    copyright:\n\
-  \#    github-username:\n\
-  \\n\
-  \# The following parameter specifies stack's output styles; STYLES is a\n\
-  \# colon-delimited sequence of key=value, where 'key' is a style name and\n\
-  \# 'value' is a semicolon-delimited list of 'ANSI' SGR (Select Graphic\n\
-  \# Rendition) control codes (in decimal). Use \"stack ls stack-colors --basic\"\n\
-  \# to see the current sequence.\n\
-  \# stack-colors: STYLES\n"
+  "# This file contains default non-project-specific settings for Stack, used\n" <>
+  "# in all projects. For more information about Stack's configuration, see\n" <>
+  "# http://docs.haskellstack.org/en/stable/yaml_configuration/\n" <>
+  "\n" <>
+  "# The following parameters are used by 'stack new' to automatically fill fields\n" <>
+  "# in the Cabal file. We recommend uncommenting them and filling them out if\n" <>
+  "# you intend to use 'stack new'.\n" <>
+  "# See https://docs.haskellstack.org/en/stable/yaml_configuration/#templates\n" <>
+  "templates:\n" <>
+  "  params:\n" <>
+  "#    author-name:\n" <>
+  "#    author-email:\n" <>
+  "#    copyright:\n" <>
+  "#    github-username:\n" <>
+  "\n" <>
+  "# The following parameter specifies Stack's output styles; STYLES is a\n" <>
+  "# colon-delimited sequence of key=value, where 'key' is a style name and\n" <>
+  "# 'value' is a semicolon-delimited list of 'ANSI' SGR (Select Graphic\n" <>
+  "# Rendition) control codes (in decimal). Use 'stack ls stack-colors --basic'\n" <>
+  "# to see the current sequence.\n" <>
+  "# stack-colors: STYLES\n"

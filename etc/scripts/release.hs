@@ -1,28 +1,16 @@
 {- stack script
-    --resolver lts-14.27
-    --install-ghc
+    --resolver nightly-2022-11-14
+    --extra-dep Cabal-3.6.3.0
+    --extra-dep directory-1.3.6.2
     --ghc-options -Wall
-    --package Cabal
-    --package aeson
-    --package bytestring
-    --package case-insensitive
-    --package conduit
-    --package conduit-combinators
-    --package cryptohash
-    --package directory
-    --package extra
-    --package http-conduit
-    --package http-types
-    --package mime-types
-    --package process
-    --package resourcet
-    --package shake
-    --package tar
-    --package text
-    --package zip-archive
-    --package zlib
 -}
-{-# LANGUAGE CPP #-}
+
+-- The GitHub workflow `integration-tests.yml` works on all operating systems
+-- other than Windows without the `--extra-dep Cabal-3.6.3.0` and
+-- `--extra-dep directory-1.3.6.2` above. However, on Windows, if they are
+-- omitted, then `stack release.hs` somehow calls on Cabal-3.8.1.0 and
+-- directory-1.3.8.0, which causes an error.
+
 {-# LANGUAGE RecordWildCards #-}
 
 import Control.Applicative
@@ -30,15 +18,14 @@ import Control.Exception
 import Control.Monad
 import qualified Data.ByteString.Lazy.Char8 as L8
 import Data.List
+import Data.List.Extra
 import Data.Maybe
 import Distribution.PackageDescription.Parsec
 import Distribution.Text
 import Distribution.System
 import Distribution.Package
 import Distribution.PackageDescription hiding (options)
-#if MIN_VERSION_Cabal(3, 0, 0)
 import Distribution.Utils.ShortText (fromShortText)
-#endif
 import Distribution.Verbosity
 import System.Console.GetOpt
 import System.Directory
@@ -49,15 +36,10 @@ import qualified Codec.Archive.Tar as Tar
 import qualified Codec.Archive.Tar.Entry as TarEntry
 import qualified Codec.Archive.Zip as Zip
 import qualified Codec.Compression.GZip as GZip
-import Data.List.Extra
 import Development.Shake
 import Development.Shake.FilePath
+import qualified System.Info as Info
 import Prelude -- Silence AMP warning
-
-#if !MIN_VERSION_Cabal(3, 0, 0)
-fromShortText :: String -> String
-fromShortText = id
-#endif
 
 -- | Entrypoint.
 main :: IO ()
@@ -70,7 +52,8 @@ main =
         \flags args -> do
             -- build the default value of type Global, with predefined constants
 
-            -- 'stack build --dry-run' just ensures that 'stack.cabal' is generated from hpack
+            -- 'stack build --dry-run' just ensures that 'stack.cabal' is
+            -- generated from 'package.yaml'
             _ <- readProcess "stack" ["build", "--dry-run"] ""
             gStackPackageDescription <-
                 packageDescription <$> readGenericPackageDescription silent "stack.cabal"
@@ -83,7 +66,7 @@ main =
                 gArch = arch
                 gBinarySuffix = ""
                 gTestHaddocks = True
-                gProjectRoot = "" -- Set to real value velow.
+                gProjectRoot = "" -- Set to real value below.
                 gBuildArgs = ["--flag", "stack:-developer-mode"]
                 gStaticLinux = False
                 gCertificateName = Nothing
@@ -93,11 +76,11 @@ main =
             projectRoot' <- getStackPath global0 "project-root"
             let global = global0
                     { gProjectRoot = projectRoot' }
-            return $ Just $ rules global args
+            pure $ Just $ rules global args
   where
     getStackPath global path = do
       out <- readProcess stackProgName (stackArgs global ++ ["path", "--" ++ path]) ""
-      return $ trim $ fromMaybe out $ stripPrefix (path ++ ":") out
+      pure $ trim $ fromMaybe out $ stripPrefix (path ++ ":") out
 
 -- | Additional command-line options.
 options :: [OptDescr (Either String (Global -> Global))]
@@ -185,11 +168,7 @@ rules global@Global{..} args = do
             entries <- forM stageFiles $ \stageFile -> do
                 Zip.readEntry
                     [Zip.OptLocation
-#if MIN_VERSION_zip_archive(0,3,0)
                         (dropFileName (dropDirectoryPrefix (releaseStageDir </> binaryName) stageFile))
-#else
-                        (dropDirectoryPrefix (releaseStageDir </> binaryName) stageFile)
-#endif
                         False]
                     stageFile
             let archive = foldr Zip.addEntryToArchive Zip.emptyArchive entries
@@ -226,7 +205,7 @@ rules global@Global{..} args = do
                 -- Instead, we sign the executable
                 liftIO $ copyFile (releaseBinDir </> binaryName </> stackExeFileName) out
                 case gCertificateName of
-                    Nothing -> return ()
+                    Nothing -> pure ()
                     Just certName ->
                         actionOnException
                             (command_ [] "c:\\Program Files\\Microsoft SDKs\\Windows\\v7.1\\Bin\\signtool.exe"
@@ -249,7 +228,7 @@ rules global@Global{..} args = do
         need [releaseDir </> binaryExeFileName]
         need [releaseDir </> binaryInstallerNSIFileName]
 
-        command_ [Cwd releaseDir] "c:\\Program Files (x86)\\NSIS\\Unicode\\makensis.exe"
+        command_ [Cwd releaseDir] "makensis.exe"
             [ "-V3"
             , binaryInstallerNSIFileName]
 
@@ -259,6 +238,7 @@ rules global@Global{..} args = do
             [ binaryExeFileName
             , binaryInstallerFileName
             , out
+            , stackVersionStr global
             ] :: Action ()
 
     releaseBinDir </> binaryName </> stackExeFileName %> \out -> do
@@ -290,7 +270,7 @@ rules global@Global{..} args = do
                 [[releaseStageDir </> binaryName </> stackExeFileName]
                 ,map ((releaseStageDir </> binaryName) </>) docFiles]
         need stageFiles
-        return stageFiles
+        pure stageFiles
 
     getDocFiles = getDirectoryFiles "." ["LICENSE", "*.md", "doc//*.md"]
 
@@ -367,7 +347,7 @@ dropDirectoryPrefix prefix path =
         Nothing -> error ("dropDirectoryPrefix: cannot drop " ++ show prefix ++ " from " ++ show path)
         Just stripped -> stripped
 
--- | String representation of stack package version.
+-- | String representation of Stack package version.
 stackVersionStr :: Global -> String
 stackVersionStr =
     display . pkgVersion . package . gStackPackageDescription
@@ -412,17 +392,13 @@ certificateNameOptName = "certificate-name"
 
 -- | Arguments to pass to all 'stack' invocations.
 stackArgs :: Global -> [String]
-stackArgs Global{..} = ["--arch=" ++ display gArch, "--interleaved-output"]
+stackArgs Global{..} = [ "--arch=" ++ display gArch
+                       , "--interleaved-output"
+                       ]
 
 -- | Name of the 'stack' program.
 stackProgName :: FilePath
 stackProgName = "stack"
-
--- | Linux distribution/version combination.
-data DistroVersion = DistroVersion
-    { dvDistro :: !String
-    , dvVersion :: !String
-    , dvCodeName :: !String }
 
 -- | Global values and options.
 data Global = Global

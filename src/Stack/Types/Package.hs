@@ -1,34 +1,78 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE NoImplicitPrelude          #-}
+{-# LANGUAGE ConstraintKinds            #-}
+{-# LANGUAGE DataKinds                  #-}
+{-# LANGUAGE DeriveDataTypeable         #-}
+{-# LANGUAGE DeriveFunctor              #-}
+{-# LANGUAGE DeriveGeneric              #-}
+{-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE ConstraintKinds #-}
-module Stack.Types.Package where
+{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE RankNTypes                 #-}
+
+module Stack.Types.Package
+ ( BuildInfoOpts (..)
+ , ExeName (..)
+ , FileCacheInfo (..)
+ , GetPackageOpts (..)
+ , InstallLocation (..)
+ , InstallMap
+ , Installed (..)
+ , InstalledPackageLocation (..)
+ , InstalledMap
+ , LocalPackage (..)
+ , MemoizedWith (..)
+ , Package (..)
+ , PackageConfig (..)
+ , PackageException (..)
+ , PackageLibraries (..)
+ , PackageSource (..)
+ , dotCabalCFilePath
+ , dotCabalGetPath
+ , dotCabalMain
+ , dotCabalMainPath
+ , dotCabalModule
+ , dotCabalModulePath
+ , installedPackageIdentifier
+ , installedVersion
+ , lpFiles
+ , lpFilesForComponents
+ , memoizeRefWith
+ , packageDefinedFlags
+ , packageIdent
+ , packageIdentifier
+ , psVersion
+ , runMemoizedWith
+ ) where
 
 import           Stack.Prelude
 import qualified RIO.Text as T
-import           Data.Aeson (ToJSON (..), FromJSON (..), (.=), (.:), object, withObject)
+import           Data.Aeson
+                   ( ToJSON (..), FromJSON (..), (.=), (.:), object, withObject
+                   )
 import qualified Data.Map as M
 import qualified Data.Set as Set
-import           Distribution.Parsec (PError (..), PWarning (..), showPos)
+import           Distribution.CabalSpecVersion
+import           Distribution.Parsec ( PError (..), PWarning (..), showPos )
 import qualified Distribution.SPDX.License as SPDX
-import           Distribution.License (License)
-import           Distribution.ModuleName (ModuleName)
-import           Distribution.PackageDescription (TestSuiteInterface, BuildType)
-import           Distribution.System (Platform (..))
+import           Distribution.License ( License )
+import           Distribution.ModuleName ( ModuleName )
+import           Distribution.PackageDescription
+                   ( TestSuiteInterface, BuildType )
+import           Distribution.System ( Platform (..) )
 import           Stack.Types.Compiler
 import           Stack.Types.Config
 import           Stack.Types.GhcPkgId
 import           Stack.Types.NamedComponent
 import           Stack.Types.SourceMap
 import           Stack.Types.Version
+import           Stack.Types.Dependency ( DepValue )
+import           Stack.Types.PackageFile
+                   ( GetPackageFiles (..), DotCabalDescriptor (..)
+                   , DotCabalPath (..)
+                   )
 
--- | All exceptions thrown by the library.
+-- | Type representing exceptions thrown by functions exported by the
+-- "Stack.Package" module.
 data PackageException
   = PackageInvalidCabalFile
       !(Either PackageIdentifierRevision (Path Abs File))
@@ -36,11 +80,15 @@ data PackageException
       ![PError]
       ![PWarning]
   | MismatchedCabalIdentifier !PackageIdentifierRevision !PackageIdentifier
-  deriving Typeable
-instance Exception PackageException
-instance Show PackageException where
-    show (PackageInvalidCabalFile loc _mversion errs warnings) = concat
-        [ "Unable to parse cabal file "
+  | CabalFileNameParseFail FilePath
+  | CabalFileNameInvalidPackageName FilePath
+  | ComponentNotParsedBug
+  deriving (Show, Typeable)
+
+instance Exception PackageException where
+    displayException (PackageInvalidCabalFile loc _mversion errs warnings) = concat
+        [ "Error: [S-8072]\n"
+        , "Unable to parse Cabal file "
         , case loc of
             Left pir -> "for " ++ T.unpack (utf8BuilderToText (display pir))
             Right fp -> toFilePath fp
@@ -72,13 +120,27 @@ instance Show PackageException where
                 ])
             warnings
         ]
-    show (MismatchedCabalIdentifier pir ident) = concat
-        [ "Mismatched package identifier."
+    displayException (MismatchedCabalIdentifier pir ident) = concat
+        [ "Error: [S-5394]\n"
+        , "Mismatched package identifier."
         , "\nFound:    "
         , packageIdentifierString ident
         , "\nExpected: "
         , T.unpack $ utf8BuilderToText $ display pir
         ]
+    displayException (CabalFileNameParseFail fp) = concat
+        [ "Error: [S-2203]\n"
+        , "Invalid file path for Cabal file, must have a .cabal extension: "
+        , fp
+        ]
+    displayException (CabalFileNameInvalidPackageName fp) = concat
+        [ "Error: [S-8854]\n"
+        , "Cabal file names must use valid package names followed by a .cabal \
+          \extension, the following is invalid: "
+        , fp
+        ]
+    displayException ComponentNotParsedBug = bugReport "[S-4623]"
+        "Component names should always parse as directory names."
 
 -- | Libraries in a package. Since Cabal 2.0, internal libraries are a
 -- thing.
@@ -114,33 +176,12 @@ data Package =
           ,packageBuildType :: !BuildType                 -- ^ Package build-type.
           ,packageSetupDeps :: !(Maybe (Map PackageName VersionRange))
                                                           -- ^ If present: custom-setup dependencies
-          ,packageCabalSpec :: !VersionRange              -- ^ Cabal spec range
+          ,packageCabalSpec :: !CabalSpecVersion          -- ^ Cabal spec range
           }
  deriving (Show,Typeable)
 
 packageIdent :: Package -> PackageIdentifier
 packageIdent p = PackageIdentifier (packageName p) (packageVersion p)
-
--- | The value for a map from dependency name. This contains both the
--- version range and the type of dependency, and provides a semigroup
--- instance.
-data DepValue = DepValue
-  { dvVersionRange :: !VersionRange
-  , dvType :: !DepType
-  }
-  deriving (Show,Typeable)
-instance Semigroup DepValue where
-  DepValue a x <> DepValue b y = DepValue (intersectVersionRanges a b) (x <> y)
-
--- | Is this package being used as a library, or just as a build tool?
--- If the former, we need to ensure that a library actually
--- exists. See
--- <https://github.com/commercialhaskell/stack/issues/2195>
-data DepType = AsLibrary | AsBuildTool
-  deriving (Show, Eq)
-instance Semigroup DepType where
-  AsLibrary <> _ = AsLibrary
-  AsBuildTool <> x = x
 
 packageIdentifier :: Package -> PackageIdentifier
 packageIdentifier pkg =
@@ -152,7 +193,7 @@ packageDefinedFlags = M.keysSet . packageDefaultFlags
 type InstallMap = Map PackageName (InstallLocation, Version)
 
 -- | Files that the package depends on, relative to package directory.
--- Argument is the location of the .cabal file
+-- Argument is the location of the Cabal file
 newtype GetPackageOpts = GetPackageOpts
     { getPackageOpts :: forall env. HasEnvConfig env
                      => InstallMap
@@ -178,37 +219,6 @@ data BuildInfoOpts = BuildInfoOpts
     -- https://github.com/commercialhaskell/stack/issues/1255)
     , bioCabalMacros :: Path Abs File
     } deriving Show
-
--- | Files to get for a cabal package.
-data CabalFileType
-    = AllFiles
-    | Modules
-
--- | Files that the package depends on, relative to package directory.
--- Argument is the location of the .cabal file
-newtype GetPackageFiles = GetPackageFiles
-    { getPackageFiles :: forall env. HasEnvConfig env
-                      => Path Abs File
-                      -> RIO env
-                           (Map NamedComponent (Map ModuleName (Path Abs File))
-                           ,Map NamedComponent [DotCabalPath]
-                           ,Set (Path Abs File)
-                           ,[PackageWarning])
-    }
-instance Show GetPackageFiles where
-    show _ = "<GetPackageFiles>"
-
--- | Warning generated when reading a package
-data PackageWarning
-    = UnlistedModulesWarning NamedComponent [ModuleName]
-      -- ^ Modules found that are not listed in cabal file
-
-    -- TODO: bring this back - see
-    -- https://github.com/commercialhaskell/stack/issues/2649
-    {-
-    | MissingModulesWarning (Path Abs File) (Maybe String) [ModuleName]
-      -- ^ Modules not found in file system, which are listed in cabal file
-    -}
 
 -- | Package build configuration
 data PackageConfig =
@@ -265,16 +275,11 @@ data LocalPackage = LocalPackage
     -- "buildable: false".
     , lpWanted        :: !Bool -- FIXME Should completely drop this "wanted" terminology, it's unclear
     -- ^ Whether this package is wanted as a target.
-    , lpTestDeps      :: !(Map PackageName VersionRange)
-    -- ^ Used for determining if we can use --enable-tests in a normal build.
-    , lpBenchDeps     :: !(Map PackageName VersionRange)
-    -- ^ Used for determining if we can use --enable-benchmarks in a normal
-    -- build.
     , lpTestBench     :: !(Maybe Package)
     -- ^ This stores the 'Package' with tests and benchmarks enabled, if
     -- either is asked for by the user.
     , lpCabalFile     :: !(Path Abs File)
-    -- ^ The .cabal file
+    -- ^ The Cabal file
     , lpBuildHaddocks :: !Bool
     , lpForceDirty    :: !Bool
     , lpDirtyFiles    :: !(MemoizedWith EnvConfig (Maybe (Set FilePath)))
@@ -305,8 +310,8 @@ memoizeRefWith action = do
           pure res
     either throwIO pure res
 
-runMemoizedWith
-  :: (HasEnvConfig env, MonadReader env m, MonadIO m)
+runMemoizedWith ::
+     (HasEnvConfig env, MonadReader env m, MonadIO m)
   => MemoizedWith EnvConfig a
   -> m a
 runMemoizedWith (MemoizedWith action) = do
@@ -357,20 +362,6 @@ instance FromJSON FileCacheInfo where
   parseJSON = withObject "FileCacheInfo" $ \o -> FileCacheInfo
     <$> o .: "hash"
 
--- | A descriptor from a .cabal file indicating one of the following:
---
--- exposed-modules: Foo
--- other-modules: Foo
--- or
--- main-is: Foo.hs
---
-data DotCabalDescriptor
-    = DotCabalModule !ModuleName
-    | DotCabalMain !FilePath
-    | DotCabalFile !FilePath
-    | DotCabalCFile !FilePath
-    deriving (Eq,Ord,Show)
-
 -- | Maybe get the module name from the .cabal descriptor.
 dotCabalModule :: DotCabalDescriptor -> Maybe ModuleName
 dotCabalModule (DotCabalModule m) = Just m
@@ -380,15 +371,6 @@ dotCabalModule _ = Nothing
 dotCabalMain :: DotCabalDescriptor -> Maybe FilePath
 dotCabalMain (DotCabalMain m) = Just m
 dotCabalMain _ = Nothing
-
--- | A path resolved from the .cabal file, which is either main-is or
--- an exposed/internal/referenced module.
-data DotCabalPath
-    = DotCabalModulePath !(Path Abs File)
-    | DotCabalMainPath !(Path Abs File)
-    | DotCabalFilePath !(Path Abs File)
-    | DotCabalCFilePath !(Path Abs File)
-    deriving (Eq,Ord,Show)
 
 -- | Get the module path.
 dotCabalModulePath :: DotCabalPath -> Maybe (Path Abs File)

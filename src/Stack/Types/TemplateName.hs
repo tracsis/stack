@@ -17,12 +17,23 @@ module Stack.Types.TemplateName
   , defaultTemplateName
   ) where
 
-import           Data.Aeson (FromJSON (..), withText)
+import           Data.Aeson ( FromJSON (..), withText )
 import qualified Data.Text as T
-import           Network.HTTP.StackClient (parseRequest)
+import           Network.HTTP.StackClient ( parseRequest )
 import qualified Options.Applicative as O
 import           Path
 import           Stack.Prelude
+
+-- | Type representing exceptions thrown by functions exported by the
+-- "Stack.Types.TemplateName" module.
+newtype TypeTemplateNameException
+    = DefaultTemplateNameNotParsedBug String
+    deriving (Show, Typeable)
+
+instance Exception TypeTemplateNameException where
+    displayException (DefaultTemplateNameNotParsedBug s) = bugReport "[S-7410]" $
+        "The impossible happened! Cannot parse default template name: "
+        ++ s
 
 -- | A template name.
 data TemplateName = TemplateName !Text !TemplatePath
@@ -49,12 +60,12 @@ data RepoTemplatePath = RepoTemplatePath
     deriving (Eq, Ord, Show)
 
 -- | Services from which templates can be retrieved from a repository.
-data RepoService = Github | Gitlab | Bitbucket
+data RepoService = GitHub | GitLab | Bitbucket
     deriving (Eq, Ord, Show)
 
 instance FromJSON TemplateName where
     parseJSON = withText "TemplateName" $
-        either fail return . parseTemplateNameFromString . T.unpack
+        either fail pure . parseTemplateNameFromString . T.unpack
 
 -- | An argument which accepts a template name of the format
 -- @foo.hsfiles@ or @foo@, ultimately normalized to @foo@.
@@ -62,16 +73,16 @@ templateNameArgument :: O.Mod O.ArgumentFields TemplateName
                      -> O.Parser TemplateName
 templateNameArgument =
     O.argument
-        (do string <- O.str
-            either O.readerError return (parseTemplateNameFromString string))
+        (do s <- O.str
+            either O.readerError pure (parseTemplateNameFromString s))
 
 -- | An argument which accepts a @key:value@ pair for specifying parameters.
 templateParamArgument :: O.Mod O.OptionFields (Text,Text)
                       -> O.Parser (Text,Text)
 templateParamArgument =
     O.option
-        (do string <- O.str
-            either O.readerError return (parsePair string))
+        (do s <- O.str
+            either O.readerError pure (parsePair s))
   where
     parsePair :: String -> Either String (Text, Text)
     parsePair s =
@@ -102,7 +113,7 @@ parseTemplateNameFromString fname =
 defaultTemplateName :: TemplateName
 defaultTemplateName =
   case parseTemplateNameFromString "new-template" of
-    Left s -> error $ "Bug in Stack codebase, cannot parse default template name: " ++ s
+    Left s -> impureThrow $ DefaultTemplateNameNotParsedBug s
     Right x -> x
 
 -- | Get a text representation of the template name.
@@ -114,15 +125,15 @@ templatePath :: TemplateName -> TemplatePath
 templatePath (TemplateName _ fp) = fp
 
 defaultRepoUserForService :: RepoService -> Maybe Text
-defaultRepoUserForService Github = Just "commercialhaskell"
+defaultRepoUserForService GitHub = Just "commercialhaskell"
 defaultRepoUserForService _      = Nothing
 
 -- | Parses a template path of the form @github:user/template@.
 parseRepoPath :: String -> Maybe RepoTemplatePath
 parseRepoPath s =
   case T.splitOn ":" (T.pack s) of
-    ["github"    , rest] -> parseRepoPathWithService Github rest
-    ["gitlab"    , rest] -> parseRepoPathWithService Gitlab rest
+    ["github"    , rest] -> parseRepoPathWithService GitHub rest
+    ["gitlab"    , rest] -> parseRepoPathWithService GitLab rest
     ["bitbucket" , rest] -> parseRepoPathWithService Bitbucket rest
     _                    -> Nothing
 

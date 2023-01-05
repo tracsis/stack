@@ -1,6 +1,6 @@
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE DataKinds         #-}
+{-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Utilities for running stack commands.
@@ -10,32 +10,56 @@
 -- configuration parsing. For example, we want @withConfig $
 -- withConfig $ ...@ to fail.
 module Stack.Runners
-    ( withBuildConfig
-    , withEnvConfig
-    , withDefaultEnvConfig
-    , withConfig
-    , withGlobalProject
-    , withRunnerGlobal
-    , ShouldReexec (..)
-    ) where
+  ( withBuildConfig
+  , withEnvConfig
+  , withDefaultEnvConfig
+  , withConfig
+  , withGlobalProject
+  , withRunnerGlobal
+  , ShouldReexec (..)
+  ) where
 
-import           Stack.Prelude
-import           RIO.Process (mkDefaultProcessContext)
-import           RIO.Time (addUTCTime, getCurrentTime)
-import           Stack.Build.Target(NeedTargets(..))
+import           RIO.Process ( mkDefaultProcessContext )
+import           RIO.Time ( addUTCTime, getCurrentTime )
+import           Stack.Build.Target ( NeedTargets (..) )
 import           Stack.Config
 import           Stack.Constants
-import           Stack.DefaultColorWhen (defaultColorWhen)
+import           Stack.DefaultColorWhen ( defaultColorWhen )
 import qualified Stack.Docker as Docker
 import qualified Stack.Nix as Nix
+import           Stack.Prelude
 import           Stack.Setup
-import           Stack.Storage.User (upgradeChecksSince, logUpgradeCheck)
+import           Stack.Storage.User ( upgradeChecksSince, logUpgradeCheck )
 import           Stack.Types.Config
-import           Stack.Types.Docker (dockerEnable)
-import           Stack.Types.Nix (nixEnable)
-import           Stack.Types.Version (stackMinorVersion, minorVersion)
-import           System.Console.ANSI (hSupportsANSIWithoutEmulation)
-import           System.Terminal (getTerminalWidth)
+import           Stack.Types.Docker ( dockerEnable )
+import           Stack.Types.Nix ( nixEnable )
+import           Stack.Types.Version ( stackMinorVersion, minorVersion )
+import           System.Console.ANSI ( hSupportsANSIWithoutEmulation )
+import           System.Terminal ( getTerminalWidth )
+
+-- | Type representing exceptions thrown by functions exported by the
+-- "Stack.Runners" module.
+data RunnersException
+  = CommandInvalid
+  | DockerAndNixInvalid
+  | NixWithinDockerInvalid
+  | DockerWithinNixInvalid
+  deriving (Show, Typeable)
+
+instance Exception RunnersException where
+  displayException CommandInvalid =
+    "Error: [S-7144]\n"
+    ++ "Cannot use this command with options which override the stack.yaml \
+       \location."
+  displayException DockerAndNixInvalid =
+    "Error: [S-8314]\n"
+    ++ "Cannot use both Docker and Nix at the same time."
+  displayException NixWithinDockerInvalid =
+    "Error: [S-8641]\n"
+    ++ "Cannot use Nix from within a Docker container."
+  displayException DockerWithinNixInvalid =
+    "Error: [S-5107]\n"
+    ++ "Cannot use Docker from within a Nix shell."
 
 -- | Ensure that no project settings are used when running 'withConfig'.
 withGlobalProject :: RIO Runner a -> RIO Runner a
@@ -43,7 +67,7 @@ withGlobalProject inner = do
   oldSYL <- view stackYamlLocL
   case oldSYL of
     SYLDefault -> local (set stackYamlLocL SYLGlobalProject) inner
-    _ -> throwString "Cannot use this command with options which override the stack.yaml location"
+    _ -> throwIO CommandInvalid
 
 -- | Helper for 'withEnvConfig' which passes in some default arguments:
 --
@@ -93,7 +117,10 @@ withConfig shouldReexec inner =
         -- Catching all exceptions here, since we don't want this
         -- check to ever cause Stack to stop working
         shouldUpgradeCheck `catchAny` \e ->
-          logError ("Error when running shouldUpgradeCheck: " <> displayShow e)
+          logError $
+            "Error: [S-7353]\n" <>
+            "Error when running shouldUpgradeCheck: " <>
+            displayShow e
         case shouldReexec of
           YesReexec -> reexec inner
           NoReexec -> inner
@@ -105,12 +132,12 @@ reexec inner = do
   nixEnable' <- asks $ nixEnable . configNix
   dockerEnable' <- asks $ dockerEnable . configDocker
   case (nixEnable', dockerEnable') of
-    (True, True) -> throwString "Cannot use both Docker and Nix at the same time"
+    (True, True) -> throwIO DockerAndNixInvalid
     (False, False) -> inner
 
     -- Want to use Nix
     (True, False) -> do
-      whenM getInContainer $ throwString "Cannot use Nix from within a Docker container"
+      whenM getInContainer $ throwIO NixWithinDockerInvalid
       isReexec <- view reExecL
       if isReexec
       then inner
@@ -118,7 +145,7 @@ reexec inner = do
 
     -- Want to use Docker
     (False, True) -> do
-      whenM getInNixShell $ throwString "Cannot use Docker from within a Nix shell"
+      whenM getInNixShell $ throwIO DockerWithinNixInvalid
       inContainer <- getInContainer
       if inContainer
         then do
@@ -136,8 +163,8 @@ withRunnerGlobal go inner = do
     maybe defaultColorWhen pure $
     getFirst $ configMonoidColorWhen $ globalConfigMonoid go
   useColor <- case colorWhen of
-    ColorNever -> return False
-    ColorAlways -> return True
+    ColorNever -> pure False
+    ColorAlways -> pure True
     ColorAuto -> fromMaybe True <$>
                           hSupportsANSIWithoutEmulation stderr
   termWidth <- clipWidth <$> maybe (fromMaybe defaultTerminalWidth

@@ -1,10 +1,10 @@
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ConstraintKinds   #-}
+{-# LANGUAGE DataKinds         #-}
+{-# LANGUAGE FlexibleContexts  #-}
+{-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE ViewPatterns      #-}
 
 module Stack.Setup.Installed
     ( getCompilerVersion
@@ -15,30 +15,48 @@ module Stack.Setup.Installed
     , toolString
     , toolNameString
     , parseToolText
+    , filterTools
     , extraDirs
     , installDir
     , tempInstallDir
     ) where
 
-import           Stack.Prelude
 import qualified Data.ByteString.Char8 as S8
 import qualified Data.ByteString.Lazy as BL
-import           Data.List hiding (concat, elem, maximumBy)
+import           Data.Char ( isDigit )
+import qualified Data.List as L
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
-import           Distribution.System (Platform (..))
+import           Distribution.System ( Platform (..) )
 import qualified Distribution.System as Cabal
 import           Path
 import           Path.IO
+import           RIO.Process
 import           Stack.Constants
+import           Stack.Prelude
 import           Stack.Types.Compiler
 import           Stack.Types.Config
-import           RIO.Process
 
 data Tool
     = Tool PackageIdentifier -- ^ e.g. ghc-7.8.4, msys2-20150512
     | ToolGhcGit !Text !Text   -- ^ e.g. ghc-git-COMMIT_ID-FLAVOUR
     deriving (Eq)
+
+-- | 'Tool' values are ordered by name (being @ghc-git@, for @ToolGhcGit _ _@)
+-- alphabetically and then by version (later versions are ordered before
+-- earlier versions, where applicable).
+instance Ord Tool where
+  compare (Tool pkgId1) (Tool pkgId2) = if pkgName1 == pkgName2
+      then compare pkgVersion2 pkgVersion1 -- Later versions ordered first
+      else compare pkgName1 pkgName2
+    where
+      PackageIdentifier pkgName1 pkgVersion1 = pkgId1
+      PackageIdentifier pkgName2 pkgVersion2 = pkgId2
+  compare (Tool pkgId) (ToolGhcGit _ _) = compare (pkgName pkgId) "ghc-git"
+  compare (ToolGhcGit _ _) (Tool pkgId) = compare "ghc-git" (pkgName pkgId)
+  compare (ToolGhcGit c1 f1) (ToolGhcGit c2 f2) = if f1 == f2
+      then compare c1 c2
+      else compare f1 f2
 
 toolString :: Tool -> String
 toolString (Tool ident) = packageIdentifierString ident
@@ -75,13 +93,22 @@ listInstalled :: (MonadIO m, MonadThrow m)
               -> m [Tool]
 listInstalled programsPath = do
     doesDirExist programsPath >>= \case
-        False -> return []
+        False -> pure []
         True -> do (_, files) <- listDir programsPath
-                   return $ mapMaybe toTool files
+                   pure $ mapMaybe toTool files
   where
     toTool fp = do
         x <- T.stripSuffix ".installed" $ T.pack $ toFilePath $ filename fp
         parseToolText x
+
+filterTools :: PackageName       -- ^ package to find
+            -> (Version -> Bool) -- ^ which versions are acceptable
+            -> [Tool]            -- ^ tools to filter
+            -> [PackageIdentifier]
+filterTools name goodVersion installed =
+    [ pkgId | Tool pkgId <- installed
+            , pkgName pkgId == name
+            , goodVersion (pkgVersion pkgId) ]
 
 getCompilerVersion
   :: (HasProcessContext env, HasLogFunc env)
@@ -96,10 +123,10 @@ getCompilerVersion wc exe = do
             let (_, ghcVersion) = versionFromEnd $ BL.toStrict bs
             x <- ACGhc <$> parseVersionThrowing (T.unpack $ T.decodeUtf8 ghcVersion)
             logDebug $ "GHC version is: " <> display x
-            return x
+            pure x
   where
     versionFromEnd = S8.spanEnd isValid . fst . S8.breakEnd isValid
-    isValid c = c == '.' || ('0' <= c && c <= '9')
+    isValid c = c == '.' || isDigit c
 
 -- | Binary directories for the given installed package
 extraDirs :: HasConfig env => Tool -> RIO env ExtraDirs
@@ -107,13 +134,13 @@ extraDirs tool = do
     config <- view configL
     dir <- installDir (configLocalPrograms config) tool
     case (configPlatform config, toolNameString tool) of
-        (Platform _ Cabal.Windows, isGHC -> True) -> return mempty
+        (Platform _ Cabal.Windows, isGHC -> True) -> pure mempty
             { edBins =
                 [ dir </> relDirBin
                 , dir </> relDirMingw </> relDirBin
                 ]
             }
-        (Platform Cabal.I386 Cabal.Windows, "msys2") -> return mempty
+        (Platform Cabal.I386 Cabal.Windows, "msys2") -> pure mempty
             { edBins =
                 [ dir </> relDirMingw32 </> relDirBin
                 , dir </> relDirUsr </> relDirBin
@@ -127,7 +154,7 @@ extraDirs tool = do
                 , dir </> relDirMingw32 </> relDirBin
                 ]
             }
-        (Platform Cabal.X86_64 Cabal.Windows, "msys2") -> return mempty
+        (Platform Cabal.X86_64 Cabal.Windows, "msys2") -> pure mempty
             { edBins =
                 [ dir </> relDirMingw64 </> relDirBin
                 , dir </> relDirUsr </> relDirBin
@@ -141,16 +168,16 @@ extraDirs tool = do
                 , dir </> relDirMingw64 </> relDirBin
                 ]
             }
-        (_, isGHC -> True) -> return mempty
+        (_, isGHC -> True) -> pure mempty
             { edBins =
                 [ dir </> relDirBin
                 ]
             }
         (Platform _ x, toolName) -> do
             logWarn $ "binDirs: unexpected OS/tool combo: " <> displayShow (x, toolName)
-            return mempty
+            pure mempty
   where
-    isGHC n = "ghc" == n || "ghc-" `isPrefixOf` n
+    isGHC n = "ghc" == n || "ghc-" `L.isPrefixOf` n
 
 installDir :: (MonadReader env m, MonadThrow m)
            => Path Abs Dir
@@ -158,7 +185,7 @@ installDir :: (MonadReader env m, MonadThrow m)
            -> m (Path Abs Dir)
 installDir programsDir tool = do
     relativeDir <- parseRelDir $ toolString tool
-    return $ programsDir </> relativeDir
+    pure $ programsDir </> relativeDir
 
 tempInstallDir :: (MonadReader env m, MonadThrow m)
            => Path Abs Dir
@@ -166,4 +193,4 @@ tempInstallDir :: (MonadReader env m, MonadThrow m)
            -> m (Path Abs Dir)
 tempInstallDir programsDir tool = do
     relativeDir <- parseRelDir $ toolString tool ++ ".temp"
-    return $ programsDir </> relativeDir
+    pure $ programsDir </> relativeDir

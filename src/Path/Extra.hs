@@ -1,28 +1,28 @@
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE ViewPatterns      #-}
 
 -- | Extra Path utilities.
 
 module Path.Extra
-  (toFilePathNoTrailingSep
-  ,dropRoot
-  ,parseCollapsedAbsDir
-  ,parseCollapsedAbsFile
-  ,concatAndColapseAbsDir
-  ,rejectMissingFile
-  ,rejectMissingDir
-  ,pathToByteString
-  ,pathToLazyByteString
-  ,pathToText
-  ,tryGetModificationTime
+  ( toFilePathNoTrailingSep
+  , dropRoot
+  , parseCollapsedAbsDir
+  , parseCollapsedAbsFile
+  , concatAndCollapseAbsDir
+  , rejectMissingFile
+  , rejectMissingDir
+  , pathToByteString
+  , pathToLazyByteString
+  , pathToText
+  , tryGetModificationTime
   ) where
 
-import           Data.Time (UTCTime)
+import           Data.Time ( UTCTime )
 import           Path
 import           Path.IO
-import           Path.Internal (Path(..))
+import           Path.Internal ( Path (..) )
 import           RIO
-import           System.IO.Error (isDoesNotExistError)
+import           System.IO.Error ( isDoesNotExistError )
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.Lazy.Char8 as BSL
 import qualified Data.Text as T
@@ -48,8 +48,8 @@ parseCollapsedAbsFile = parseAbsFile . collapseFilePath
 -- | Add a relative FilePath to the end of a Path
 -- We can't parse the FilePath first because we need to account for ".."
 -- in the FilePath (#2895)
-concatAndColapseAbsDir :: MonadThrow m => Path Abs Dir -> FilePath -> m (Path Abs Dir)
-concatAndColapseAbsDir base rel = parseCollapsedAbsDir (toFilePath base FP.</> rel)
+concatAndCollapseAbsDir :: MonadThrow m => Path Abs Dir -> FilePath -> m (Path Abs Dir)
+concatAndCollapseAbsDir base rel = parseCollapsedAbsDir (toFilePath base FP.</> rel)
 
 -- | Collapse intermediate "." and ".." directories from a path.
 --
@@ -84,7 +84,7 @@ dropRoot (Path l) = Path (FP.dropDrive l)
 -- is to be used in conjunction with 'forgivingAbsence' and
 -- 'resolveFile'.
 --
--- Previously the idiom @forgivingAbsence (relsoveFile …)@ alone was used,
+-- Previously the idiom @forgivingAbsence (resolveFile …)@ alone was used,
 -- which relied on 'canonicalizePath' throwing 'isDoesNotExistError' when
 -- path does not exist. As it turns out, this behavior is actually not
 -- intentional and unreliable, see
@@ -97,7 +97,7 @@ dropRoot (Path l) = Path (FP.dropDrive l)
 rejectMissingFile :: MonadIO m
   => Maybe (Path Abs File)
   -> m (Maybe (Path Abs File))
-rejectMissingFile Nothing = return Nothing
+rejectMissingFile Nothing = pure Nothing
 rejectMissingFile (Just p) = bool Nothing (Just p) `liftM` doesFileExist p
 
 -- | See 'rejectMissingFile'.
@@ -105,7 +105,7 @@ rejectMissingFile (Just p) = bool Nothing (Just p) `liftM` doesFileExist p
 rejectMissingDir :: MonadIO m
   => Maybe (Path Abs Dir)
   -> m (Maybe (Path Abs Dir))
-rejectMissingDir Nothing = return Nothing
+rejectMissingDir Nothing = pure Nothing
 rejectMissingDir (Just p) = bool Nothing (Just p) `liftM` doesDirExist p
 
 -- | Convert to a lazy ByteString using toFilePath and UTF8.
