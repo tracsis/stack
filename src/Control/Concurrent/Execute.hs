@@ -1,6 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE NoImplicitPrelude  #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE RecordWildCards    #-}
+
 -- Concurrent execution with dependencies. Types currently hard-coded for needs
 -- of stack, but could be generalized easily.
 module Control.Concurrent.Execute
@@ -8,7 +9,7 @@ module Control.Concurrent.Execute
     , ActionId (..)
     , ActionContext (..)
     , Action (..)
-    , Concurrency(..)
+    , Concurrency (..)
     , runActions
     ) where
 
@@ -16,6 +17,17 @@ import           Control.Concurrent.STM   (retry)
 import           Stack.Prelude
 import           Data.List (sortBy)
 import qualified Data.Set                 as Set
+
+-- | Type representing exceptions thrown by functions exported by the
+-- "Control.Concurrent.Execute" module.
+data ExecuteException
+    = InconsistentDependenciesBug
+    deriving (Show, Typeable)
+
+instance Exception ExecuteException where
+    displayException InconsistentDependenciesBug = bugReport "[S-2816]"
+        "Inconsistent dependencies were discovered while executing your build \
+        \plan."
 
 data ActionType
     = ATBuild
@@ -60,15 +72,6 @@ data ExecuteState = ExecuteState
     , esKeepGoing  :: Bool
     }
 
-data ExecuteException
-    = InconsistentDependencies
-    deriving Typeable
-instance Exception ExecuteException
-
-instance Show ExecuteException where
-    show InconsistentDependencies =
-        "Inconsistent dependencies were discovered while executing your build plan. This should never happen, please report it as a bug to the stack team."
-
 runActions :: Int -- ^ threads
            -> Bool -- ^ keep going after one task has failed
            -> [Action]
@@ -107,11 +110,11 @@ runActions' ExecuteState {..} =
         errs <- readTVar esExceptions
         if null errs || esKeepGoing
             then inner
-            else return $ return ()
+            else pure $ pure ()
     withActions inner = do
         as <- readTVar esActions
         if null as
-            then return $ return ()
+            then pure $ pure ()
             else inner as
     loop = join $ atomically $ breakOnErrs $ withActions $ \as ->
         case break (Set.null . actionDeps) as of
@@ -120,13 +123,14 @@ runActions' ExecuteState {..} =
                 if Set.null inAction
                     then do
                         unless esKeepGoing $
-                            modifyTVar esExceptions (toException InconsistentDependencies:)
-                        return $ return ()
+                            modifyTVar esExceptions
+                                (toException InconsistentDependenciesBug:)
+                        pure $ pure ()
                     else retry
             (xs, action:ys) -> do
                 inAction <- readTVar esInAction
                 case actionConcurrency action of
-                  ConcurrencyAllowed -> return ()
+                  ConcurrencyAllowed -> pure ()
                   ConcurrencyDisallowed -> unless (Set.null inAction) retry
                 let as' = xs ++ ys
                     remaining = Set.union
@@ -134,7 +138,7 @@ runActions' ExecuteState {..} =
                         inAction
                 writeTVar esActions as'
                 modifyTVar esInAction (Set.insert $ actionId action)
-                return $ mask $ \restore -> do
+                pure $ mask $ \restore -> do
                     eres <- try $ restore $ actionDo action ActionContext
                         { acRemaining = remaining
                         , acDownstream = downstreamActions (actionId action) as'

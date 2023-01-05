@@ -1,32 +1,36 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE NoImplicitPrelude          #-}
+{-# LANGUAGE DeriveDataTypeable         #-}
+{-# LANGUAGE DeriveGeneric              #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
 -- | A ghc-pkg id.
 
 module Stack.Types.GhcPkgId
-  (GhcPkgId
-  ,unGhcPkgId
-  ,ghcPkgIdParser
-  ,parseGhcPkgId
-  ,ghcPkgIdString)
-  where
+  ( GhcPkgId
+  , unGhcPkgId
+  , ghcPkgIdParser
+  , parseGhcPkgId
+  , ghcPkgIdString
+  ) where
 
 import           Stack.Prelude
 import           Pantry.Internal.AesonExtended
 import           Data.Attoparsec.Text
 import qualified Data.Text as T
-import           Database.Persist.Sql (PersistField, PersistFieldSql)
-import           Prelude (Read (..))
+import           Database.Persist.Sql ( PersistField, PersistFieldSql )
+import           Prelude ( Read (..) )
 
 -- | A parse fail.
 newtype GhcPkgIdParseFail
   = GhcPkgIdParseFail Text
-  deriving Typeable
-instance Show GhcPkgIdParseFail where
-    show (GhcPkgIdParseFail bs) = "Invalid package ID: " ++ show bs
-instance Exception GhcPkgIdParseFail
+  deriving (Show, Typeable)
+
+instance Exception GhcPkgIdParseFail where
+    displayException (GhcPkgIdParseFail bs) = concat
+        [ "Error: [S-5359]\n"
+        , "Invalid package ID: "
+        , show bs
+        ]
 
 -- | A ghc-pkg package identifier.
 newtype GhcPkgId = GhcPkgId Text
@@ -44,7 +48,7 @@ instance FromJSON GhcPkgId where
   parseJSON = withText "GhcPkgId" $ \t ->
     case parseGhcPkgId t of
       Left e -> fail $ show (e, t)
-      Right x -> return x
+      Right x -> pure x
 
 instance ToJSON GhcPkgId where
   toJSON g =
@@ -54,7 +58,7 @@ instance ToJSON GhcPkgId where
 parseGhcPkgId :: MonadThrow m => Text -> m GhcPkgId
 parseGhcPkgId x = go x
   where go =
-          either (const (throwM (GhcPkgIdParseFail x))) return .
+          either (const (throwM (GhcPkgIdParseFail x))) pure .
           parseOnly (ghcPkgIdParser <* endOfInput)
 
 -- | A parser for a package-version-hash pair.

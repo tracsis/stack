@@ -1,6 +1,6 @@
+{-# LANGUAGE NoImplicitPrelude   #-}
 {-# LANGUAGE BangPatterns        #-}
 {-# LANGUAGE DeriveGeneric       #-}
-{-# LANGUAGE NoImplicitPrelude   #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -99,8 +99,10 @@ runApp options inner = do
   myPath <- liftIO getExecutablePath
 
   stack <- canonicalizePath $ takeDirectory myPath </> "stack" ++ exeExt
-  logInfo $ "Using stack located at " <> fromString stack
+  logInfo $ "Using Stack located at " <> fromString stack
   proc stack ["--version"] runProcess_
+  logInfo $ "Using runghc located at " <> fromString runghc
+  proc runghc ["--version"] runProcess_
 
   let matchTest = case optMatch options of
         Nothing -> const True
@@ -231,10 +233,10 @@ copyTree :: MonadIO m => FilePath -> FilePath -> m ()
 copyTree src dst =
     liftIO $
     runResourceT (sourceDirectoryDeep False src `connect` mapM_C go)
-        `catch` \(_ :: IOException) -> return ()
+        `catch` \(_ :: IOException) -> pure ()
   where
     go srcfp = liftIO $ do
-        Just suffix <- return $ stripPrefix src srcfp
+        Just suffix <- pure $ stripPrefix src srcfp
         let dstfp = dst </> stripHeadSeparator suffix
         createDirectoryIfMissing True $ takeDirectory dstfp
         -- copying yaml files so lock files won't get created in

@@ -1,6 +1,6 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TupleSections     #-}
 
 module Stack.Options.Completion
     ( ghcOptsCompleter
@@ -9,18 +9,17 @@ module Stack.Options.Completion
     , projectExeCompleter
     ) where
 
-import           Data.Char (isSpace)
-import           Data.List (isPrefixOf)
+import           Data.Char ( isSpace )
+import           Data.List ( isPrefixOf )
 import qualified Data.Map as Map
 import           Data.Maybe
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Distribution.PackageDescription as C
-import qualified Distribution.Types.UnqualComponentName as C
 import           Options.Applicative
 import           Options.Applicative.Builder.Extra
-import           Stack.Constants (ghcShowOptionsOutput)
-import           Stack.Options.GlobalParser (globalOptsFromMonoid)
+import           Stack.Constants ( ghcShowOptionsOutput )
+import           Stack.Options.GlobalParser ( globalOptsFromMonoid )
 import           Stack.Runners
 import           Stack.Prelude
 import           Stack.Types.Config
@@ -28,7 +27,7 @@ import           Stack.Types.NamedComponent
 import           Stack.Types.SourceMap
 
 ghcOptsCompleter :: Completer
-ghcOptsCompleter = mkCompleter $ \inputRaw -> return $
+ghcOptsCompleter = mkCompleter $ \inputRaw -> pure $
     let input = unescapeBashArg inputRaw
         (curArgReversed, otherArgsReversed) = break isSpace (reverse input)
         curArg = reverse curArgReversed
@@ -47,7 +46,7 @@ buildConfigCompleter inner = mkCompleter $ \inputRaw -> do
     let input = unescapeBashArg inputRaw
     case input of
         -- If it looks like a flag, skip this more costly completion.
-        ('-': _) -> return []
+        ('-': _) -> pure []
         _ -> do
             go' <- globalOptsFromMonoid False mempty
             let go = go' { globalLogLevel = LevelOther "silent" }
@@ -91,7 +90,7 @@ flagCompleter = buildConfigCompleter $ \input -> do
             fromMaybe (C.flagDefault fl) $
             Map.lookup (C.flagName fl) $
             Map.findWithDefault Map.empty name prjFlags
-    return $ filter (input `isPrefixOf`) $
+    pure $ filter (input `isPrefixOf`) $
         case input of
             ('*' : ':' : _) -> wildcardFlags
             ('*' : _) -> wildcardFlags

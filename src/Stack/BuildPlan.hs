@@ -1,10 +1,10 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE ConstraintKinds    #-}
-{-# LANGUAGE DataKinds          #-}
-{-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE FlexibleContexts   #-}
-{-# LANGUAGE GADTs              #-}
-{-# LANGUAGE OverloadedStrings  #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE ConstraintKinds     #-}
+{-# LANGUAGE DataKinds           #-}
+{-# LANGUAGE DeriveDataTypeable  #-}
+{-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE GADTs               #-}
+{-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Resolving a build plan for a set of packages in a given Stackage
@@ -14,7 +14,7 @@ module Stack.BuildPlan
     ( BuildPlanException (..)
     , BuildPlanCheck (..)
     , checkSnapBuildPlan
-    , DepError(..)
+    , DepError (..)
     , DepErrors
     , removeSrcPkgDefaultFlags
     , selectBestSnapshot
@@ -37,7 +37,6 @@ import           Distribution.System (Platform)
 import           Distribution.Text (display)
 import           Distribution.Types.UnqualComponentName (unUnqualComponentName)
 import qualified Distribution.Version as C
-import qualified RIO
 import           Stack.Constants
 import           Stack.Package
 import           Stack.SourceMap
@@ -46,6 +45,8 @@ import           Stack.Types.Version
 import           Stack.Types.Config
 import           Stack.Types.Compiler
 
+-- | Type representing exceptions thrown by functions exported by the
+-- "Stack.BuildPlan" module.
 data BuildPlanException
     = UnknownPackages
         (Path Abs File) -- stack.yaml file
@@ -53,17 +54,20 @@ data BuildPlanException
         (Map PackageName (Set PackageIdentifier)) -- shadowed
     | SnapshotNotFound SnapName
     | NeitherCompilerOrResolverSpecified T.Text
-    deriving (Typeable)
-instance Exception BuildPlanException
-instance Show BuildPlanException where
-    show (SnapshotNotFound snapName) = unlines
-        [ "SnapshotNotFound " ++ snapName'
+    | DuplicatePackagesBug
+    deriving (Show, Typeable)
+
+instance Exception BuildPlanException where
+    displayException (SnapshotNotFound snapName) = unlines
+        [ "Error: [S-2045]"
+        , "SnapshotNotFound " ++ snapName'
         , "Non existing resolver: " ++ snapName' ++ "."
         , "For a complete list of available snapshots see https://www.stackage.org/snapshots"
         ]
-        where snapName' = show snapName
-    show (UnknownPackages stackYaml unknown shadowed) =
-        unlines $ unknown' ++ shadowed'
+      where snapName' = show snapName
+    displayException (UnknownPackages stackYaml unknown shadowed) =
+        "Error: [S-7571]\n"
+        ++ unlines (unknown' ++ shadowed')
       where
         unknown' :: [String]
         unknown'
@@ -115,7 +119,7 @@ instance Show BuildPlanException where
                 , ["Note: further dependencies may need to be added"]
                 ]
           where
-            go (dep, users) | Set.null users = packageNameString dep ++ " (internal stack error: this should never be null)"
+            go (dep, users) | Set.null users = packageNameString dep ++ " (internal Stack error: this should never be null)"
             go (dep, users) = concat
                 [ packageNameString dep
                 , " (used by "
@@ -129,10 +133,14 @@ instance Show BuildPlanException where
                       $ Set.toList
                       $ Set.unions
                       $ Map.elems shadowed
-    show (NeitherCompilerOrResolverSpecified url) =
-        "Failed to load custom snapshot at " ++
-        T.unpack url ++
-        ", because no 'compiler' or 'resolver' is specified."
+    displayException (NeitherCompilerOrResolverSpecified url) = concat
+        [ "Error: [S-8559]\n"
+        , "Failed to load custom snapshot at "
+        , T.unpack url
+        , ", because no 'compiler' or 'resolver' is specified."
+        ]
+    displayException DuplicatePackagesBug = bugReport "[S-5743]"
+        "Duplicate packages are not expected here."
 
 gpdPackages :: [GenericPackageDescription] -> Map PackageName Version
 gpdPackages = Map.fromList . map (toPair . C.package . C.packageDescription)
@@ -224,7 +232,7 @@ selectPackageBuildPlan platform compiler pool gpd =
     flagCombinations :: NonEmpty [(FlagName, Bool)]
     flagCombinations = mapM getOptions (genPackageFlags gpd)
       where
-        getOptions :: C.Flag -> NonEmpty (FlagName, Bool)
+        getOptions :: C.PackageFlag -> NonEmpty (FlagName, Bool)
         getOptions f
             | flagManual f = (fname, flagDefault f) :| []
             | flagDefault f = (fname, True) :| [(fname, False)]
@@ -307,7 +315,7 @@ checkBundleBuildPlan platform compiler pool flags gpds =
         flags' f gpd = fromMaybe Map.empty (Map.lookup (gpdPackageName gpd) f)
         pool' = Map.union (gpdPackages gpds) pool
 
-        dupError _ _ = error "Bug: Duplicate packages are not expected here"
+        dupError _ _ = impureThrow DuplicatePackagesBug
 
 data BuildPlanCheck =
       BuildPlanCheckOk      (Map PackageName (Map FlagName Bool))
@@ -362,11 +370,11 @@ checkSnapBuildPlan pkgDirs flags snapCandidate = do
         cerrs = compilerErrors compiler errs
 
     if Map.null errs then
-        return $ BuildPlanCheckOk f
+        pure $ BuildPlanCheckOk f
     else if Map.null cerrs then do
-            return $ BuildPlanCheckPartial f errs
+            pure $ BuildPlanCheckPartial f errs
         else
-            return $ BuildPlanCheckFail f cerrs compiler
+            pure $ BuildPlanCheckFail f cerrs compiler
     where
         compilerErrors compiler errs
             | whichCompiler compiler == Ghc = ghcErrors errs
@@ -383,40 +391,56 @@ selectBestSnapshot
     -> NonEmpty SnapName
     -> RIO env (SnapshotCandidate env, RawSnapshotLocation, BuildPlanCheck)
 selectBestSnapshot pkgDirs snaps = do
-    logInfo $ "Selecting the best among "
-               <> displayShow (NonEmpty.length snaps)
-               <> " snapshots...\n"
+    prettyInfo $
+           fillSep
+             [ flow "Selecting the best among"
+             , fromString $ show (NonEmpty.length snaps)
+             , "snapshots..."
+             ]
+        <> line
     F.foldr1 go (NonEmpty.map (getResult <=< snapshotLocation) snaps)
     where
         go mold mnew = do
             old@(_snap, _loc, bpc) <- mold
             case bpc of
-                BuildPlanCheckOk {} -> return old
+                BuildPlanCheckOk {} -> pure old
                 _ -> fmap (betterSnap old) mnew
 
         getResult loc = do
             candidate <- loadProjectSnapshotCandidate loc NoPrintWarnings False
             result <- checkSnapBuildPlan pkgDirs Nothing candidate
             reportResult result loc
-            return (candidate, loc, result)
+            pure (candidate, loc, result)
 
         betterSnap (s1, l1, r1) (s2, l2, r2)
           | compareBuildPlanCheck r1 r2 /= LT = (s1, l1, r1)
           | otherwise = (s2, l2, r2)
 
-        reportResult BuildPlanCheckOk {} loc = do
-            logInfo $ "* Matches " <> RIO.display loc
-            logInfo ""
+        reportResult BuildPlanCheckOk {} loc =
+            prettyNote $
+                   fillSep
+                      [ flow "Matches"
+                      , pretty $ PrettyRawSnapshotLocation loc
+                      ]
+                <> line
 
-        reportResult r@BuildPlanCheckPartial {} loc = do
-            logWarn $ "* Partially matches " <> RIO.display loc
-            logWarn $ RIO.display $ indent $ T.pack $ show r
+        reportResult r@BuildPlanCheckPartial {} loc =
+            prettyWarn $
+                   fillSep
+                     [ flow "Partially matches"
+                     , pretty $ PrettyRawSnapshotLocation loc
+                     ]
+                 <> blankLine
+                 <> indent 4 (string (show r))
 
-        reportResult r@BuildPlanCheckFail {} loc = do
-            logWarn $ "* Rejected " <> RIO.display loc
-            logWarn $ RIO.display $ indent $ T.pack $ show r
-
-        indent t = T.unlines $ fmap ("    " <>) (T.lines t)
+        reportResult r@BuildPlanCheckFail {} loc =
+            prettyWarn $
+                   fillSep
+                     [ flow "Rejected"
+                     , pretty $ PrettyRawSnapshotLocation loc
+                     ]
+                <> blankLine
+                <> indent 4 (string (show r))
 
 showItems :: [String] -> Text
 showItems items = T.concat (map formatItem items)

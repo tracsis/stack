@@ -1,4 +1,4 @@
-{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE NoImplicitPrelude          #-}
 {-# LANGUAGE DataKinds                  #-}
 {-# LANGUAGE DeriveDataTypeable         #-}
 {-# LANGUAGE DeriveGeneric              #-}
@@ -9,61 +9,68 @@
 -- | Build-specific types.
 
 module Stack.Types.Build
-    (StackBuildException(..)
-    ,FlagSource(..)
-    ,UnusedFlags(..)
-    ,InstallLocation(..)
-    ,Installed(..)
-    ,psVersion
-    ,Task(..)
-    ,taskIsTarget
-    ,taskLocation
-    ,taskTargetIsMutable
-    ,LocalPackage(..)
-    ,BaseConfigOpts(..)
-    ,Plan(..)
-    ,TestOpts(..)
-    ,BenchmarkOpts(..)
-    ,FileWatchOpts(..)
-    ,BuildOpts(..)
-    ,BuildSubset(..)
-    ,defaultBuildOpts
-    ,TaskType(..)
-    ,IsMutable(..)
-    ,installLocationIsMutable
-    ,TaskConfigOpts(..)
-    ,BuildCache(..)
-    ,ConfigCache(..)
-    ,configureOpts
-    ,CachePkgSrc (..)
-    ,toCachePkgSrc
-    ,isStackOpt
-    ,wantedLocalPackages
-    ,FileCacheInfo (..)
-    ,ConfigureOpts (..)
-    ,PrecompiledCache (..)
-    )
-    where
+  ( BuildException (..)
+  , BuildPrettyException (..)
+  , ConstructPlanException (..)
+  , BadDependency (..)
+  , ParentMap
+  , FlagSource (..)
+  , UnusedFlags (..)
+  , InstallLocation (..)
+  , Installed (..)
+  , psVersion
+  , Task (..)
+  , taskIsTarget
+  , taskLocation
+  , taskTargetIsMutable
+  , LocalPackage (..)
+  , BaseConfigOpts (..)
+  , Plan (..)
+  , TestOpts (..)
+  , BenchmarkOpts (..)
+  , FileWatchOpts (..)
+  , BuildOpts (..)
+  , BuildSubset (..)
+  , defaultBuildOpts
+  , TaskType (..)
+  , IsMutable (..)
+  , installLocationIsMutable
+  , TaskConfigOpts (..)
+  , BuildCache (..)
+  , ConfigCache (..)
+  , configureOpts
+  , CachePkgSrc (..)
+  , toCachePkgSrc
+  , isStackOpt
+  , wantedLocalPackages
+  , FileCacheInfo (..)
+  , ConfigureOpts (..)
+  , PrecompiledCache (..)
+  ) where
 
-import           Stack.Prelude
-import           Data.Aeson                      (ToJSON, FromJSON)
-import qualified Data.ByteString                 as S
-import           Data.Char                       (isSpace)
-import           Data.List.Extra
-import qualified Data.Map                        as Map
-import qualified Data.Set                        as Set
-import qualified Data.Text                       as T
-import           Database.Persist.Sql            (PersistField(..)
-                                                 ,PersistFieldSql(..)
-                                                 ,PersistValue(PersistText)
-                                                 ,SqlType(SqlString))
-import           Distribution.PackageDescription (TestSuiteInterface)
-import           Distribution.System             (Arch)
-import qualified Distribution.Text               as C
-import           Distribution.Version            (mkVersion)
-import           Path                            (parseRelDir, (</>), parent)
-import           Path.Extra                      (toFilePathNoTrailingSep)
+import           Data.Aeson ( ToJSON, FromJSON )
+import qualified Data.ByteString as S
+import           Data.Char ( isSpace )
+import           Data.List as L
+import qualified Data.Map as Map
+import qualified Data.Map.Strict as M
+import           Data.Monoid.Map ( MonoidMap (..) )
+import qualified Data.Set as Set
+import qualified Data.Text as T
+import           Database.Persist.Sql
+                   ( PersistField (..), PersistFieldSql (..)
+                   , PersistValue (PersistText), SqlType (SqlString)
+                   )
+import           Distribution.PackageDescription
+                   ( TestSuiteInterface, mkPackageName )
+import           Distribution.System ( Arch )
+import qualified Distribution.Text as C
+import qualified Distribution.Version as C
+import           Path ( parseRelDir, (</>), parent )
+import           Path.Extra ( toFilePathNoTrailingSep )
+import           RIO.Process ( showProcessArgDebug )
 import           Stack.Constants
+import           Stack.Prelude
 import           Stack.Types.Compiler
 import           Stack.Types.CompilerBuild
 import           Stack.Types.Config
@@ -71,12 +78,11 @@ import           Stack.Types.GhcPkgId
 import           Stack.Types.NamedComponent
 import           Stack.Types.Package
 import           Stack.Types.Version
-import           System.FilePath                 (pathSeparator)
-import           RIO.Process                     (showProcessArgDebug)
+import           System.FilePath ( pathSeparator )
 
-----------------------------------------------
--- Exceptions
-data StackBuildException
+-- | Type representing exceptions thrown by functions exported by modules with
+-- names beginning @Stack.Build@.
+data BuildException
   = Couldn'tFindPkgId PackageName
   | CompilerVersionMismatch
         (Maybe (ActualCompiler, Arch)) -- found
@@ -93,22 +99,6 @@ data StackBuildException
     (Path Abs File) -- stack.yaml
   | TestSuiteFailure PackageIdentifier (Map Text (Maybe ExitCode)) (Maybe (Path Abs File)) S.ByteString
   | TestSuiteTypeUnsupported TestSuiteInterface
-  | ConstructPlanFailed String
-  | CabalExitedUnsuccessfully
-        ExitCode
-        PackageIdentifier
-        (Path Abs File)  -- cabal Executable
-        [String]         -- cabal arguments
-        (Maybe (Path Abs File)) -- logfiles location
-        [Text]     -- log contents
-  | SetupHsBuildFailure
-        ExitCode
-        (Maybe PackageIdentifier) -- which package's custom setup, is simple setup if Nothing
-        (Path Abs File)  -- ghc Executable
-        [String]         -- ghc arguments
-        (Maybe (Path Abs File)) -- logfiles location
-        [Text]     -- log contents
-  | ExecutionFailure [SomeException]
   | LocalPackageDoesn'tMatchTarget
         PackageName
         Version -- local version
@@ -122,62 +112,63 @@ data StackBuildException
   | CabalCopyFailed Bool String
   | LocalPackagesPresent [PackageIdentifier]
   | CouldNotLockDistDir !(Path Abs File)
-  deriving Typeable
+  | TaskCycleBug PackageIdentifier
+  | PackageIdMissingBug PackageIdentifier
+  | AllInOneBuildBug
+  | MulipleResultsBug PackageName [DumpPackage]
+  | TemplateHaskellNotFoundBug
+  | HaddockIndexNotFound
+  | ShowBuildErrorBug
+  deriving (Show, Typeable)
 
-data FlagSource = FSCommandLine | FSStackYaml
-    deriving (Show, Eq, Ord)
-
-data UnusedFlags = UFNoPackage FlagSource PackageName
-                 | UFFlagsNotDefined
-                       FlagSource
-                       PackageName
-                       (Set FlagName) -- defined in package
-                       (Set FlagName) -- not defined
-                 | UFSnapshot PackageName
-    deriving (Show, Eq, Ord)
-
-instance Show StackBuildException where
-    show (Couldn'tFindPkgId name) =
-              "After installing " <> packageNameString name <>
-               ", the package id couldn't be found " <> "(via ghc-pkg describe " <>
-               packageNameString name <> "). This shouldn't happen, " <>
-               "please report as a bug"
-    show (CompilerVersionMismatch mactual (expected, earch) ghcVariant ghcBuild check mstack resolution) = concat
-                [ case mactual of
-                    Nothing -> "No compiler found, expected "
-                    Just (actual, arch) -> concat
-                        [ "Compiler version mismatched, found "
-                        , compilerVersionString actual
-                        , " ("
-                        , C.display arch
-                        , ")"
-                        , ", but expected "
-                        ]
-                , case check of
-                    MatchMinor -> "minor version match with "
-                    MatchExact -> "exact version "
-                    NewerMinor -> "minor version match or newer with "
-                , T.unpack $ utf8BuilderToText $ display expected
+instance Exception BuildException where
+    displayException (Couldn'tFindPkgId name) = bugReport "[S-7178]" $ concat
+        [ "After installing "
+        , packageNameString name
+        ,", the package id couldn't be found (via ghc-pkg describe "
+        , packageNameString name
+        , ")."
+        ]
+    displayException (CompilerVersionMismatch mactual (expected, eArch) ghcVariant ghcBuild check mstack resolution) = concat
+        [ "Error: [S-6362]\n"
+        , case mactual of
+            Nothing -> "No compiler found, expected "
+            Just (actual, arch) -> concat
+                [ "Compiler version mismatched, found "
+                , compilerVersionString actual
                 , " ("
-                , C.display earch
-                , ghcVariantSuffix ghcVariant
-                , compilerBuildSuffix ghcBuild
-                , ") (based on "
-                , case mstack of
-                    Nothing -> "command line arguments"
-                    Just stack -> "resolver setting in " ++ toFilePath stack
-                , ").\n"
-                , T.unpack resolution
+                , C.display arch
+                , ")"
+                , ", but expected "
                 ]
-    show (Couldn'tParseTargets targets) = unlines
-                $ "The following targets could not be parsed as package names or directories:"
-                : map T.unpack targets
-    show (UnknownTargets noKnown notInSnapshot stackYaml) =
-        unlines $ noKnown' ++ notInSnapshot'
+        , case check of
+            MatchMinor -> "minor version match with "
+            MatchExact -> "exact version "
+            NewerMinor -> "minor version match or newer with "
+        , T.unpack $ utf8BuilderToText $ display expected
+        , " ("
+        , C.display eArch
+        , ghcVariantSuffix ghcVariant
+        , compilerBuildSuffix ghcBuild
+        , ") (based on "
+        , case mstack of
+            Nothing -> "command line arguments"
+            Just stack -> "resolver setting in " ++ toFilePath stack
+        , ").\n"
+        , T.unpack resolution
+        ]
+    displayException (Couldn'tParseTargets targets) = unlines
+        $ "Error: [S-3127]"
+        : "The following targets could not be parsed as package names or \
+          \directories:"
+        : map T.unpack targets
+    displayException (UnknownTargets noKnown notInSnapshot stackYaml) = unlines
+        $ "Error: [S-2154]"
+        : (noKnown' ++ notInSnapshot')
       where
         noKnown'
             | Set.null noKnown = []
-            | otherwise = return $
+            | otherwise = pure $
                 "The following target packages were not found: " ++
                 intercalate ", " (map packageNameString $ Set.toList noKnown) ++
                 "\nSee https://docs.haskellstack.org/en/stable/build_command/#target-syntax for details."
@@ -194,37 +185,38 @@ instance Show StackBuildException where
                     (\(name, version') -> "- " ++ packageIdentifierString
                         (PackageIdentifier name version'))
                     (Map.toList notInSnapshot)
-    show (TestSuiteFailure ident codes mlogFile bs) = unlines $ concat
-        [ ["Test suite failure for package " ++ packageIdentifierString ident]
-        , flip map (Map.toList codes) $ \(name, mcode) -> concat
-            [ "    "
-            , T.unpack name
-            , ": "
-            , case mcode of
-                Nothing -> " executable not found"
-                Just ec -> " exited with: " ++ show ec
+    displayException (TestSuiteFailure ident codes mlogFile bs) = unlines
+        $ "Error: [S-1995]"
+        : concat
+            [ ["Test suite failure for package " ++ packageIdentifierString ident]
+            , flip map (Map.toList codes) $ \(name, mcode) -> concat
+                [ "    "
+                , T.unpack name
+                , ": "
+                , case mcode of
+                    Nothing -> " executable not found"
+                    Just ec -> " exited with: " ++ displayException ec
+                ]
+            , pure $ case mlogFile of
+                Nothing -> "Logs printed to console"
+                -- TODO Should we load up the full error output and print it here?
+                Just logFile -> "Full log available at " ++ toFilePath logFile
+            , if S.null bs
+                then []
+                else ["", "", doubleIndent $ T.unpack $ decodeUtf8With lenientDecode bs]
             ]
-        , return $ case mlogFile of
-            Nothing -> "Logs printed to console"
-            -- TODO Should we load up the full error output and print it here?
-            Just logFile -> "Full log available at " ++ toFilePath logFile
-        , if S.null bs
-            then []
-            else ["", "", doubleIndent $ T.unpack $ decodeUtf8With lenientDecode bs]
+      where
+        indent' = dropWhileEnd isSpace . unlines . fmap (\l -> "  " ++ l) . lines
+        doubleIndent = indent' . indent'
+    displayException (TestSuiteTypeUnsupported interface) = concat
+        [ "Error: [S-3819]\n"
+        , "Unsupported test suite type: "
+        , show interface
         ]
-         where
-          indent = dropWhileEnd isSpace . unlines . fmap (\line -> "  " ++ line) . lines
-          doubleIndent = indent . indent
-    show (TestSuiteTypeUnsupported interface) =
-              "Unsupported test suite type: " <> show interface
-     -- Supressing duplicate output
-    show (CabalExitedUnsuccessfully exitCode taskProvides' execName fullArgs logFiles bss) =
-      showBuildError False exitCode (Just taskProvides') execName fullArgs logFiles bss
-    show (SetupHsBuildFailure exitCode mtaskProvides execName fullArgs logFiles bss) =
-      showBuildError True exitCode mtaskProvides execName fullArgs logFiles bss
-    show (ExecutionFailure es) = intercalate "\n\n" $ map show es
-    show (LocalPackageDoesn'tMatchTarget name localV requestedV) = concat
-        [ "Version for local package "
+     -- Suppressing duplicate output
+    displayException (LocalPackageDoesn'tMatchTarget name localV requestedV) = concat
+        [ "Error: [S-5797]\n"
+        , "Version for local package "
         , packageNameString name
         , " is "
         , versionString localV
@@ -232,10 +224,14 @@ instance Show StackBuildException where
         , versionString requestedV
         , " on the command line"
         ]
-    show (NoSetupHsFound dir) =
-        "No Setup.hs or Setup.lhs file found in " ++ toFilePath dir
-    show (InvalidFlagSpecification unused) = unlines
-        $ "Invalid flag specification:"
+    displayException (NoSetupHsFound dir) = concat
+        [ "Error: [S-3118]\n"
+        , "No Setup.hs or Setup.lhs file found in "
+        , toFilePath dir
+        ]
+    displayException (InvalidFlagSpecification unused) = unlines
+        $ "Error: [S-8664]"
+        : "Invalid flag specification:"
         : map go (Set.toList unused)
       where
         showFlagSrc :: FlagSource -> String
@@ -269,8 +265,9 @@ instance Show StackBuildException where
             , packageNameString name
             , ", please add to extra-deps"
             ]
-    show (InvalidGhcOptionsSpecification unused) = unlines
-        $ "Invalid GHC options specification:"
+    displayException (InvalidGhcOptionsSpecification unused) = unlines
+        $ "Error: [S-4925]"
+        : "Invalid GHC options specification:"
         : map showGhcOptionSrc unused
       where
         showGhcOptionSrc name = concat
@@ -278,17 +275,26 @@ instance Show StackBuildException where
             , packageNameString name
             , "' not found"
             ]
-    show (TargetParseException [err]) = "Error parsing targets: " ++ T.unpack err
-    show (TargetParseException errs) = unlines
-        $ "The following errors occurred while parsing the build targets:"
+    displayException (TargetParseException [err]) = concat
+        [ "Error: [S-8506]\n"
+        , "Error parsing targets: "
+        , T.unpack err
+        ]
+    displayException (TargetParseException errs) = unlines
+        $ "Error [S-8506]"
+        : "The following errors occurred while parsing the build targets:"
         : map (("- " ++) . T.unpack) errs
-
-    show (SomeTargetsNotBuildable xs) =
-        "The following components have 'buildable: False' set in the cabal configuration, and so cannot be targets:\n    " ++
-        T.unpack (renderPkgComponents xs) ++
-        "\nTo resolve this, either provide flags such that these components are buildable, or only specify buildable targets."
-    show (TestSuiteExeMissing isSimpleBuildType exeName pkgName' testName) =
-        missingExeError isSimpleBuildType $ concat
+    displayException (SomeTargetsNotBuildable xs) = unlines
+        [ "Error: [S-7086]"
+        , "The following components have 'buildable: False' set in the Cabal \
+          \configuration, and so cannot be targets:"
+        , "    " <> T.unpack (renderPkgComponents xs)
+        , "To resolve this, either provide flags such that these components \
+          \are buildable, or only specify buildable targets."
+        ]
+    displayException (TestSuiteExeMissing isSimpleBuildType exeName pkgName' testName) =
+        missingExeError "[S-7987]"
+          isSimpleBuildType $ concat
             [ "Test suite executable \""
             , exeName
             , " not found for "
@@ -296,72 +302,448 @@ instance Show StackBuildException where
             , ":test:"
             , testName
             ]
-    show (CabalCopyFailed isSimpleBuildType innerMsg) =
-        missingExeError isSimpleBuildType $ concat
+    displayException (CabalCopyFailed isSimpleBuildType innerMsg) =
+        missingExeError "[S-8027]"
+          isSimpleBuildType $ concat
             [ "'cabal copy' failed.  Error message:\n"
             , innerMsg
             , "\n"
             ]
-    show (ConstructPlanFailed msg) = msg
-    show (LocalPackagesPresent locals) = unlines
-      $ "Local packages are not allowed when using the script command. Packages found:"
-      : map (\ident -> "- " ++ packageIdentifierString ident) locals
-    show (CouldNotLockDistDir lockFile) = unlines
-      [ "Locking the dist directory failed, try to lock file:"
-      , "  " ++ toFilePath lockFile
-      , "Maybe you're running another copy of Stack?"
-      ]
+    displayException (LocalPackagesPresent locals) = unlines
+        $ "Error: [S-5510]"
+        : "Local packages are not allowed when using the 'script' command. \
+          \Packages found:"
+        : map (\ident -> "- " ++ packageIdentifierString ident) locals
+    displayException (CouldNotLockDistDir lockFile) = unlines
+        [ "Error: [S-7168]"
+        , "Locking the dist directory failed, try to lock file:"
+        , "  " ++ toFilePath lockFile
+        , "Maybe you're running another copy of Stack?"
+        ]
+    displayException (TaskCycleBug pid) = bugReport "[S-7868]" $
+        "Error: The impossible happened! Unexpected task cycle for "
+        ++ packageNameString (pkgName pid)
+    displayException (PackageIdMissingBug ident) = bugReport "[S-8923]" $
+        "The impossible happened! singleBuild: missing package ID missing: "
+        ++ show ident
+    displayException AllInOneBuildBug = bugReport "[S-7371]"
+        "Cannot have an all-in-one build that also has a final build step."
+    displayException (MulipleResultsBug name dps) = bugReport "[S-6739]"
+        "singleBuild: multiple results when describing installed package "
+        ++ show (name, dps)
+    displayException TemplateHaskellNotFoundBug = bugReport "[S-3121]"
+        "template-haskell is a wired-in GHC boot library but it wasn't found."
+    displayException HaddockIndexNotFound =
+        "Error: [S-6901]\n"
+        ++ "No local or snapshot doc index found to open."
+    displayException ShowBuildErrorBug = bugReport "[S-5452]"
+        "Unexpected case in showBuildError."
 
-missingExeError :: Bool -> String -> String
-missingExeError isSimpleBuildType msg =
-    unlines $ msg :
-        case possibleCauses of
-            [] -> []
-            [cause] -> ["One possible cause of this issue is:\n* " <> cause]
-            _ -> "Possible causes of this issue:" : map ("* " <>) possibleCauses
+data BuildPrettyException
+    = ConstructPlanFailed
+        [ConstructPlanException]
+        (Path Abs File)
+        (Path Abs Dir)
+        ParentMap
+        (Set PackageName)
+        (Map PackageName [PackageName])
+    | ExecutionFailure [SomeException]
+    | CabalExitedUnsuccessfully
+        ExitCode
+        PackageIdentifier
+        (Path Abs File)  -- cabal Executable
+        [String]         -- cabal arguments
+        (Maybe (Path Abs File)) -- logfiles location
+        [Text]     -- log contents
+    | SetupHsBuildFailure
+        ExitCode
+        (Maybe PackageIdentifier) -- which package's custom setup, is simple setup if Nothing
+        (Path Abs File)  -- ghc Executable
+        [String]         -- ghc arguments
+        (Maybe (Path Abs File)) -- logfiles location
+        [Text]     -- log contents
+    deriving (Show, Typeable)
+
+instance Pretty BuildPrettyException where
+    pretty ( ConstructPlanFailed errs stackYaml stackRoot parents wanted prunedGlobalDeps ) =
+           "[S-4804]"
+        <> line
+        <> flow "Stack failed to construct a build plan."
+        <> blankLine
+        <> pprintExceptions
+               errs stackYaml stackRoot parents wanted prunedGlobalDeps
+    pretty (ExecutionFailure es) =
+           "[S-7282]"
+        <> line
+        <> flow "Stack failed to execute the build plan."
+        <> blankLine
+        <> flow "While executing the build plan, Stack encountered the \
+                \following errors:"
+        <> blankLine
+        <> hcat (L.intersperse blankLine (map ppExceptions es))
+      where
+        ppExceptions :: SomeException -> StyleDoc
+        ppExceptions e = case fromException e of
+            Just (PrettyException e') -> pretty e'
+            Nothing -> (string . show) e
+    pretty (CabalExitedUnsuccessfully exitCode taskProvides' execName fullArgs logFiles bss) =
+        showBuildError "[S-7011]"
+            False exitCode (Just taskProvides') execName fullArgs logFiles bss
+    pretty (SetupHsBuildFailure exitCode mtaskProvides execName fullArgs logFiles bss) =
+        showBuildError "[S-6374]"
+            True exitCode mtaskProvides execName fullArgs logFiles bss
+
+instance Exception BuildPrettyException
+
+pprintExceptions
+    :: [ConstructPlanException]
+    -> Path Abs File
+    -> Path Abs Dir
+    -> ParentMap
+    -> Set PackageName
+    -> Map PackageName [PackageName]
+    -> StyleDoc
+pprintExceptions exceptions stackYaml stackRoot parentMap wanted' prunedGlobalDeps =
+    mconcat $
+      [ flow "While constructing the build plan, Stack encountered the \
+             \following errors:"
+      , blankLine
+      , mconcat (L.intersperse blankLine (mapMaybe pprintException exceptions'))
+      ] ++ if L.null recommendations
+               then []
+               else
+                   [ blankLine
+                   , flow "Some different approaches to resolving this:"
+                   , blankLine
+                   ] ++ recommendations
+
   where
-    possibleCauses =
-        "No module named \"Main\". The 'main-is' source file should usually have a header indicating that it's a 'Main' module." :
-        "A cabal file that refers to nonexistent other files (e.g. a license-file that doesn't exist). Running 'cabal check' may point out these issues." :
-        if isSimpleBuildType
+    exceptions' = {- should we dedupe these somehow? nubOrd -} exceptions
+
+    recommendations =
+        if not onlyHasDependencyMismatches
+            then []
+            else
+                [ "  *" <+> align
+                    (   flow "Set 'allow-newer: true' in "
+                    <+> pretty (defaultUserConfigPath stackRoot)
+                    <+> "to ignore all version constraints and build anyway."
+                    )
+                , blankLine
+                ]
+        ++ addExtraDepsRecommendations
+
+    addExtraDepsRecommendations
+      | Map.null extras = []
+      | (Just _) <- Map.lookup (mkPackageName "base") extras =
+          [ "  *" <+> align (flow "Build requires unattainable version of base. Since base is a part of GHC, you most likely need to use a different GHC version with the matching base.")
+           , line
+          ]
+      | otherwise =
+         [ "  *" <+> align
+           (style Recommendation (flow "Recommended action:") <+>
+            flow "try adding the following to your extra-deps in" <+>
+            pretty stackYaml <> ":")
+         , blankLine
+         , vsep (map pprintExtra (Map.toList extras))
+         , line
+         ]
+
+    extras = Map.unions $ map getExtras exceptions'
+    getExtras DependencyCycleDetected{} = Map.empty
+    getExtras UnknownPackage{} = Map.empty
+    getExtras (DependencyPlanFailures _ m) =
+       Map.unions $ map go $ Map.toList m
+     where
+       -- TODO: Likely a good idea to distinguish these to the user.  In particular, for DependencyMismatch
+       go (name, (_range, Just (version,cabalHash), NotInBuildPlan)) =
+           Map.singleton name (version,cabalHash)
+       go (name, (_range, Just (version,cabalHash), DependencyMismatch{})) =
+           Map.singleton name (version, cabalHash)
+       go _ = Map.empty
+    pprintExtra (name, (version, BlobKey cabalHash cabalSize)) =
+      let cfInfo = CFIHash cabalHash (Just cabalSize)
+          packageIdRev = PackageIdentifierRevision name version cfInfo
+       in fromString ("- " ++ T.unpack (utf8BuilderToText (display packageIdRev)))
+
+    allNotInBuildPlan = Set.fromList $ concatMap toNotInBuildPlan exceptions'
+    toNotInBuildPlan (DependencyPlanFailures _ pDeps) =
+      map fst $ filter (\(_, (_, _, badDep)) -> badDep == NotInBuildPlan) $ Map.toList pDeps
+    toNotInBuildPlan _ = []
+
+    -- This checks if 'allow-newer: true' could resolve all issues.
+    onlyHasDependencyMismatches = all go exceptions'
+      where
+        go DependencyCycleDetected{} = False
+        go UnknownPackage{} = False
+        go (DependencyPlanFailures _ m) =
+          all (\(_, _, depErr) -> isMismatch depErr) (M.elems m)
+        isMismatch DependencyMismatch{} = True
+        isMismatch Couldn'tResolveItsDependencies{} = True
+        isMismatch _ = False
+
+    pprintException (DependencyCycleDetected pNames) = Just $
+        flow "Dependency cycle detected in packages:" <> line <>
+        indent 4 (encloseSep "[" "]" "," (map (style Error . fromString . packageNameString) pNames))
+    pprintException (DependencyPlanFailures pkg pDeps) =
+        case mapMaybe pprintDep (Map.toList pDeps) of
+            [] -> Nothing
+            depErrors -> Just $
+                flow "In the dependencies for" <+> pkgIdent <>
+                pprintFlags (packageFlags pkg) <> ":" <> line <>
+                indent 4 (vsep depErrors) <>
+                case getShortestDepsPath parentMap wanted' (packageName pkg) of
+                    Nothing -> line <> flow "needed for unknown reason - stack invariant violated."
+                    Just [] -> line <> flow "needed since" <+> pkgName' <+> flow "is a build target."
+                    Just (target:path) -> line <> flow "needed due to" <+> encloseSep "" "" " -> " pathElems
+                      where
+                        pathElems =
+                            [style Target . fromString . packageIdentifierString $ target] ++
+                            map (fromString . packageIdentifierString) path ++
+                            [pkgIdent]
+              where
+                pkgName' = style Current . fromString . packageNameString $ packageName pkg
+                pkgIdent = style Current . fromString . packageIdentifierString $ packageIdentifier pkg
+    -- Skip these when they are redundant with 'NotInBuildPlan' info.
+    pprintException (UnknownPackage name)
+        | name `Set.member` allNotInBuildPlan = Nothing
+        | name `Set.member` wiredInPackages =
+            Just $ flow "Can't build a package with same name as a wired-in-package:" <+> (style Current . fromString . packageNameString $ name)
+        | Just pruned <- Map.lookup name prunedGlobalDeps =
+            let prunedDeps = map (style Current . fromString . packageNameString) pruned
+            in Just $ flow "Can't use GHC boot package" <+>
+                      (style Current . fromString . packageNameString $ name) <+>
+                      flow "when it has an overridden dependency (issue #4510);" <+>
+                      flow "you need to add the following as explicit dependencies to the project:" <+>
+                      line <+> encloseSep "" "" ", " prunedDeps
+        | otherwise = Just $ flow "Unknown package:" <+> (style Current . fromString . packageNameString $ name)
+
+    pprintFlags flags
+        | Map.null flags = ""
+        | otherwise = parens $ sep $ map pprintFlag $ Map.toList flags
+    pprintFlag (name, True) = "+" <> fromString (flagNameString name)
+    pprintFlag (name, False) = "-" <> fromString (flagNameString name)
+
+    pprintDep (name, (range, mlatestApplicable, badDep)) = case badDep of
+        NotInBuildPlan
+          | name `elem` fold prunedGlobalDeps -> Just $
+              style Error (fromString $ packageNameString name) <+>
+              align ((if range == C.anyVersion
+                        then flow "needed"
+                        else flow "must match" <+> goodRange) <> "," <> softline <>
+                     flow "but this GHC boot package has been pruned (issue #4510);" <+>
+                     flow "you need to add the package explicitly to extra-deps" <+>
+                     latestApplicable Nothing)
+          | otherwise -> Just $
+              style Error (fromString $ packageNameString name) <+>
+              align ((if range == C.anyVersion
+                        then flow "needed"
+                        else flow "must match" <+> goodRange) <> "," <> softline <>
+                     flow "but the Stack configuration has no specified version" <+>
+                     latestApplicable Nothing)
+        -- TODO: For local packages, suggest editing constraints
+        DependencyMismatch version -> Just $
+            (style Error . fromString . packageIdentifierString) (PackageIdentifier name version) <+>
+            align (flow "from Stack configuration does not match" <+> goodRange <+>
+                   latestApplicable (Just version))
+        -- I think the main useful info is these explain why missing
+        -- packages are needed. Instead lets give the user the shortest
+        -- path from a target to the package.
+        Couldn'tResolveItsDependencies _version -> Nothing
+        HasNoLibrary -> Just $
+            style Error (fromString $ packageNameString name) <+>
+            align (flow "is a library dependency, but the package provides no library")
+        BDDependencyCycleDetected names -> Just $
+            style Error (fromString $ packageNameString name) <+>
+            align (flow $ "dependency cycle detected: " ++ L.intercalate ", " (map packageNameString names))
+      where
+        goodRange = style Good (fromString (C.display range))
+        latestApplicable mversion =
+            case mlatestApplicable of
+                Nothing
+                    | isNothing mversion ->
+                        flow "(no package with that name found, perhaps there \
+                             \is a typo in a package's build-depends or an \
+                             \omission from the stack.yaml packages list?)"
+                    | otherwise -> ""
+                Just (laVer, _)
+                    | Just laVer == mversion ->
+                        flow "(latest matching version is specified)"
+                    | otherwise ->
+                        fillSep
+                          [ flow "(latest matching version is"
+                          , style Good (fromString $ versionString laVer) <> ")"
+                          ]
+
+-- | Get the shortest reason for the package to be in the build plan. In
+-- other words, trace the parent dependencies back to a 'wanted'
+-- package.
+getShortestDepsPath
+    :: ParentMap
+    -> Set PackageName
+    -> PackageName
+    -> Maybe [PackageIdentifier]
+getShortestDepsPath (MonoidMap parentsMap) wanted' name =
+    if Set.member name wanted'
+        then Just []
+        else case M.lookup name parentsMap of
+            Nothing -> Nothing
+            Just (_, parents) -> Just $ findShortest 256 paths0
+              where
+                paths0 = M.fromList $ map (\(ident, _) -> (pkgName ident, startDepsPath ident)) parents
+  where
+    -- The 'paths' map is a map from PackageName to the shortest path
+    -- found to get there. It is the frontier of our breadth-first
+    -- search of dependencies.
+    findShortest :: Int -> Map PackageName DepsPath -> [PackageIdentifier]
+    findShortest fuel _ | fuel <= 0 =
+        [PackageIdentifier (mkPackageName "stack-ran-out-of-jet-fuel") (C.mkVersion [0])]
+    findShortest _ paths | M.null paths = []
+    findShortest fuel paths =
+        case targets of
+            [] -> findShortest (fuel - 1) $ M.fromListWith chooseBest $ concatMap extendPath recurses
+            _ -> let (DepsPath _ _ path) = L.minimum (map snd targets) in path
+      where
+        (targets, recurses) = L.partition (\(n, _) -> n `Set.member` wanted') (M.toList paths)
+    chooseBest :: DepsPath -> DepsPath -> DepsPath
+    chooseBest x y = max x y
+    -- Extend a path to all its parents.
+    extendPath :: (PackageName, DepsPath) -> [(PackageName, DepsPath)]
+    extendPath (n, dp) =
+        case M.lookup n parentsMap of
+            Nothing -> []
+            Just (_, parents) -> map (\(pkgId, _) -> (pkgName pkgId, extendDepsPath pkgId dp)) parents
+
+startDepsPath :: PackageIdentifier -> DepsPath
+startDepsPath ident = DepsPath
+    { dpLength = 1
+    , dpNameLength = length (packageNameString (pkgName ident))
+    , dpPath = [ident]
+    }
+
+extendDepsPath :: PackageIdentifier -> DepsPath -> DepsPath
+extendDepsPath ident dp = DepsPath
+    { dpLength = dpLength dp + 1
+    , dpNameLength = dpNameLength dp + length (packageNameString (pkgName ident))
+    , dpPath = [ident]
+    }
+
+data ConstructPlanException
+    = DependencyCycleDetected [PackageName]
+    | DependencyPlanFailures Package (Map PackageName (VersionRange, LatestApplicableVersion, BadDependency))
+    | UnknownPackage PackageName -- TODO perhaps this constructor will be removed, and BadDependency will handle it all
+    -- ^ Recommend adding to extra-deps, give a helpful version number?
+    deriving (Typeable, Eq, Show)
+
+-- | The latest applicable version and it's latest Cabal file revision.
+-- For display purposes only, Nothing if package not found
+type LatestApplicableVersion = Maybe (Version, BlobKey)
+
+-- | Reason why a dependency was not used
+data BadDependency
+    = NotInBuildPlan
+    | Couldn'tResolveItsDependencies Version
+    | DependencyMismatch Version
+    | HasNoLibrary
+    -- ^ See description of 'DepType'
+    | BDDependencyCycleDetected ![PackageName]
+    deriving (Typeable, Eq, Ord, Show)
+
+type ParentMap = MonoidMap PackageName (First Version, [(PackageIdentifier, VersionRange)])
+
+data DepsPath = DepsPath
+    { dpLength :: Int -- ^ Length of dpPath
+    , dpNameLength :: Int -- ^ Length of package names combined
+    , dpPath :: [PackageIdentifier] -- ^ A path where the packages later
+                                    -- in the list depend on those that
+                                    -- come earlier
+    }
+    deriving (Eq, Ord, Show)
+
+data FlagSource = FSCommandLine | FSStackYaml
+    deriving (Show, Eq, Ord)
+
+data UnusedFlags = UFNoPackage FlagSource PackageName
+                 | UFFlagsNotDefined
+                       FlagSource
+                       PackageName
+                       (Set FlagName) -- defined in package
+                       (Set FlagName) -- not defined
+                 | UFSnapshot PackageName
+    deriving (Show, Eq, Ord)
+
+missingExeError :: String -> Bool -> String -> String
+missingExeError errorCode isSimpleBuildType msg = unlines
+    $ "Error: " <> errorCode
+    : msg
+    : "Possible causes of this issue:"
+    : map ("* " <>) possibleCauses
+  where
+    possibleCauses
+        = "No module named \"Main\". The 'main-is' source file should usually \
+          \have a header indicating that it's a 'Main' module."
+        : "A Cabal file that refers to nonexistent other files (e.g. a \
+          \license-file that doesn't exist). Running 'cabal check' may point \
+          \out these issues."
+        : if isSimpleBuildType
             then []
             else ["The Setup.hs file is changing the installation target dir."]
 
 showBuildError
-  :: Bool
+  :: String
+  -> Bool
   -> ExitCode
   -> Maybe PackageIdentifier
   -> Path Abs File
   -> [String]
   -> Maybe (Path Abs File)
   -> [Text]
-  -> String
-showBuildError isBuildingSetup exitCode mtaskProvides execName fullArgs logFiles bss =
+  -> StyleDoc
+showBuildError errorCode isBuildingSetup exitCode mtaskProvides execName fullArgs logFiles bss =
   let fullCmd = unwords
               $ dropQuotes (toFilePath execName)
               : map (T.unpack . showProcessArgDebug) fullArgs
-      logLocations = maybe "" (\fp -> "\n    Logs have been written to: " ++ toFilePath fp) logFiles
-  in "\n--  While building " ++
-     (case (isBuildingSetup, mtaskProvides) of
-       (False, Nothing) -> error "Invariant violated: unexpected case in showBuildError"
-       (False, Just taskProvides') -> "package " ++ dropQuotes (packageIdentifierString taskProvides')
-       (True, Nothing) -> "simple Setup.hs"
-       (True, Just taskProvides') -> "custom Setup.hs for package " ++ dropQuotes (packageIdentifierString taskProvides')
-     ) ++
-     " (scroll up to its section to see the error) using:\n      " ++ fullCmd ++ "\n" ++
-     "    Process exited with code: " ++ show exitCode ++
-     (if exitCode == ExitFailure (-9)
-          then " (THIS MAY INDICATE OUT OF MEMORY)"
-          else "") ++
-     logLocations ++
-     (if null bss
-          then ""
-          else "\n\n" ++ removeTrailingSpaces (map T.unpack bss))
+      logLocations =
+          maybe
+              mempty
+              (\fp -> line <> flow "Logs have been written to:" <+>
+                        style File (pretty fp))
+              logFiles
+  in     fromString errorCode
+      <> line
+      <> flow "While building" <+>
+         ( case (isBuildingSetup, mtaskProvides) of
+             (False, Nothing) -> impureThrow ShowBuildErrorBug
+             (False, Just taskProvides') ->
+                "package" <+>
+                  style
+                    Target
+                    (fromString $ dropQuotes (packageIdentifierString taskProvides'))
+             (True, Nothing) -> "simple" <+> style File "Setup.hs"
+             (True, Just taskProvides') ->
+                "custom" <+>
+                  style File "Setup.hs" <+>
+                  flow "for package" <+>
+                  style
+                    Target
+                    (fromString $ dropQuotes (packageIdentifierString taskProvides'))
+         ) <+>
+         flow "(scroll up to its section to see the error) using:"
+      <> line
+      <> style Shell (fromString fullCmd)
+      <> line
+      <> flow "Process exited with code:" <+> (fromString . show) exitCode <+>
+         ( if exitCode == ExitFailure (-9)
+             then flow "(THIS MAY INDICATE OUT OF MEMORY)"
+             else mempty
+         )
+      <> logLocations
+      <> if null bss
+           then mempty
+           else blankLine <> string (removeTrailingSpaces (map T.unpack bss))
    where
     removeTrailingSpaces = dropWhileEnd isSpace . unlines
     dropQuotes = filter ('\"' /=)
-
-instance Exception StackBuildException
 
 ----------------------------------------------
 
@@ -679,12 +1061,12 @@ configureOptsNoDir econfig bco deps isLocal package = concat
     wc = view (actualCompilerVersionL.to whichCompiler) econfig
     cv = view (actualCompilerVersionL.to getGhcVersion) econfig
 
-    hideSourcePaths ghcVersion = ghcVersion >= mkVersion [8, 2] && configHideSourcePaths config
+    hideSourcePaths ghcVersion = ghcVersion >= C.mkVersion [8, 2] && configHideSourcePaths config
 
     config = view configL econfig
     bopts = bcoBuildOpts bco
 
-    newerCabal = view cabalVersionL econfig >= mkVersion [1, 22]
+    newerCabal = view cabalVersionL econfig >= C.mkVersion [1, 22]
 
     -- Unioning atop defaults is needed so that all flags are specified
     -- with --exact-configuration.

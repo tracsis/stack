@@ -2,11 +2,10 @@ module Stack.DefaultColorWhen
   ( defaultColorWhen
   ) where
 
-import Stack.Prelude (stdout)
-import Stack.Types.Config (ColorWhen (ColorAuto, ColorNever))
-
-import System.Console.ANSI (hSupportsANSIWithoutEmulation)
-import System.Environment (lookupEnv)
+import           Stack.Prelude ( stdout )
+import           Stack.Types.Config ( ColorWhen (ColorAuto, ColorNever) )
+import           System.Console.ANSI ( hSupportsANSIWithoutEmulation )
+import           System.Environment ( lookupEnv )
 
 -- | The default adopts the standard proposed at http://no-color.org/, that
 -- color should not be added by default if the @NO_COLOR@ environment variable
@@ -20,7 +19,7 @@ defaultColorWhen = do
   -- command line.
   supportsANSI <- hSupportsANSIWithoutEmulation stdout
   mIsNoColor <- lookupEnv "NO_COLOR"
-  return $ case mIsNoColor of
+  pure $ case mIsNoColor of
     Just _ -> ColorNever
     _      -> case supportsANSI of
       Just False -> ColorNever

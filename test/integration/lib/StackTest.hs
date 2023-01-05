@@ -1,4 +1,4 @@
-{-#LANGUAGE ScopedTypeVariables#-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module StackTest where
 
@@ -7,6 +7,7 @@ import Control.Monad.IO.Class
 import Control.Monad.Trans.Reader
 import Control.Concurrent
 import Control.Exception
+import Data.Maybe (fromMaybe)
 import System.Environment
 import System.Directory
 import System.IO
@@ -25,22 +26,25 @@ run' cmd args = do
 run :: HasCallStack => FilePath -> [String] -> IO ()
 run cmd args = do
     ec <- run' cmd args
-    unless (ec == ExitSuccess) $ error $ "Exited with exit code: " ++ show ec
+    unless (ec == ExitSuccess) $
+        error $ "Exited with exit code: " ++ displayException ec
 
 runShell :: HasCallStack => String -> IO ()
 runShell cmd = do
     logInfo $ "Running: " ++ cmd
     (Nothing, Nothing, Nothing, ph) <- createProcess (shell cmd)
     ec <- waitForProcess ph
-    unless (ec == ExitSuccess) $ error $ "Exited with exit code: " ++ show ec
+    unless (ec == ExitSuccess) $
+        error $ "Exited with exit code: " ++ displayException ec
 
 runWithCwd :: HasCallStack => FilePath -> String -> [String] -> IO String
 runWithCwd cwdPath cmd args = do
     logInfo $ "Running: " ++ cmd
     let cp = proc cmd args
     (ec, stdoutStr, _) <- readCreateProcessWithExitCode (cp { cwd = Just cwdPath }) ""
-    unless (ec == ExitSuccess) $ error $ "Exited with exit code: " ++ show ec
-    return stdoutStr
+    unless (ec == ExitSuccess) $
+        error $ "Exited with exit code: " ++ displayException ec
+    pure stdoutStr
 
 stackExe :: IO String
 stackExe = getEnv "STACK_EXE"
@@ -59,7 +63,8 @@ stack' args = do
 stack :: HasCallStack => [String] -> IO ()
 stack args = do
     ec <- stack' args
-    unless (ec == ExitSuccess) $ error $ "Exited with exit code: " ++ show ec
+    unless (ec == ExitSuccess) $
+        error $ "Exited with exit code: " ++ displayException ec
 
 -- Temporary workaround for Windows to ignore exceptions arising out
 -- of Windows when we do stack clean. More info here: https://github.com/commercialhaskell/stack/issues/4936
@@ -70,7 +75,7 @@ stackCleanFull = stackIgnoreException ["clean", "--full"]
 -- of Windows when we do stack clean. More info here: https://github.com/commercialhaskell/stack/issues/4936
 stackIgnoreException :: HasCallStack => [String] -> IO ()
 stackIgnoreException args = if isWindows
-                            then void (stack' args) `catch` (\(_e :: IOException) -> return ())
+                            then void (stack' args) `catch` (\(_e :: IOException) -> pure ())
                             else stack args
 
 stackErr :: HasCallStack => [String] -> IO ()
@@ -92,7 +97,7 @@ nextPrompt = do
     c <- liftIO $ hGetChar inputHandle
     if c == '>'
       then do _ <- liftIO $ hGetChar inputHandle
-              return ()
+              pure ()
       else nextPrompt
 
 replCommand :: String -> Repl ()
@@ -119,7 +124,12 @@ runRepl cmd args actions = do
     hSetBuffering rStdout NoBuffering
     hSetBuffering rStderr NoBuffering
 
-    _ <- forkIO $ withFile "/tmp/stderr" WriteMode
+    tempDir <- if isWindows
+                    then fromMaybe "" <$> lookupEnv "TEMP"
+                    else pure "/tmp"
+    let tempFP = tempDir ++ "/stderr"
+
+    _ <- forkIO $ withFile tempFP WriteMode
         $ \err -> do
             hSetBuffering err NoBuffering
             forever $ catch (hGetChar rStderr >>= hPutChar err)
@@ -132,7 +142,7 @@ repl :: HasCallStack => [String] -> Repl () -> IO ()
 repl args action = do
     stackExe' <- stackExe
     ec <- runRepl stackExe' ("repl":args) action
-    unless (ec == ExitSuccess) $ return ()
+    unless (ec == ExitSuccess) $ pure ()
         -- TODO: Understand why the exit code is 1 despite running GHCi tests
         -- successfully.
         -- else error $ "Exited with exit code: " ++ show ec
@@ -143,7 +153,7 @@ stackStderr args = do
     logInfo $ "Running: " ++ stackExe' ++ " " ++ unwords (map showProcessArgDebug args)
     (ec, _, err) <- readProcessWithExitCode stackExe' args ""
     hPutStr stderr err
-    return (ec, err)
+    pure (ec, err)
 
 -- | Run stack with arguments and apply a check to the resulting
 -- stderr output if the process succeeded.
@@ -151,7 +161,7 @@ stackCheckStderr :: HasCallStack => [String] -> (String -> IO ()) -> IO ()
 stackCheckStderr args check = do
     (ec, err) <- stackStderr args
     if ec /= ExitSuccess
-        then error $ "Exited with exit code: " ++ show ec
+        then error $ "Exited with exit code: " ++ displayException ec
         else check err
 
 -- | Same as 'stackCheckStderr', but ensures that the Stack process
@@ -172,7 +182,7 @@ runEx' cmd args = do
     (ec, out, err) <- readProcessWithExitCode cmd args ""
     putStr out
     hPutStr stderr err
-    return (ec, out, err)
+    pure (ec, out, err)
 
 -- | Run stack with arguments and apply a check to the resulting
 -- stdout output if the process succeeded.
@@ -184,7 +194,7 @@ stackCheckStdout args check = do
     stackExe' <- stackExe
     (ec, out, _) <- runEx' stackExe' args
     if ec /= ExitSuccess
-        then error $ "Exited with exit code: " ++ show ec
+        then error $ "Exited with exit code: " ++ displayException ec
         else check out
 
 doesNotExist :: HasCallStack => FilePath -> IO ()
@@ -193,26 +203,26 @@ doesNotExist fp = do
     exists <- doesFileOrDirExist fp
     case exists of
       (Right msg) -> error msg
-      (Left _) -> return ()
+      (Left _) -> pure ()
 
 doesExist :: HasCallStack => FilePath -> IO ()
 doesExist fp = do
     logInfo $ "doesExist " ++ fp
     exists <- doesFileOrDirExist fp
     case exists of
-      (Right _) -> return ()
+      (Right _) -> pure ()
       (Left _) -> error "No file or directory exists"
 
 doesFileOrDirExist :: HasCallStack => FilePath -> IO (Either () String)
 doesFileOrDirExist fp = do
     isFile <- doesFileExist fp
     if isFile
-        then return (Right ("File exists: " ++ fp))
+        then pure (Right ("File exists: " ++ fp))
         else do
             isDir <- doesDirectoryExist fp
             if isDir
-                then return (Right ("Directory exists: " ++ fp))
-                else return (Left ())
+                then pure (Right ("Directory exists: " ++ fp))
+                else pure (Left ())
 
 copy :: HasCallStack => FilePath -> FilePath -> IO ()
 copy src dest = do
@@ -231,7 +241,7 @@ fileContentsMatch f1 f2 = do
 logInfo :: String -> IO ()
 logInfo = hPutStrLn stderr
 
--- TODO: use stack's process running utilties?  (better logging)
+-- TODO: use Stack's process running utilities?  (better logging)
 -- for now just copy+modifying this one from System.Process.Log
 
 -- | Show a process arg including speechmarks when necessary. Just for
@@ -273,30 +283,35 @@ isMacOSX = os == "darwin"
 -- the main @stack.yaml@.
 --
 defaultResolverArg :: String
-defaultResolverArg = "--resolver=lts-14.27"
+defaultResolverArg = "--resolver=nightly-2022-11-14"
 
 -- | Remove a file and ignore any warnings about missing files.
 removeFileIgnore :: HasCallStack => FilePath -> IO ()
 removeFileIgnore fp = removeFile fp `catch` \e ->
   if isDoesNotExistError e
-    then return ()
+    then pure ()
     else throwIO e
 
 -- | Remove a directory and ignore any warnings about missing files.
 removeDirIgnore :: HasCallStack => FilePath -> IO ()
 removeDirIgnore fp = removeDirectoryRecursive fp `catch` \e ->
   if isDoesNotExistError e
-    then return ()
+    then pure ()
     else throwIO e
 
--- | Changes working directory to Stack source directory
-withSourceDirectory :: HasCallStack => IO () -> IO ()
-withSourceDirectory action = do
-  dir <- stackSrc
+-- | Changes to the specified working directory.
+withCwd :: HasCallStack => FilePath -> IO () -> IO ()
+withCwd dir action = do
   currentDirectory <- getCurrentDirectory
   let enterDir = setCurrentDirectory dir
       exitDir = setCurrentDirectory currentDirectory
   bracket_ enterDir exitDir action
+
+-- | Changes working directory to Stack source directory.
+withSourceDirectory :: HasCallStack => IO () -> IO ()
+withSourceDirectory action = do
+  dir <- stackSrc
+  withCwd dir action
 
 -- | Mark a test as superslow, only to be run when explicitly requested.
 superslow :: HasCallStack => IO () -> IO ()

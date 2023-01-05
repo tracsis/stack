@@ -1,7 +1,7 @@
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TupleSections     #-}
+
 -- | Test suite for Stack.Dot
 module Stack.DotSpec where
 
@@ -31,7 +31,7 @@ spec = do
                         ]
   describe "Stack.Dot" $ do
     it "does nothing if depth is 0" $
-      resolveDependencies (Just 0) graph stubLoader `shouldBe` return graph
+      resolveDependencies (Just 0) graph stubLoader `shouldBe` pure graph
 
     it "with depth 1, more dependencies are resolved" $ do
       let graph' = Map.insert (pkgName "cycle")
@@ -58,7 +58,7 @@ spec = do
         let pruned = pruneGraph [pkgName "one", pkgName "two"] toPrune resolvedGraph
         in Set.null (allPackages pruned `Set.intersection` Set.fromList toPrune)
 
-    prop "pruning removes orhpans" $ do
+    prop "pruning removes orphans" $ do
       let resolvedGraph = runIdentity (resolveDependencies Nothing graph stubLoader)
           allPackages g = Map.keysSet g `Set.union` foldMap fst g
           orphans g = Map.filterWithKey (\k _ -> not (graphElem k g)) g
@@ -77,9 +77,9 @@ pkgName = fromMaybe failure . parsePackageName . T.unpack
   where
    failure = error "Internal error during package name creation in DotSpec.pkgName"
 
--- Stub, simulates the function to load package dependecies
+-- Stub, simulates the function to load package dependencies
 stubLoader :: PackageName -> Identity (Set PackageName, DotPayload)
-stubLoader name = return . (, dummyPayload) . Set.fromList . map pkgName $ case show name of
+stubLoader name = pure . (, dummyPayload) . Set.fromList . map pkgName $ case show name of
   "StateVar" -> ["stm","transformers"]
   "array" -> []
   "bifunctors" -> ["semigroupoids","semigroups","tagged"]

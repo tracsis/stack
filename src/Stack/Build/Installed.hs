@@ -1,8 +1,9 @@
-{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE NoImplicitPrelude     #-}
 {-# LANGUAGE ConstraintKinds       #-}
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings     #-}
+
 -- Determine which packages are already installed
 module Stack.Build.Installed
     ( InstalledMap
@@ -15,7 +16,6 @@ module Stack.Build.Installed
 import           Data.Conduit
 import qualified Data.Conduit.List as CL
 import qualified Data.Set as Set
-import           Data.List
 import qualified Data.Map.Strict as Map
 import           Path
 import           Stack.Build.Cache
@@ -34,15 +34,15 @@ toInstallMap sourceMap = do
     projectInstalls <-
         for (smProject sourceMap) $ \pp -> do
             version <- loadVersion (ppCommon pp)
-            return (Local, version)
+            pure (Local, version)
     depInstalls <-
         for (smDeps sourceMap) $ \dp ->
             case dpLocation dp of
                 PLImmutable pli -> pure (Snap, getPLIVersion pli)
                 PLMutable _ -> do
                     version <- loadVersion (dpCommon dp)
-                    return (Local, version)
-    return $ projectInstalls <> depInstalls
+                    pure (Local, version)
+    pure $ projectInstalls <> depInstalls
 
 -- | Returns the new InstalledMap and all of the locally registered packages.
 getInstalled :: HasEnvConfig env
@@ -98,7 +98,7 @@ getInstalled {-opts-} installMap = do
             , installedLibs
             ]
 
-    return ( installedMap
+    pure ( installedMap
            , globalDumpPkgs
            , snapshotDumpPkgs
            , localDumpPkgs
@@ -125,7 +125,7 @@ loadDatabase installMap mdb lhs0 = do
             lhDeps
             const
             (lhs0 ++ lhs1)
-    return (map (\lh -> lh { lhDeps = [] }) $ Map.elems lhs, dps)
+    pure (map (\lh -> lh { lhDeps = [] }) $ Map.elems lhs, dps)
   where
     mloc = fmap fst mdb
     sinkDP =  CL.map (isAllowed installMap mloc &&& toLoadHelper mloc)
@@ -138,7 +138,7 @@ processLoadResult :: HasLogFunc env
                   => Maybe (InstalledPackageLocation, Path Abs Dir)
                   -> (Allowed, LoadHelper)
                   -> RIO env (Maybe LoadHelper)
-processLoadResult _ (Allowed, lh) = return (Just lh)
+processLoadResult _ (Allowed, lh) = pure (Just lh)
 processLoadResult mdb (reason, lh) = do
     logDebug $
         "Ignoring package " <>
@@ -146,7 +146,6 @@ processLoadResult mdb (reason, lh) = do
         maybe mempty (\db -> ", from " <> displayShow db <> ",") mdb <>
         " due to" <>
         case reason of
-            Allowed -> " the impossible?!?!"
             UnknownPkg -> " it being unknown to the resolver / extra-deps."
             WrongLocation mloc loc -> " wrong location: " <> displayShow (mloc, loc)
             WrongVersion actual wanted ->
@@ -154,7 +153,7 @@ processLoadResult mdb (reason, lh) = do
                 fromString (versionString wanted) <>
                 " instead of " <>
                 fromString (versionString actual)
-    return Nothing
+    pure Nothing
 
 data Allowed
     = Allowed
