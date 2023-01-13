@@ -30,14 +30,14 @@ nix:
   - unzip
 
 flags:
-  stack:
-    developer-mode: true
   lukko:
     ofd-locking: false
   hackage-security:
     Cabal-syntax: true
   mintty:
     win32-2-13-1: false
+  stack:
+    developer-mode: true
 
 ghc-options:
   "$locals": -fhide-source-paths
