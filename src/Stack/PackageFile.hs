@@ -17,7 +17,6 @@ import           Distribution.Simple.Glob ( matchDirFileGlob )
 import qualified Distribution.Types.UnqualComponentName as Cabal
 import           Path as FL hiding ( replaceExtension )
 import           Path.Extra
-import           Path.IO hiding ( findFiles )
 import           Stack.ComponentFile
 import           Stack.Prelude hiding ( Display (..) )
 import           Stack.Types.NamedComponent
@@ -34,7 +33,7 @@ resolveFileOrWarn :: FilePath.FilePath
                   -> RIO GetPackageFileContext (Maybe (Path Abs File))
 resolveFileOrWarn = resolveOrWarn "File" f
  where
-  f p x = liftIO (forgivingAbsence (resolveFile p x)) >>= rejectMissingFile
+  f p x = liftIO (forgivingResolveFile p x) >>= rejectMissingFile
 
 -- | Get all files referenced by the package.
 packageDescModulesAndFiles
