@@ -275,14 +275,33 @@ updates with your pull request.
 
 ## Backwards Compatability
 
-The Stack executable does not need to, and does not, strive for the same broad
-compatibility with versions of GHC that a library package (such as `pantry`)
-would seek. Instead, Stack aims to define a well-known combination of
-dependencies on which its executable relies. That applies in particular to the
-`Cabal` package, where Stack aims to support one, and only one, version of
-`Cabal` with each release of its executable. At the time of writing (September
-2022) that combination is defined by resolver `nightly-2022-11-14` (for
-GHC 9.2.4, and including `Cabal-3.6.3.0`) - see `stack.yaml`.
+The Stack package provides a library and an executable (`stack`) that depends on
+the library. The library is intended for use only by the executable.
+
+Consequently, the Stack package does not need to, and does not, strive for the
+compatibility with a range of versions of GHC that a library package (such as
+`pantry`) would seek.
+
+Stack aims to depend on well-known packages. The specific versions on which it
+depends at any time are specified by `package.yaml` and `stack.yaml`. It does
+not aim to be compatible with more than one version of the `Cabal` package at
+any time. At the time of writing (March 2023) the package versions are primarily
+ones in Stackage snapshot LTS Haskell 20.13 (for GHC 9.2.7), together with
+extra-dep `Cabal-3.8.1.0`.
+
+A Stack executable makes use of Cabal (the library) through a small 'Setup'
+executable that it compiles from Haskell source code. The executable compiles
+that code with a dependency on the version of Cabal that ships with the
+specified GHC compiler. Each release of Stack will aim to support all versions
+of GHC and the Cabal package in Stackage snapshots published within seven years
+of the release. For example, snapshot LTS Haskell 2.22, published on
+9 August 2015, was the last to provide GHC 7.8.4 which comes with
+`Cabal-1.18.1.5`. Until, at least, 9 August 2022, Stack releases would aim
+to support GHC 7.8.4 and `Cabal-1.18.1.5`.
+
+When a version of the Stack executable actually ceases to support a version of
+GHC and `Cabal`, that should be recorded in Stack's
+[ChangeLog](https://github.com/commercialhaskell/stack/blob/master/ChangeLog.md).
 
 ## Code Quality
 
@@ -328,6 +347,48 @@ Once installed, you can check your changes with command:
 ~~~text
 stack exec -- sh ./etc/scripts/hlint.sh
 ~~~
+
+## Code Style
+
+A single code style is not applied consistently to Stack's code and Stack is not
+Procrustean about matters of style. Rules of thumb, however, are:
+
+* keep pull requests that simply reformat code separate from those that make
+  other changes to code; and
+* when making changes to code other than reformatting, follow the existing style
+  of the function(s) or module(s) in question.
+
+That said, the following may help:
+
+* Stack's code generally avoids the use of C preprocessor (CPP) directives.
+  Windows and non-Windows code is separated in separate source code directories
+  and distinguished in Stack's Cabal file. `Stack.Constants.osIsWindows :: Bool`
+  is provided. Multi-line strings are generally formatted on the assumption that
+  GHC's `CPP` language pragma is not being used.
+* Language pragmas usually start with `NoImplictPrelude`, where applicable, and
+  then all others are listed alphabetically. The closing `#-}` are aligned, for
+  purely aesthetic reasons.
+* Stack is compiled with GHC's `-Wall` enabled, which includes `-Wtabs` (no tabs
+  in source code). Most modules are based on two spaces (with one space for a
+  `where`) for indentation but older and larger modules are still based on four
+  spaces.
+* Stack's code and documentation tends to be based on lines of no more than 80
+  characters or, if longer, no longer than necessary.
+* Stack uses export lists.
+* Stack's imports are listed alphabetically, including `Stack.Prelude`, where
+  applicable. The module names are left aligned, with space left for `qualified`
+  where it is absent.
+* Stack's code is sufficiently stable that explict import lists can sensibly be
+  used. The exception is the import of `Stack.Prelude`. Not all modules have
+  comprehensive explicit import lists.
+* Short explicit import lists follow the module name. Longer lists start on the
+  line below the module name. Spaces are used to separate listed items from
+  their enclosing parentheses.
+* As noted above, the types used to implement Stack's exceptions and the related
+ `instance` definitions are usually located at the top of the relevant module.
+* In function type signatures, the `::` is kept on the same line as the
+  function's name. This format is Haskell syntax highlighter-friendly.
+* If `where` is used, the declarations follow on a separate line.
 
 ## Testing
 
