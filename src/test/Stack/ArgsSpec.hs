@@ -1,16 +1,17 @@
 {-# LANGUAGE NoImplicitPrelude #-}
+
 -- | Args parser test suite.
 
 module Stack.ArgsSpec where
 
-import Control.Monad
-import Data.Attoparsec.Args (EscapingMode(..), parseArgsFromString)
-import Data.Attoparsec.Interpreter (interpreterArgsParser)
+import           Control.Monad
+import           Data.Attoparsec.Args ( EscapingMode (..), parseArgsFromString )
+import           Data.Attoparsec.Interpreter ( interpreterArgsParser )
 import qualified Data.Attoparsec.Text as P
-import Data.Text (pack)
-import Stack.Prelude
-import Test.Hspec
-import Prelude (head)
+import           Data.Text ( pack )
+import           Stack.Prelude
+import           Test.Hspec
+import           Prelude ( head )
 
 -- | Test spec.
 spec :: Spec
@@ -119,7 +120,7 @@ interpreterArgsSpec =
         <|> shebang <++> ["\n"]
         -- invalid shebang
         <|> blockSpace <++> [head (interpreterGenValid lineComment args)]
-        -- something between shebang and stack comment
+        -- something between shebang and Stack comment
         <|> shebang
             <++> newLine
             <++> blockSpace

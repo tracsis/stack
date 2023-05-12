@@ -1,20 +1,21 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TupleSections #-}
-module Stack.FileWatch
-    ( fileWatch
-    , fileWatchPoll
-    ) where
+{-# LANGUAGE TupleSections     #-}
 
-import Control.Concurrent.STM (check)
-import Stack.Prelude
+module Stack.FileWatch
+  ( WatchMode (WatchModePoll)
+  , fileWatch
+  , fileWatchPoll
+  ) where
+
+import           Control.Concurrent.STM ( check )
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
-import GHC.IO.Exception
-import Path
-import System.FSNotify
-import System.IO (getLine)
-import RIO.PrettyPrint hiding (line)
+import           GHC.IO.Exception
+import           Path
+import           Stack.Prelude
+import           System.FSNotify
+import           System.IO ( getLine )
 
 fileWatch
   :: (HasLogFunc env, HasTerm env)
@@ -26,7 +27,8 @@ fileWatchPoll
   :: (HasLogFunc env, HasTerm env)
   => ((Set (Path Abs File) -> IO ()) -> RIO env ())
   -> RIO env ()
-fileWatchPoll = fileWatchConf $ defaultConfig { confUsePolling = True }
+fileWatchPoll =
+  fileWatchConf $ defaultConfig { confWatchMode = WatchModePoll 1000000 }
 
 -- | Run an action, watching for file changes
 --
@@ -58,7 +60,7 @@ fileWatchConf cfg inner = withRunInIO $ \run -> withManagerConf cfg $ \manager -
                     newDirs
             watch1 <- forM (Map.toList actions) $ \(k, mmv) -> do
                 mv <- mmv
-                return $
+                pure $
                     case mv of
                         Nothing -> Map.empty
                         Just v -> Map.singleton k v
@@ -68,24 +70,24 @@ fileWatchConf cfg inner = withRunInIO $ \run -> withManagerConf cfg $ \manager -
                     $ Set.toList
                     $ Set.map parent files
 
-            keepListening _dir listen () = Just $ return $ Just listen
+            keepListening _dir listen () = Just $ pure $ Just listen
             stopListening = Map.map $ \f -> do
                 () <- f `catch` \ioe ->
                     -- Ignore invalid argument error - it can happen if
                     -- the directory is removed.
                     case ioe_type ioe of
-                        InvalidArgument -> return ()
+                        InvalidArgument -> pure ()
                         _ -> throwIO ioe
-                return Nothing
+                pure Nothing
             startListening = Map.mapWithKey $ \dir () -> do
                 let dir' = fromString $ toFilePath dir
                 listen <- watchDir manager dir' (const True) onChange
-                return $ Just listen
+                pure $ Just listen
 
     let watchInput = do
-            line <- getLine
-            unless (line == "quit") $ do
-                run $ case line of
+            l <- getLine
+            unless (l == "quit") $ do
+                run $ case l of
                     "help" -> do
                         logInfo ""
                         logInfo "help: display this help"
@@ -99,7 +101,7 @@ fileWatchConf cfg inner = withRunInIO $ \run -> withManagerConf cfg $ \manager -
                     "" -> atomically $ writeTVar dirtyVar True
                     _ -> logInfo $
                         "Unknown command: " <>
-                        displayShow line <>
+                        displayShow l <>
                         ". Try 'help'"
 
                 watchInput
@@ -125,7 +127,7 @@ fileWatchConf cfg inner = withRunInIO $ \run -> withManagerConf cfg $ \manager -
                 let theStyle = case fromException e of
                         Just ExitSuccess -> Good
                         _ -> Error
-                 in style theStyle $ fromString $ show e
+                 in style theStyle $ fromString $ displayException e
             _ -> style Good "Success! Waiting for next file change."
 
         logInfo "Type help for available commands. Press enter to force a rebuild."

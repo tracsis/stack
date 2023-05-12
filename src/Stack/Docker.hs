@@ -1,76 +1,79 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE CPP #-}
-{-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE ConstraintKinds     #-}
+{-# LANGUAGE CPP                 #-}
+{-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE NamedFieldPuns      #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE RankNTypes          #-}
+{-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Run commands in Docker containers
 module Stack.Docker
-  (dockerCmdName
-  ,dockerHelpOptName
-  ,dockerPullCmdName
-  ,entrypoint
-  ,preventInContainer
-  ,pull
-  ,reset
-  ,reExecArgName
-  ,StackDockerException(..)
-  ,getProjectRoot
-  ,runContainerAndExit
+  ( dockerCmdName
+  , dockerHelpOptName
+  , dockerPullCmdName
+  , entrypoint
+  , preventInContainer
+  , pull
+  , reset
+  , reExecArgName
+  , DockerException (..)
+  , getProjectRoot
+  , runContainerAndExit
   ) where
 
-import           Stack.Prelude
-import qualified Crypto.Hash as Hash (Digest, MD5, hash)
-import           Pantry.Internal.AesonExtended (FromJSON(..),(.:),(.:?),(.!=),eitherDecode)
+import qualified Crypto.Hash as Hash ( Digest, MD5, hash )
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as LBS
-import           Data.Char (isAscii,isDigit)
-import           Data.Conduit.List (sinkNull)
-import           Data.Conduit.Process.Typed hiding (proc)
-import           Data.List (dropWhileEnd,isPrefixOf,isInfixOf)
-import           Data.List.Extra (trim)
+import           Data.Char ( isAscii, isDigit )
+import           Data.Conduit.List ( sinkNull )
+import           Data.Conduit.Process.Typed hiding ( proc )
+import           Data.List ( dropWhileEnd, isInfixOf, isPrefixOf )
+import           Data.List.Extra ( trim )
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
-import           Data.Time (UTCTime)
-import qualified Data.Version (showVersion, parseVersion)
-import           Distribution.Version (mkVersion, mkVersion')
+import           Data.Time ( UTCTime )
+import qualified Data.Version ( parseVersion )
+import           Distribution.Version ( mkVersion, mkVersion' )
+import           Pantry.Internal.AesonExtended
+                   ( FromJSON (..), (.:), (.:?), (.!=), eitherDecode )
 import           Path
-import           Path.Extra (toFilePathNoTrailingSep)
-import           Path.IO hiding (canonicalizePath)
-import qualified Paths_stack as Meta
-import           Stack.Config (getInContainer)
+import           Path.Extra ( toFilePathNoTrailingSep )
+import           Path.IO hiding ( canonicalizePath )
+import qualified RIO.Directory
+import           RIO.Process
+import           Stack.Config ( getInContainer )
 import           Stack.Constants
 import           Stack.Constants.Config
-import           Stack.Setup (ensureDockerStackExe)
-import           Stack.Storage.User (loadDockerImageExeCache,saveDockerImageExeCache)
-import           Stack.Types.Version
+import           Stack.Prelude
+import           Stack.Setup ( ensureDockerStackExe )
+import           Stack.Storage.User
+                   ( loadDockerImageExeCache, saveDockerImageExeCache )
 import           Stack.Types.Config
 import           Stack.Types.Docker
-import           System.Environment (getEnv,getEnvironment,getProgName,getArgs,getExecutablePath)
+import           Stack.Types.Version ( showStackVersion, withinRange )
+import           System.Environment
+                   ( getArgs, getEnv, getEnvironment, getExecutablePath
+                   , getProgName
+                   )
 import qualified System.FilePath as FP
-import           System.IO.Error (isDoesNotExistError)
-import           System.IO.Unsafe (unsafePerformIO)
-import qualified System.PosixCompat.User as User
-import qualified System.PosixCompat.Files as Files
-import           System.Terminal (hIsTerminalDeviceOrMinTTY)
-import           Text.ParserCombinators.ReadP (readP_to_S)
-import           RIO.Process
-import qualified RIO.Directory
-
+import           System.IO.Error ( isDoesNotExistError )
+import           System.IO.Unsafe ( unsafePerformIO )
 #ifndef WINDOWS
 import           System.Posix.Signals
 import qualified System.Posix.User as PosixUser
 #endif
+import qualified System.PosixCompat.User as User
+import qualified System.PosixCompat.Files as Files
+import           System.Terminal ( hIsTerminalDeviceOrMinTTY )
+import           Text.ParserCombinators.ReadP ( readP_to_S )
 
 -- | Function to get command and arguments to run in Docker container
-getCmdArgs
-  :: HasConfig env
+getCmdArgs ::
+     HasConfig env
   => DockerOpts
   -> Inspect
   -> Bool
@@ -86,11 +89,11 @@ getCmdArgs docker imageInfo isRemoteDocker = do
               duUmask <- Files.setFileCreationMask 0o022
               -- Only way to get old umask seems to be to change it, so set it back afterward
               _ <- Files.setFileCreationMask duUmask
-              return (Just DockerUser{..})
-            else return Nothing
+              pure (Just DockerUser{..})
+            else pure Nothing
     args <-
         fmap
-            (["--" ++ reExecArgName ++ "=" ++ Data.Version.showVersion Meta.version
+            (["--" ++ reExecArgName ++ "=" ++ showStackVersion
              ,"--" ++ dockerEntrypointArgName
              ,show DockerEntrypoint{..}] ++)
             (liftIO getArgs)
@@ -102,7 +105,7 @@ getCmdArgs docker imageInfo isRemoteDocker = do
           | otherwise -> throwIO UnsupportedStackExeHostPlatformException
         Just DockerStackExeImage -> do
             progName <- liftIO getProgName
-            return (FP.takeBaseName progName, args, [], [])
+            pure (FP.takeBaseName progName, args, [], [])
         Just (DockerStackExePath path) -> do
             cmdArgs args path
         Just DockerStackExeDownload -> exeDownload args
@@ -116,7 +119,7 @@ getCmdArgs docker imageInfo isRemoteDocker = do
                              (iiId imageInfo)
                              exePath
                              exeTimestamp
-                     return (exePath, exeTimestamp, isKnown)
+                     pure (exePath, exeTimestamp, isKnown)
               case misCompatible of
                   Just True -> cmdArgs args exePath
                   Just False -> exeDownload args
@@ -154,16 +157,12 @@ getCmdArgs docker imageInfo isRemoteDocker = do
         -- MSS 2020-04-21 previously used replaceExtension, but semantics changed in path 0.7
         -- In any event, I'm not even sure _why_ we need to drop a file extension here
         -- Originally introduced here: https://github.com/commercialhaskell/stack/commit/6218dadaf5fd7bf312bb1bd0db63b4784ba78cb2
-#if MIN_VERSION_path(0, 7, 0)
         let exeBase =
               case splitExtension exePath of
                 Left _ -> exePath
                 Right (x, _) -> x
-#else
-        exeBase <- exePath -<.> ""
-#endif
         let mountPath = hostBinDir FP.</> toFilePath (filename exeBase)
-        return (mountPath, args, [], [Mount (toFilePath exePath) mountPath])
+        pure (mountPath, args, [], [Mount (toFilePath exePath) mountPath])
 
 -- | Error if running in a container.
 preventInContainer :: MonadIO m => m () -> m ()
@@ -200,13 +199,13 @@ runContainerAndExit = do
           (logWarn "Warning: Using boot2docker is NOT supported, and not likely to perform well.")
      maybeImageInfo <- inspect image
      imageInfo@Inspect{..} <- case maybeImageInfo of
-       Just ii -> return ii
+       Just ii -> pure ii
        Nothing
          | dockerAutoPull docker ->
              do pullImage docker image
                 mii2 <- inspect image
                 case mii2 of
-                  Just ii2 -> return ii2
+                  Just ii2 -> pure ii2
                   Nothing -> throwM (InspectFailedException image)
          | otherwise -> throwM (NotPulledException image)
      projectRoot <- getProjectRoot
@@ -229,7 +228,7 @@ runContainerAndExit = do
      when (isNothing mpath) $ do
        logWarn "The Docker image does not set the PATH env var"
        logWarn "This will likely fail, see https://github.com/commercialhaskell/stack/issues/2742"
-     newPathEnv <- either throwM return $ augmentPath
+     newPathEnv <- either throwM pure $ augmentPath
                       [ hostBinDir
                       , toFilePath (sandboxHomeDir </> relDirDotLocal </> relDirBin)]
                       mpath
@@ -309,7 +308,7 @@ runContainerAndExit = do
                threadDelay 30000000
                readProcessNull "docker" ["kill",containerID]
        oldHandler <- liftIO $ installHandler sig (Catch sigHandler) Nothing
-       return (sig, oldHandler)
+       pure (sig, oldHandler)
 #endif
      let args' = concat [["start"]
                         ,["-a" | not (dockerDetach docker)]
@@ -319,7 +318,7 @@ runContainerAndExit = do
          `finally`
          (do unless (dockerPersist docker || dockerDetach docker) $
                  readProcessNull "docker" ["rm","-f",containerID]
-                 `catch` (\(_::ExitCodeException) -> return ())
+                 `catch` (\(_::ExitCodeException) -> pure ())
 #ifndef WINDOWS
              forM_ oldHandlers $ \(sig,oldHandler) ->
                liftIO $ installHandler sig oldHandler Nothing
@@ -347,14 +346,14 @@ inspect :: (HasProcessContext env, HasLogFunc env)
 inspect image =
   do results <- inspects [image]
      case Map.toList results of
-       [] -> return Nothing
-       [(_,i)] -> return (Just i)
+       [] -> pure Nothing
+       [(_,i)] -> pure (Just i)
        _ -> throwIO (InvalidInspectOutputException "expect a single result")
 
 -- | Inspect multiple Docker images and/or containers.
 inspects :: (HasProcessContext env, HasLogFunc env)
          => [String] -> RIO env (Map Text Inspect)
-inspects [] = return Map.empty
+inspects [] = pure Map.empty
 inspects images =
   do maybeInspectOut <-
        -- not using 'readDockerProcess' as the error from a missing image
@@ -365,9 +364,9 @@ inspects images =
          -- filtering with 'isAscii' to workaround @docker inspect@ output containing invalid UTF-8
          case eitherDecode (LBS.pack (filter isAscii (decodeUtf8 inspectOut))) of
            Left msg -> throwIO (InvalidInspectOutputException msg)
-           Right results -> return (Map.fromList (map (\r -> (iiId r,r)) results))
+           Right results -> pure (Map.fromList (map (\r -> (iiId r,r)) results))
        Left ece
-         |  any (`LBS.isPrefixOf` eceStderr ece) missingImagePrefixes -> return Map.empty
+         |  any (`LBS.isPrefixOf` eceStderr ece) missingImagePrefixes -> pure Map.empty
        Left e -> throwIO e
   where missingImagePrefixes = ["Error: No such image", "Error: No such object:"]
 
@@ -404,12 +403,12 @@ pullImage docker image =
                 pc0
        runProcess pc
      case ec of
-       ExitSuccess -> return ()
+       ExitSuccess -> pure ()
        ExitFailure _ -> throwIO (PullFailedException image)
 
 -- | Check docker version (throws exception if incorrect)
-checkDockerVersion
-    :: (HasProcessContext env, HasLogFunc env)
+checkDockerVersion ::
+       (HasProcessContext env, HasLogFunc env)
     => DockerOpts -> RIO env ()
 checkDockerVersion docker =
   do dockerExists <- doesExecutableExist "docker"
@@ -426,7 +425,7 @@ checkDockerVersion docker =
              | not (v' `withinRange` dockerRequireDockerVersion docker) ->
                throwIO (BadDockerVersionException (dockerRequireDockerVersion docker) v')
              | otherwise ->
-               return ()
+               pure ()
            _ -> throwIO InvalidVersionOutputException
        _ -> throwIO InvalidVersionOutputException
   where minimumDockerVersion = mkVersion [1, 6, 0]
@@ -461,14 +460,14 @@ entrypoint config@Config{} DockerEntrypoint{..} =
         User.getUserEntryForName stackUserName
       -- Switch UID/GID if needed, and update user's home directory
       case deUser of
-        Nothing -> return ()
-        Just (DockerUser 0 _ _ _) -> return ()
+        Nothing -> pure ()
+        Just (DockerUser 0 _ _ _) -> pure ()
         Just du -> withProcessContext envOverride $ updateOrCreateStackUser estackUserEntry0 homeDir du
       case estackUserEntry0 of
-        Left _ -> return ()
+        Left _ -> pure ()
         Right ue -> do
           -- If the 'stack' user exists in the image, copy any build plans and package indices from
-          -- its original home directory to the host's stack root, to avoid needing to download them
+          -- its original home directory to the host's Stack root, to avoid needing to download them
           origStackHomeDir <- liftIO $ parseAbsDir (User.homeDirectory ue)
           let origStackRoot = origStackHomeDir </> relDirDotStackProgName
           buildPlanDirExists <- doesDirExist (buildPlanDir origStackRoot)
@@ -480,7 +479,7 @@ entrypoint config@Config{} DockerEntrypoint{..} =
               unless exists $ do
                 ensureDir (parent destBuildPlan)
                 copyFile srcBuildPlan destBuildPlan
-    return True
+    pure True
   where
     updateOrCreateStackUser estackUserEntry homeDir DockerUser{..} = do
       case estackUserEntry of
@@ -520,7 +519,7 @@ entrypoint config@Config{} DockerEntrypoint{..} =
 #endif
         User.setUserID duUid
         _ <- Files.setFileCreationMask duUmask
-        return ()
+        pure ()
     stackUserName = "stack"::String
 
 -- | MVar used to ensure the Docker entrypoint is performed exactly once
@@ -554,8 +553,8 @@ removeDirectoryContents path excludeDirs excludeFiles =
 -- e.g. docker pull, in which docker uses stderr for progress output.
 --
 -- Use 'readProcess_' directly to customize this.
-readDockerProcess
-    :: (HasProcessContext env, HasLogFunc env)
+readDockerProcess ::
+       (HasProcessContext env, HasLogFunc env)
     => [String] -> RIO env BS.ByteString
 readDockerProcess args = BL.toStrict <$> proc "docker" args readProcessStdout_
 

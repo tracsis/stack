@@ -1,6 +1,12 @@
+{-# LANGUAGE CPP            #-}
+{-# LANGUAGE PackageImports #-}
 module StackSetupShim where
 import Main
+#if MIN_VERSION_Cabal(3,8,1)
 import Distribution.PackageDescription (PackageDescription, emptyHookedBuildInfo)
+#else
+import "Cabal" Distribution.PackageDescription (PackageDescription, emptyHookedBuildInfo)
+#endif
 import Distribution.Simple
 import Distribution.Simple.Build
 import Distribution.Simple.Setup (ReplFlags, fromFlag, replDistPref, replVerbosity)
@@ -13,9 +19,9 @@ mainOverride = do
     if "repl" `elem` args && "stack-initial-build-steps" `elem` args
         then do
             defaultMainWithHooks simpleUserHooks
-                { preRepl = \_ _ -> return emptyHookedBuildInfo
+                { preRepl = \_ _ -> pure emptyHookedBuildInfo
                 , replHook = stackReplHook
-                , postRepl = \_ _ _ _ -> return ()
+                , postRepl = \_ _ _ _ -> pure ()
                 }
         else main
 

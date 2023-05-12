@@ -1,10 +1,12 @@
 {-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE RecordWildCards  #-}
+{-# LANGUAGE RecordWildCards   #-}
+
 module Stack.ConfigSpec where
 
 import Control.Arrow
+import Distribution.Verbosity (verbose)
 import Pantry.Internal.AesonExtended
 import Data.Yaml
 import Pantry.Internal (pcHpackExecutable)
@@ -22,12 +24,12 @@ import Test.Hspec
 
 sampleConfig :: String
 sampleConfig =
-  "resolver: lts-2.10\n" ++
+  "resolver: lts-19.22\n" ++
   "packages: ['.']\n"
 
 buildOptsConfig :: String
 buildOptsConfig =
-  "resolver: lts-2.10\n" ++
+  "resolver: lts-19.22\n" ++
   "packages: ['.']\n" ++
   "build:\n" ++
   "  library-profiling: true\n" ++
@@ -54,24 +56,24 @@ buildOptsConfig =
 
 hpackConfig :: String
 hpackConfig =
-  "resolver: lts-2.10\n" ++
+  "resolver: lts-19.22\n" ++
   "with-hpack: /usr/local/bin/hpack\n" ++
   "packages: ['.']\n"
 
 resolverConfig :: String
 resolverConfig =
-  "resolver: lts-2.10\n" ++
+  "resolver: lts-19.22\n" ++
   "packages: ['.']\n"
 
 snapshotConfig :: String
 snapshotConfig =
-  "snapshot: lts-2.10\n" ++
+  "snapshot: lts-19.22\n" ++
   "packages: ['.']\n"
 
 resolverSnapshotConfig :: String
 resolverSnapshotConfig =
-  "resolver: lts-2.10\n" ++
-  "snapshot: lts-2.10\n" ++
+  "resolver: lts-19.22\n" ++
+  "snapshot: lts-19.22\n" ++
   "packages: ['.']\n"
 
 stackDotYaml :: Path Rel File
@@ -112,7 +114,7 @@ spec = beforeAll setup $ do
 
         toAbsPath path = do
           parentDir <- getCurrentDirectory >>= parseAbsDir
-          return (parentDir </> path)
+          pure (parentDir </> path)
 
         loadProject config inner = do
           yamlAbs <- toAbsPath stackDotYaml
@@ -121,14 +123,14 @@ spec = beforeAll setup $ do
 
     it "parses snapshot using 'resolver'" $ inTempDir $ do
       loadProject resolverConfig $ \Project{..} ->
-        projectResolver `shouldBe` RSLSynonym (LTS 2 10)
+        projectResolver `shouldBe` RSLSynonym (LTS 19 22)
 
     it "parses snapshot using 'snapshot'" $ inTempDir $ do
       loadProject snapshotConfig $ \Project{..} ->
-        projectResolver `shouldBe` RSLSynonym (LTS 2 10)
+        projectResolver `shouldBe` RSLSynonym (LTS 19 22)
 
     it "throws if both 'resolver' and 'snapshot' are present" $ inTempDir $ do
-      loadProject resolverSnapshotConfig (const (return ()))
+      loadProject resolverSnapshotConfig (const (pure ()))
         `shouldThrow` anyException
 
   describe "loadConfig" $ do
@@ -138,12 +140,12 @@ spec = beforeAll setup $ do
             loadConfig inner
     -- TODO(danburton): make sure parent dirs also don't have config file
     it "works even if no config file exists" $ example $
-      loadConfig' $ const $ return ()
+      loadConfig' $ const $ pure ()
 
     it "works with a blank config file" $ inTempDir $ do
       writeFile (toFilePath stackDotYaml) ""
       -- TODO(danburton): more specific test for exception
-      loadConfig' (const (return ())) `shouldThrow` anyException
+      loadConfig' (const (pure ())) `shouldThrow` anyException
 
     let configOverrideHpack = pcHpackExecutable . view pantryConfigL
 
@@ -153,7 +155,7 @@ spec = beforeAll setup $ do
         liftIO $ configOverrideHpack config `shouldBe`
         HpackCommand "/usr/local/bin/hpack"
 
-    it "parses config bundled hpack" $ inTempDir $ do
+    it "parses config bundled Hpack" $ inTempDir $ do
       writeFile (toFilePath stackDotYaml) sampleConfig
       loadConfig' $ \config ->
         liftIO $ configOverrideHpack config `shouldBe` HpackBundled
@@ -172,16 +174,19 @@ spec = beforeAll setup $ do
       boptsKeepTmpFiles `shouldBe` True
       boptsForceDirty `shouldBe` True
       boptsTests `shouldBe` True
-      boptsTestOpts `shouldBe` TestOpts {toRerunTests = True
-                                         ,toAdditionalArgs = ["-fprof"]
-                                         ,toCoverage = True
-                                         ,toDisableRun = True
-                                         ,toMaximumTimeSeconds = Nothing}
+      boptsTestOpts `shouldBe` TestOpts { toRerunTests = True
+                                        , toAdditionalArgs = ["-fprof"]
+                                        , toCoverage = True
+                                        , toDisableRun = True
+                                        , toMaximumTimeSeconds = Nothing
+                                        , toAllowStdin = True
+                                        }
       boptsBenchmarks `shouldBe` True
-      boptsBenchmarkOpts `shouldBe` BenchmarkOpts {beoAdditionalArgs = Just "-O2"
-                                                   ,beoDisableRun = True}
+      boptsBenchmarkOpts `shouldBe` BenchmarkOpts { beoAdditionalArgs = Just "-O2"
+                                                  , beoDisableRun = True
+                                                  }
       boptsReconfigure `shouldBe` True
-      boptsCabalVerbose `shouldBe` True
+      boptsCabalVerbose `shouldBe` CabalVerbosity verbose
 
     it "finds the config file in a parent directory" $ inTempDir $ do
       writeFile "package.yaml" "name: foo"
@@ -211,7 +216,7 @@ spec = beforeAll setup $ do
             yamlAbs = parentDir </> yamlRel
             packageYaml = childRel </> either impureThrow id (parseRelFile "package.yaml")
         createDirectoryIfMissing True $ toFilePath $ parent yamlAbs
-        writeFile (toFilePath yamlAbs) "resolver: ghc-7.8"
+        writeFile (toFilePath yamlAbs) "resolver: ghc-9.0"
         writeFile (toFilePath packageYaml) "name: foo"
         withEnvVar "STACK_YAML" (toFilePath yamlRel) $ loadConfig' $ \config -> liftIO $ do
             BuildConfig{..} <- runRIO config $ withBuildConfig ask
@@ -223,5 +228,5 @@ spec = beforeAll setup $ do
         let parsed :: Either String (Either String (WithJSONWarnings ConfigMonoid))
             parsed = parseEither (parseConfigMonoid curDir) <$> left show (decodeEither' defaultConfigYaml)
         case parsed of
-            Right (Right _) -> return () :: IO ()
+            Right (Right _) -> pure () :: IO ()
             _ -> fail "Failed to parse default config yaml"

@@ -1,4 +1,5 @@
 {-# LANGUAGE NoImplicitPrelude #-}
+
 module Stack.Build.ExecuteSpec (main, spec) where
 
 import Stack.Prelude
@@ -8,4 +9,4 @@ main :: IO ()
 main = hspec spec
 
 spec :: Spec
-spec = return ()
+spec = pure ()

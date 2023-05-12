@@ -18,11 +18,13 @@ ready to be used on your projects:
   and macOS. The configuration is significantly more involved to allow
   for all of this branching behavior.
 
-  __NOTE__: It is likely going to be necessary to modify this configuration to
-  match the needs of your project, such as tweaking the build matrix to alter
-  which GHC versions you test against, or to specify GHC-version-specific
-  `stack.yaml` files if necessary. Don't be surprised if it doesn't work the
-  first time around. See the multiple GHC section below for more information.
+    !!! note
+        It is likely going to be necessary to modify this configuration to match
+        the needs of your project, such as tweaking the build matrix to alter
+        which GHC versions you test against, or to specify GHC-version-specific
+        `stack.yaml` files if necessary. Don't be surprised if it doesn't work
+        the first time around. See the multiple GHC section below for more
+        information.
 
 Each of these configurations is ready to be used immediately, just
 copy-paste the content into the `.travis.yml` file in the root or your
@@ -49,14 +51,14 @@ currently available only for
 [container-based Travis infrastructure](http://docs.travis-ci.com/user/workers/container-based-infrastructure/).
 Shortly we have to add
 
-```yaml
+~~~yaml
 sudo: false
 
 # Caching so the next build will be fast too.
 cache:
   directories:
   - $HOME/.stack
-```
+~~~
 
 To the `.travis.yml`. This however restricts how we can install GHC and Stack on
 the Travis machines.
@@ -64,15 +66,15 @@ the Travis machines.
 ## Installing Stack
 
 Currently there is only one reasonable way to install Stack: fetch precompiled
-binary from the Github.
+binary from the GitHub.
 
-```yaml
+~~~yaml
 before_install:
 # Download and unpack the stack executable
 - mkdir -p ~/.local/bin
 - export PATH=$HOME/.local/bin:$PATH
 - travis_retry curl -L https://get.haskellstack.org/stable/linux-x86_64.tar.gz | tar xz --wildcards --strip-components=1 -C ~/.local/bin '*/stack'
-```
+~~~
 
 ## Installing GHC
 
@@ -85,7 +87,7 @@ See the above scripts for an example of the first option (letting Stack
 download GHC). Here, we will explain the second option. With single GHC the
 situation is simple:
 
-```yaml
+~~~yaml
 before_install:
   # Install stack as above
   # ...
@@ -99,7 +101,7 @@ addons:
     - hvr-ghc
     packages:
     - ghc-7.10.2
-```
+~~~
 
 ### Multiple GHC - parametrised builds
 
@@ -110,7 +112,7 @@ a bit repetitive `.travis.yml`.
 Also for different GHC versions, you probably want to use different `stack.yaml`
 files.
 
-```yaml
+~~~yaml
 # N.B. No top-level env: declaration!
 
 matrix:
@@ -142,7 +144,7 @@ matrix:
 before_install:
   # ghc
   - export PATH=/opt/ghc/$GHCVER/bin:$PATH
-```
+~~~
 
 Especially to use ghc `HEAD` you need to pass `--skip-ghc-check` option to Stack.
 
@@ -150,10 +152,10 @@ Especially to use ghc `HEAD` you need to pass `--skip-ghc-check` option to Stack
 
 After the environment setup, actual test running is simple:
 
-```yaml
+~~~yaml
 script:
   - stack --no-terminal --skip-ghc-check test
-```
+~~~
 
 In case you're wondering: we need `--no-terminal` because stack does some fancy
 sticky display on smart terminals to give nicer status and progress messages,
@@ -165,11 +167,11 @@ Some Stack commands will run for long time (when cache is cold) without
 producing any output. To avoid timeouts, use the built in [travis_wait](https://docs.travis-ci.com/user/common-build-problems/#Build-times-out-because-no-output-was-received).
 
 
-```yaml
+~~~yaml
 install:
   - travis_wait stack --no-terminal --skip-ghc-check setup
   - travis_wait stack --no-terminal --skip-ghc-check test --only-snapshot
-```
+~~~
 
 ## Examples
 

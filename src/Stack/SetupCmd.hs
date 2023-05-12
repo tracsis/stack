@@ -1,19 +1,18 @@
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ConstraintKinds   #-}
+{-# LANGUAGE DataKinds         #-}
+{-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE RecordWildCards   #-}
 
 -- | Install GHC/GHCJS and Cabal.
 module Stack.SetupCmd
-    ( setup
-    , setupParser
-    , SetupCmdOpts(..)
-    ) where
+  ( setup
+  , setupParser
+  , SetupCmdOpts (..)
+  ) where
 
 import           Control.Applicative
-import           Control.Monad.Reader
 import qualified Data.Text as T
 import qualified Options.Applicative as OA
 import qualified Options.Applicative.Builder.Extra as OA
@@ -61,8 +60,8 @@ setupParser = SetupCmdOpts
             Left _ ->
                 case parseWantedCompiler (T.pack s) of
                     Left _ -> OA.readerError $ "Invalid version: " ++ s
-                    Right x -> return x
-            Right x -> return x
+                    Right x -> pure x
+            Right x -> pure x
 
 setup
     :: (HasBuildConfig env, HasGHCVariant env)
@@ -91,8 +90,8 @@ setup SetupCmdOpts{..} wantedCompiler compilerCheck mstack = do
             WCGhcGit{} -> "GHC (built from source)"
             WCGhcjs {} -> "GHCJS"
     if sandboxedGhc
-        then logInfo $ "stack will use a sandboxed " <> compiler <> " it installed"
-        else logInfo $ "stack will use the " <> compiler <> " on your PATH"
-    logInfo "For more information on paths, see 'stack path' and 'stack exec env'"
+        then logInfo $ "Stack will use a sandboxed " <> compiler <> " it installed."
+        else logInfo $ "Stack will use the " <> compiler <> " on your PATH."
+    logInfo "For more information on paths, see 'stack path' and 'stack exec env'."
     logInfo $ "To use this " <> compiler <> " and packages outside of a project, consider using:"
-    logInfo "stack ghc, stack ghci, stack runghc, or stack exec"
+    logInfo "'stack ghc', 'stack ghci', 'stack runghc', or 'stack exec'."

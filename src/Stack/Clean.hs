@@ -1,43 +1,64 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE NoImplicitPrelude  #-}
+{-# LANGUAGE ConstraintKinds    #-}
 {-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE FlexibleContexts   #-}
+{-# LANGUAGE OverloadedStrings  #-}
 
 -- | Clean a project.
 module Stack.Clean
-    (clean
-    ,CleanOpts(..)
-    ,CleanCommand(..)
-    ,StackCleanException(..)
-    ) where
+  ( clean
+  , CleanOpts (..)
+  , CleanCommand (..)
+  ) where
 
-import           Stack.Prelude
-import           Data.List ((\\),intercalate)
+import           Data.List ( (\\), intercalate )
 import qualified Data.Map.Strict as Map
-import           Path.IO (ignoringAbsence, removeDirRecur)
-import           Stack.Constants.Config (rootDistDirFromDir, workDirFromDir)
+import           Path.IO ( ignoringAbsence, removeDirRecur )
+import           Stack.Config ( withBuildConfig )
+import           Stack.Constants.Config ( rootDistDirFromDir, workDirFromDir )
+import           Stack.Prelude
 import           Stack.Types.Config
 import           Stack.Types.SourceMap
 
--- | Deletes build artifacts in the current project.
---
--- Throws 'StackCleanException'.
-clean :: HasBuildConfig env => CleanOpts -> RIO env ()
-clean cleanOpts = do
-    toDelete <- dirsToDelete cleanOpts
-    logDebug $ "Need to delete: " <> fromString (show (map toFilePath toDelete))
-    failures <- mapM cleanDir toDelete
-    when (or failures) exitFailure
-  where
-    cleanDir dir = do
-      logDebug $ "Deleting directory: " <> fromString (toFilePath dir)
-      liftIO (ignoringAbsence (removeDirRecur dir) >> return False) `catchAny` \ex -> do
-        logError $ "Exception while recursively deleting " <> fromString (toFilePath dir) <> "\n" <> displayShow ex
-        logError "Perhaps you do not have permission to delete these files or they are in use?"
-        return True
+-- | Type representing exceptions thrown by functions exported by the
+-- "Stack.Clean" module.
+data CleanException
+    = NonLocalPackages [PackageName]
+    | DeletionFailures [(Path Abs Dir, SomeException)]
+    deriving (Show, Typeable)
 
-dirsToDelete :: HasBuildConfig env => CleanOpts -> RIO env [Path Abs Dir]
+instance Exception CleanException where
+    displayException (NonLocalPackages pkgs) = concat
+        [ "Error: [S-9463]\n"
+        , "The following packages are not part of this project: "
+        , intercalate ", " (map show pkgs)
+        ]
+    displayException (DeletionFailures failures) = concat
+        [ "Error: [S-6321]\n"
+        , "Exception while recursively deleting:\n"
+        , concatMap (\(dir, e) ->
+            toFilePath dir <> "\n" <> displayException e <> "\n") failures
+        , "Perhaps you do not have permission to delete these files or they \
+          \are in use?"
+        ]
+
+-- | Deletes build artifacts in the current project.
+clean :: CleanOpts -> RIO Config ()
+clean cleanOpts = do
+    toDelete <- withBuildConfig $ dirsToDelete cleanOpts
+    logDebug $ "Need to delete: " <> fromString (show (map toFilePath toDelete))
+    failures <- catMaybes <$> mapM cleanDir toDelete
+    case failures of
+        [] -> pure ()
+        _  -> throwIO $ DeletionFailures failures
+
+cleanDir :: Path Abs Dir -> RIO Config (Maybe (Path Abs Dir, SomeException))
+cleanDir dir = do
+    logDebug $ "Deleting directory: " <> fromString (toFilePath dir)
+    liftIO (ignoringAbsence (removeDirRecur dir) >> pure Nothing) `catchAny` \ex ->
+      pure $ Just (dir, ex)
+
+dirsToDelete :: CleanOpts -> RIO BuildConfig [Path Abs Dir]
 dirsToDelete cleanOpts = do
     packages <- view $ buildConfigL.to (smwProject . bcSMWanted)
     case cleanOpts of
@@ -53,7 +74,7 @@ dirsToDelete cleanOpts = do
         CleanFull -> do
             pkgWorkDirs <- mapM (workDirFromDir . ppRoot) $ Map.elems packages
             projectWorkDir <- getProjectWorkDir
-            return (projectWorkDir : pkgWorkDirs)
+            pure (projectWorkDir : pkgWorkDirs)
 
 -- | Options for @stack clean@.
 data CleanOpts
@@ -68,15 +89,3 @@ data CleanOpts
 data CleanCommand
     = Clean
     | Purge
-
--- | Exceptions during cleanup.
-newtype StackCleanException
-    = NonLocalPackages [PackageName]
-    deriving (Typeable)
-
-instance Show StackCleanException where
-    show (NonLocalPackages pkgs) =
-        "The following packages are not part of this project: " ++
-        intercalate ", " (map show pkgs)
-
-instance Exception StackCleanException

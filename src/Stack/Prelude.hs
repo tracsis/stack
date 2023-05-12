@@ -1,6 +1,8 @@
-{-# LANGUAGE NoImplicitPrelude          #-}
-{-# LANGUAGE OverloadedStrings          #-}
-{-# LANGUAGE ScopedTypeVariables        #-}
+{-# LANGUAGE NoImplicitPrelude         #-}
+{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE OverloadedStrings         #-}
+{-# LANGUAGE ScopedTypeVariables       #-}
+
 module Stack.Prelude
   ( withSystemTempDir
   , withKeepSystemTempDir
@@ -14,6 +16,7 @@ module Stack.Prelude
   , promptPassword
   , promptBool
   , stackProgName
+  , stackProgName'
   , FirstTrue (..)
   , fromFirstTrue
   , defaultFirstTrue
@@ -21,44 +24,114 @@ module Stack.Prelude
   , fromFirstFalse
   , defaultFirstFalse
   , writeBinaryFileAtomic
+  , bugReport
+  , bugPrettyReport
+  , blankLine
   , module X
+  -- * Re-exports from the rio-pretty print package
+  , HasStylesUpdate (..)
+  , HasTerm (..)
+  , Pretty (..)
+  , PrettyException (..)
+  , PrettyRawSnapshotLocation (..)
+  , StyleDoc
+  , Style (..)
+  , StyleSpec
+  , StylesUpdate (..)
+  , (<+>)
+  , align
+  , bulletedList
+  , debugBracket
+  , defaultStyles
+  , encloseSep
+  , fillSep
+  , flow
+  , hang
+  , hcat
+  , hsep
+  , indent
+  , line
+  , logLevelToStyle
+  , mkNarrativeList
+  , parens
+  , parseStylesUpdateFromString
+  , prettyDebugL
+  , prettyError
+  , prettyErrorL
+  , prettyInfo
+  , prettyInfoL
+  , prettyInfoS
+  , prettyNote
+  , prettyWarn
+  , prettyWarnL
+  , prettyWarnS
+  , punctuate
+  , sep
+  , softbreak
+  , softline
+  , string
+  , style
+  , vsep
   ) where
 
-import           RIO                  as X
-import           RIO.File             as X hiding (writeBinaryFileAtomic)
-import           Data.Conduit         as X (ConduitM, runConduit, (.|))
-import           Path                 as X (Abs, Dir, File, Path, Rel,
-                                            toFilePath)
-import           Pantry               as X hiding (Package (..), loadSnapshot)
-
-import           Data.Monoid          as X (First (..), Any (..), Sum (..), Endo (..))
-
-import qualified Path.IO
-
-import           System.IO.Echo (withoutInputEcho)
-
+import           Data.Monoid as X
+                   ( Any (..), Endo (..), First (..), Sum (..) )
+import           Data.Conduit as X ( ConduitM, runConduit, (.|) )
 import qualified Data.Conduit.Binary as CB
 import qualified Data.Conduit.List as CL
-import           Data.Conduit.Process.Typed (withLoggedProcess_, createSource, byteStringInput)
-import           RIO.Process (HasProcessContext (..), ProcessContext, setStdin, closed, getStderr, getStdout, proc, withProcessWait_, setStdout, setStderr, ProcessConfig, readProcess_, workingDirL, waitExitCode)
-
+import           Data.Conduit.Process.Typed
+                   ( byteStringInput, createSource, withLoggedProcess_ )
 import qualified Data.Text.IO as T
+import           Pantry as X hiding ( Package (..), loadSnapshot )
+import           Path as X
+                   ( Abs, Dir, File, Path, Rel, toFilePath )
+import qualified Path.IO
+import           RIO as X
+import           RIO.File as X hiding ( writeBinaryFileAtomic )
+import           RIO.PrettyPrint
+                   ( HasStylesUpdate (..), HasTerm (..), Pretty (..), Style (..)
+                   , StyleDoc, (<+>), align, bulletedList, debugBracket
+                   , encloseSep, fillSep, flow, hang, hcat, hsep, indent, line
+                   , logLevelToStyle, mkNarrativeList, parens, prettyDebugL
+                   , prettyError, prettyErrorL, prettyInfo, prettyInfoL
+                   , prettyInfoS, prettyNote, prettyWarn, prettyWarnL
+                   , prettyWarnS, punctuate, sep, softbreak, softline, string
+                   , style, stylesUpdateL, useColorL, vsep
+                   )
+import           RIO.PrettyPrint.DefaultStyles (defaultStyles)
+import           RIO.PrettyPrint.PrettyException ( PrettyException (..) )
+import           RIO.PrettyPrint.StylesUpdate
+                   ( StylesUpdate (..), parseStylesUpdateFromString )
+import           RIO.PrettyPrint.Types ( StyleSpec )
+import           RIO.Process
+                   ( HasProcessContext (..), ProcessConfig, ProcessContext
+                   , closed, getStderr, getStdout, proc, readProcess_, setStderr
+                   , setStdin, setStdout, waitExitCode, withProcessWait_
+                   , workingDirL
+                   )
 import qualified RIO.Text as T
+import           System.IO.Echo ( withoutInputEcho )
 
 -- | Path version
 withSystemTempDir :: MonadUnliftIO m => String -> (Path Abs Dir -> m a) -> m a
-withSystemTempDir str inner = withRunInIO $ \run -> Path.IO.withSystemTempDir str $ run . inner
+withSystemTempDir str inner = withRunInIO $ \run ->
+  Path.IO.withSystemTempDir str $ run . inner
 
 -- | Like `withSystemTempDir`, but the temporary directory is not deleted.
-withKeepSystemTempDir :: MonadUnliftIO m => String -> (Path Abs Dir -> m a) -> m a
+withKeepSystemTempDir :: MonadUnliftIO m
+                      => String
+                      -> (Path Abs Dir -> m a)
+                      -> m a
 withKeepSystemTempDir str inner = withRunInIO $ \run -> do
   path <- Path.IO.getTempDir
   dir <- Path.IO.createTempDir path str
   run $ inner dir
 
--- | Consume the stdout and stderr of a process feeding strict 'ByteString's to the consumers.
+-- | Consume the stdout and stderr of a process feeding strict 'ByteString's to
+-- the consumers.
 --
--- Throws a 'ReadProcessException' if unsuccessful in launching, or 'ExitCodeException' if the process itself fails.
+-- Throws a 'ReadProcessException' if unsuccessful in launching, or
+-- 'ExitCodeException' if the process itself fails.
 sinkProcessStderrStdout
   :: forall e o env. (HasProcessContext env, HasLogFunc env, HasCallStack)
   => String -- ^ Command
@@ -119,13 +192,16 @@ readProcessNull name args =
 
 -- | Use the new 'ProcessContext', but retain the working directory
 -- from the parent environment.
-withProcessContext :: HasProcessContext env => ProcessContext -> RIO env a -> RIO env a
+withProcessContext :: HasProcessContext env
+                   => ProcessContext
+                   -> RIO env a
+                   -> RIO env a
 withProcessContext pcNew inner = do
   pcOld <- view processContextL
   let pcNew' = set workingDirL (view workingDirL pcOld) pcNew
   local (set processContextL pcNew') inner
 
--- | Remove a trailing carriage return if present
+-- | Remove a trailing carriage pure if present
 stripCR :: Text -> Text
 stripCR = T.dropSuffix "\r"
 
@@ -151,7 +227,7 @@ promptPassword txt = liftIO $ do
   password <- withoutInputEcho T.getLine
   -- Since the user's newline is not echoed, one needs to be inserted.
   T.putStrLn ""
-  return password
+  pure password
 
 -- | Prompt the user by sending text to stdout, and collecting a line of
 -- input from stdin. If something other than "y" or "n" is entered, then
@@ -161,8 +237,8 @@ promptBool :: MonadIO m => Text -> m Bool
 promptBool txt = liftIO $ do
   input <- prompt txt
   case input of
-    "y" -> return True
-    "n" -> return False
+    "y" -> pure True
+    "n" -> pure False
     _ -> do
       T.putStrLn "Please press either 'y' or 'n', and then enter."
       promptBool txt
@@ -173,6 +249,9 @@ promptBool txt = liftIO $ do
 -- GHC stage restrictions.
 stackProgName :: String
 stackProgName = "stack"
+
+stackProgName' :: Text
+stackProgName' = T.pack stackProgName
 
 -- | Like @First Bool@, but the default is @True@.
 newtype FirstTrue = FirstTrue { getFirstTrue :: Maybe Bool }
@@ -215,3 +294,45 @@ writeBinaryFileAtomic :: MonadIO m => Path absrel File -> Builder -> m ()
 writeBinaryFileAtomic fp builder =
     liftIO $
     withBinaryFileAtomic (toFilePath fp) WriteMode (`hPutBuilder` builder)
+
+newtype PrettyRawSnapshotLocation
+    = PrettyRawSnapshotLocation RawSnapshotLocation
+
+instance Pretty PrettyRawSnapshotLocation where
+    pretty (PrettyRawSnapshotLocation (RSLCompiler compiler)) =
+        fromString $ T.unpack $ utf8BuilderToText $ display compiler
+    pretty (PrettyRawSnapshotLocation (RSLUrl url Nothing)) =
+        style Url (fromString $ T.unpack url)
+    pretty (PrettyRawSnapshotLocation (RSLUrl url (Just blob))) =
+        fillSep
+        [ style Url (fromString $ T.unpack url)
+        , parens $ fromString $ T.unpack $ utf8BuilderToText $ display blob
+        ]
+    pretty (PrettyRawSnapshotLocation (RSLFilePath resolved)) =
+        style File (fromString $ show $ resolvedRelative resolved)
+    pretty (PrettyRawSnapshotLocation (RSLSynonym syn)) = fromString $ show syn
+
+-- | Report a bug in Stack.
+bugReport :: String -> String -> String
+bugReport code msg =
+    "Error: " ++ code ++ "\n" ++
+    bugDeclaration ++ " " ++ msg ++ " " ++ bugRequest
+
+-- | Report a pretty bug in Stack.
+bugPrettyReport :: String -> StyleDoc -> StyleDoc
+bugPrettyReport code msg =
+       "Error:" <+> fromString code
+    <> line
+    <> flow bugDeclaration <+> msg <+> flow bugRequest
+
+-- | Bug declaration message.
+bugDeclaration :: String
+bugDeclaration = "The impossible happened!"
+
+-- | Bug report message.
+bugRequest :: String
+bugRequest =  "Please report this bug at Stack's repository."
+
+-- | A \'pretty\' blank line.
+blankLine :: StyleDoc
+blankLine = line <> line

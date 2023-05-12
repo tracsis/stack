@@ -1,29 +1,49 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | A wrapper around hoogle.
 module Stack.Hoogle
-    ( hoogleCmd
-    ) where
+  ( hoogleCmd
+  ) where
 
-import           Stack.Prelude
 import qualified Data.ByteString.Lazy.Char8 as BL8
-import           Data.Char (isSpace)
+import           Data.Char ( isSpace )
 import qualified Data.Text as T
-import           Distribution.PackageDescription (packageDescription, package)
-import           Distribution.Types.PackageName (mkPackageName)
-import           Distribution.Version (mkVersion)
-import           Lens.Micro ((?~))
-import           Path (parseAbsFile)
-import           Path.IO hiding (findExecutable)
+import           Distribution.PackageDescription ( packageDescription, package )
+import           Distribution.Types.PackageName ( mkPackageName )
+import           Distribution.Version ( mkVersion )
+import           Lens.Micro ( (?~) )
+import           Path ( parseAbsFile )
+import           Path.IO hiding ( findExecutable )
 import qualified Stack.Build
-import           Stack.Build.Target (NeedTargets(NeedTargets))
+import           Stack.Build.Target ( NeedTargets (NeedTargets) )
+import           Stack.Prelude
 import           Stack.Runners
 import           Stack.Types.Config
 import           Stack.Types.SourceMap
 import qualified RIO.Map as Map
 import           RIO.Process
+
+-- | Type representing exceptions thrown by functions exported by the
+-- "Stack.Hoogle" module.
+data HoogleException
+  = HoogleDatabaseNotFound
+  | HoogleNotFound !Text
+  | HoogleOnPathNotFoundBug
+  deriving (Show, Typeable)
+
+instance Exception HoogleException where
+  displayException HoogleDatabaseNotFound =
+    "Error: [S-3025]\n"
+    ++ "No Hoogle database. Not building one due to '--no-setup'."
+  displayException (HoogleNotFound e) =
+    "Error: [S-1329]\n"
+    ++ T.unpack e
+    ++ "\n"
+    ++ "Not installing Hoogle due to '--no-setup'."
+  displayException HoogleOnPathNotFoundBug = bugReport "[S-9669]"
+    "Cannot find Hoogle executable on PATH, after installing."
 
 -- | Helper type to duplicate log messages
 data Muted = Muted | NotMuted
@@ -50,7 +70,7 @@ hoogleCmd (args,setup,rebuild,startServer) =
     generateDbIfNeeded hooglePath = do
         databaseExists <- checkDatabaseExists
         if databaseExists && not rebuild
-            then return ()
+            then pure ()
             else if setup || rebuild
                      then do
                          logWarn
@@ -61,10 +81,7 @@ hoogleCmd (args,setup,rebuild,startServer) =
                          logInfo "Built docs."
                          generateDb hooglePath
                          logInfo "Generated DB."
-                     else do
-                         logError
-                             "No Hoogle database. Not building one due to --no-setup"
-                         bail
+                     else throwIO HoogleDatabaseNotFound
     generateDb :: Path Abs File -> RIO EnvConfig ()
     generateDb hooglePath = do
         do dir <- hoogleRoot
@@ -75,7 +92,7 @@ hoogleCmd (args,setup,rebuild,startServer) =
       config <- view configL
       runRIO config $ -- a bit weird that we have to drop down like this
         catch (withDefaultEnvConfig $ Stack.Build.build Nothing)
-              (\(_ :: ExitCode) -> return ())
+              (\(_ :: ExitCode) -> pure ())
     hooglePackageName = mkPackageName "hoogle"
     hoogleMinVersion = mkVersion [5, 0]
     hoogleMinIdent =
@@ -86,9 +103,7 @@ hoogleCmd (args,setup,rebuild,startServer) =
         mhooglePath' <- findExecutable "hoogle"
         case mhooglePath' of
             Right hooglePath -> parseAbsFile hooglePath
-            Left _ -> do
-                logWarn "Couldn't find hoogle in path after installing.  This shouldn't happen, may be a bug."
-                bail
+            Left _ -> throwIO HoogleOnPathNotFoundBug
     requiringHoogle :: Muted -> RIO EnvConfig x -> RIO EnvConfig x
     requiringHoogle muted f = do
         hoogleTarget <- do
@@ -101,7 +116,7 @@ hoogleCmd (args,setup,rebuild,startServer) =
                       restrictMinHoogleVersion muted (packageLocationIdent pli)
                 plm@(PLMutable _) -> do
                   T.pack . packageIdentifierString . package . packageDescription
-                      <$> loadCabalFile plm
+                      <$> loadCabalFile (Just stackProgName') plm
             Nothing -> do
               -- not muted because this should happen only once
               logWarn "No hoogle version was found, trying to install the latest version"
@@ -151,8 +166,6 @@ hoogleCmd (args,setup,rebuild,startServer) =
           (toFilePath hooglePath)
           (hoogleArgs ++ databaseArg)
           runProcess_
-    bail :: RIO EnvConfig a
-    bail = exitWith (ExitFailure (-1))
     checkDatabaseExists = do
         path <- hoogleDatabasePath
         liftIO (doesFileExist path)
@@ -163,7 +176,7 @@ hoogleCmd (args,setup,rebuild,startServer) =
         mhooglePath <- runRIO menv (findExecutable "hoogle") <>
           requiringHoogle NotMuted (findExecutable "hoogle")
         eres <- case mhooglePath of
-            Left _ -> return $ Left "Hoogle isn't installed."
+            Left _ -> pure $ Left "Hoogle isn't installed."
             Right hooglePath -> do
                 result <- withProcessContext menv
                         $ proc hooglePath ["--numeric-version"]
@@ -174,8 +187,8 @@ hoogleCmd (args,setup,rebuild,startServer) =
                         , " --numeric-version' did not respond with expected value. Got: "
                         , got
                         ]
-                return $ case result of
-                    Left err -> unexpectedResult $ T.pack (show err)
+                pure $ case result of
+                    Left err -> unexpectedResult $ T.pack (displayException err)
                     Right bs -> case parseVersion (takeWhile (not . isSpace) (BL8.unpack bs)) of
                         Nothing -> unexpectedResult $ T.pack (BL8.unpack bs)
                         Just ver
@@ -193,9 +206,7 @@ hoogleCmd (args,setup,rebuild,startServer) =
                 | setup -> do
                     logWarn $ display err <> " Automatically installing (use --no-setup to disable) ..."
                     installHoogle
-                | otherwise -> do
-                    logWarn $ display err <> " Not installing it due to --no-setup."
-                    bail
+                | otherwise -> throwIO $ HoogleNotFound err
     envSettings =
         EnvSettings
         { esIncludeLocals = True

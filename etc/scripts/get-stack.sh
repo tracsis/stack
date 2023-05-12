@@ -69,14 +69,16 @@ post_install_separator() {
   info ""
 }
 
-# determines the the CPU's instruction set
+# determines the CPU's instruction set
 get_isa() {
-  if arch | grep -Eq 'armv[78]l?' ; then
+  if uname -m | grep -Eq 'armv[78]l?' ; then
     echo arm
-  elif arch | grep -q aarch64 ; then
+  elif uname -m | grep -q aarch64 ; then
     echo aarch64
-  else
+  elif uname -m | grep -q x86 ; then
     echo x86
+  else
+    die "$(uname -m) is not a supported instruction set"
   fi
 }
 
@@ -85,11 +87,10 @@ get_isa() {
 #   test "$(get_isa)" = arm
 # }
 #
-# # exits with code 0 if aarch64 ISA is detected as described above
-# is_aarch64() {
-#   test "$(get_isa)" = aarch64
-# }
-
+# exits with code 0 if aarch64 ISA is detected as described above
+is_aarch64() {
+  test "$(get_isa)" = aarch64
+}
 
 # determines 64- or 32-bit architecture
 # if getconf is available, it will return the arch of the OS, as desired
@@ -172,16 +173,16 @@ do_ubuntu_install() {
   #  install_dependencies
   #  print_bindist_notice
   #  install_arm_linux_binary
-  #elif is_aarch64 ; then
-  #  install_dependencies
-  #  print_bindist_notice
-  #  install_aarch64_linux_binary
   if is_x86_64 ; then
     install_dependencies
     print_bindist_notice
     install_x86_64_linux_binary
+  elif is_aarch64 ; then
+    install_dependencies
+    print_bindist_notice
+    install_aarch64_linux_binary
   else
-    die "Sorry, currently only 64-bit (x86_64) Linux binary is available."
+    die "Sorry, currently only 64-bit (x86_64 or aarch64) Linux binary is available."
     #install_dependencies
     #print_bindist_notice
     #install_i386_linux_binary
@@ -203,16 +204,16 @@ do_debian_install() {
   #  install_dependencies
   #  print_bindist_notice
   #  install_arm_linux_binary
-  #elif is_aarch64 ; then
-  #  install_dependencies
-  #  print_bindist_notice
-  #  install_aarch64_linux_binary
   if is_x86_64 ; then
     install_dependencies
     print_bindist_notice
     install_x86_64_linux_binary
+  elif is_aarch64 ; then
+    install_dependencies
+    print_bindist_notice
+    install_aarch64_linux_binary
   else
-    die "Sorry, currently only 64-bit (x86_64) Linux binary is available."
+    die "Sorry, currently only 64-bit (x86_64 or aarch64) Linux binary is available."
   #  install_dependencies
   #  print_bindist_notice
   #  install_i386_linux_binary
@@ -300,7 +301,7 @@ do_osx_install() {
   info ""
 }
 
-# # Attempts to insall on FreeBSD.  Installs dependencies with
+# # Attempts to install on FreeBSD.  Installs dependencies with
 # # 'pkg install' and then downloads bindist.
 # do_freebsd_install() {
 #   install_dependencies() {
@@ -337,12 +338,12 @@ do_sloppy_install() {
 
   #if is_arm ; then
   #  install_arm_linux_binary
-  #elif is_aarch64 ; then
-  #  install_aarch64_linux_binary
   if is_x86_64 ; then
     install_x86_64_linux_binary
+  elif is_aarch64 ; then
+    install_aarch64_linux_binary
   else
-    die "Sorry, currently only 64-bit (x86_64) Linux binary is available."
+    die "Sorry, currently only 64-bit (x86_64 or aarch64) Linux binary is available."
     #install_i386_linux_binary
   fi
   info "Since this installer doesn't support your Linux distribution,"
@@ -576,9 +577,9 @@ install_x86_64_linux_binary() {
   install_from_bindist "linux-x86_64.tar.gz"
 }
 
-#install_aarch64_linux_binary() {
-#  install_from_bindist "linux-aarch64.tar.gz"
-#}
+install_aarch64_linux_binary() {
+  install_from_bindist "linux-aarch64.tar.gz"
+}
 
 install_64bit_osx_binary() {
   install_from_bindist "osx-x86_64.tar.gz"

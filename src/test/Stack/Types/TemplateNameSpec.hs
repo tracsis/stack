@@ -14,9 +14,9 @@ spec =
       let pathOf s = either error templatePath (parseTemplateNameFromString s)
 
       it "parses out the TemplatePath" $ do
-        pathOf "github:user/name"     `shouldBe` RepoPath (RepoTemplatePath Github    "user" "name.hsfiles")
+        pathOf "github:user/name"     `shouldBe` RepoPath (RepoTemplatePath GitHub    "user" "name.hsfiles")
         pathOf "bitbucket:user/name"  `shouldBe` RepoPath (RepoTemplatePath Bitbucket "user" "name.hsfiles")
-        pathOf "gitlab:user/name"     `shouldBe` RepoPath (RepoTemplatePath Gitlab    "user" "name.hsfiles")
+        pathOf "gitlab:user/name"     `shouldBe` RepoPath (RepoTemplatePath GitLab    "user" "name.hsfiles")
 
         pathOf "http://www.com/file"  `shouldBe` UrlPath "http://www.com/file"
         pathOf "https://www.com/file" `shouldBe` UrlPath "https://www.com/file"
@@ -37,7 +37,7 @@ spec =
 
           let colonAction =
                 do
-                  return $! pathOf "with:colon"
+                  pure $! pathOf "with:colon"
           colonAction `shouldThrow` anyErrorCall
 
         else do
@@ -48,4 +48,3 @@ spec =
           pathOf "c:\\home\\file"       `shouldBe` RelPath "c:\\home\\file.hsfiles" (Path "c:\\home\\file.hsfiles")
           pathOf "with/slash"           `shouldBe` RelPath "with/slash.hsfiles"     (Path "with/slash.hsfiles")
           pathOf "with:colon"           `shouldBe` RelPath "with:colon.hsfiles"     (Path "with:colon.hsfiles")
-

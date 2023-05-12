@@ -1,9 +1,9 @@
-{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE NoImplicitPrelude     #-}
 {-# LANGUAGE ConstraintKinds       #-}
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings     #-}
-{-# LANGUAGE RecordWildCards       #-}
+{-# LANGUAGE NamedFieldPuns       #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
 
 -- | Generate haddocks
@@ -16,26 +16,25 @@ module Stack.Build.Haddock
     , shouldHaddockDeps
     ) where
 
-import           Stack.Prelude
 import qualified Data.Foldable as F
 import qualified Data.HashSet as HS
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
-import           Data.Time (UTCTime)
+import           Data.Time ( UTCTime )
 import           Path
 import           Path.Extra
 import           Path.IO
-import           RIO.List (intercalate)
-import           RIO.PrettyPrint
+import           RIO.List ( intercalate )
+import           RIO.Process
 import           Stack.Constants
 import           Stack.PackageDump
+import           Stack.Prelude
 import           Stack.Types.Build
 import           Stack.Types.Config
 import           Stack.Types.GhcPkgId
 import           Stack.Types.Package
 import qualified System.FilePath as FP
-import           RIO.Process
-import           Web.Browser (openBrowser)
+import           Web.Browser ( openBrowser )
 
 openHaddocksInBrowser
     :: HasTerm env
@@ -51,13 +50,13 @@ openHaddocksInBrowser bco pkgLocations buildTargets = do
             let localDocs = haddockIndexFile (localDepsDocDir bco)
             localExists <- doesFileExist localDocs
             if localExists
-                then return localDocs
+                then pure localDocs
                 else do
                     let snapDocs = haddockIndexFile (snapDocDir bco)
                     snapExists <- doesFileExist snapDocs
                     if snapExists
-                        then return snapDocs
-                        else throwString "No local or snapshot doc index found to open."
+                        then pure snapDocs
+                        else throwIO HaddockIndexNotFound
     docFile <-
         case (cliTargets, map (`Map.lookup` pkgLocations) (Set.toList buildTargets)) of
             ([_], [Just (pkgId, iloc)]) -> do
@@ -69,7 +68,7 @@ openHaddocksInBrowser bco pkgLocations buildTargets = do
                 let docFile = haddockIndexFile (docLocation </> pkgRelDir)
                 exists <- doesFileExist docFile
                 if exists
-                    then return docFile
+                    then pure docFile
                     else do
                         logWarn $
                             "Expected to find documentation at " <>
@@ -79,7 +78,7 @@ openHaddocksInBrowser bco pkgLocations buildTargets = do
             _ -> getDocIndex
     prettyInfo $ "Opening" <+> pretty docFile <+> "in the browser."
     _ <- liftIO $ openBrowser (toFilePath docFile)
-    return ()
+    pure ()
 
 -- | Determine whether we should haddock for a package.
 shouldHaddockPackage :: BuildOpts
@@ -107,7 +106,7 @@ generateLocalHaddockIndex
 generateLocalHaddockIndex bco localDumpPkgs locals = do
     let dumpPackages =
             mapMaybe
-                (\LocalPackage{lpPackage = Package{..}} ->
+                (\LocalPackage{lpPackage = Package{packageName, packageVersion}} ->
                     F.find
                         (\dp -> dpPackageIdent dp == PackageIdentifier packageName packageVersion)
                         localDumpPkgs)
@@ -139,7 +138,7 @@ generateDepsHaddockIndex bco globalDumpPkgs snapshotDumpPkgs localDumpPkgs local
         depDocDir
   where
     getGhcPkgId :: LocalPackage -> Maybe GhcPkgId
-    getGhcPkgId LocalPackage{lpPackage = Package{..}} =
+    getGhcPkgId LocalPackage{lpPackage = Package{packageName, packageVersion}} =
         let pkgId = PackageIdentifier packageName packageVersion
             mdpPkg = F.find (\dp -> dpPackageIdent dp == pkgId) localDumpPkgs
         in fmap dpGhcPkgId mdpPkg
@@ -219,9 +218,9 @@ generateHaddockIndex descr bco dumpPackages docRelFP destDir = do
                 fromString (toFilePath destIndexFile)
   where
     toInterfaceOpt :: DumpPackage -> IO (Maybe ([String], UTCTime, Path Abs File, Path Abs File))
-    toInterfaceOpt DumpPackage {..} =
+    toInterfaceOpt DumpPackage {dpHaddockInterfaces, dpPackageIdent, dpHaddockHtml} =
         case dpHaddockInterfaces of
-            [] -> return Nothing
+            [] -> pure Nothing
             srcInterfaceFP:_ -> do
                 srcInterfaceAbsFile <- parseCollapsedAbsFile srcInterfaceFP
                 let (PackageIdentifier name _) = dpPackageIdent
@@ -236,7 +235,7 @@ generateHaddockIndex descr bco dumpPackages docRelFP destDir = do
 
                 destInterfaceAbsFile <- parseCollapsedAbsFile (toFilePath destDir FP.</> destInterfaceRelFP)
                 esrcInterfaceModTime <- tryGetModificationTime srcInterfaceAbsFile
-                return $
+                pure $
                     case esrcInterfaceModTime of
                         Left _ -> Nothing
                         Right srcInterfaceModTime ->
@@ -258,7 +257,7 @@ generateHaddockIndex descr bco dumpPackages docRelFP destDir = do
             Left _ -> doCopy
             Right destInterfaceModTime
                 | destInterfaceModTime < srcInterfaceModTime -> doCopy
-                | otherwise -> return ()
+                | otherwise -> pure ()
       where
         doCopy = do
             ignoringAbsence (removeDirRecur destHtmlAbsDir)

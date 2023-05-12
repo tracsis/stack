@@ -1,54 +1,97 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE ConstraintKinds     #-}
+{-# LANGUAGE DeriveDataTypeable  #-}
+{-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Build the project.
 
 module Stack.Build
-  (build
-  ,buildLocalTargets
-  ,loadPackage
-  ,mkBaseConfigOpts
-  ,queryBuildInfo
-  ,splitObjsWarning
-  ,CabalVersionException(..))
-  where
+  ( build
+  , buildLocalTargets
+  , loadPackage
+  , mkBaseConfigOpts
+  , queryBuildInfo
+  , splitObjsWarning
+  , CabalVersionException (..)
+  ) where
 
-import           Stack.Prelude hiding (loadPackage)
-import           Data.Aeson (Value (Object, Array), (.=), object)
-import qualified Data.HashMap.Strict as HM
-import           Data.List ((\\), isPrefixOf)
-import           Data.List.Extra (groupSort)
+import           Data.Aeson ( Value (Object, Array), (.=), object )
+import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KeyMap
+import           Data.List ( (\\), isPrefixOf )
+import           Data.List.Extra ( groupSort )
 import qualified Data.List.NonEmpty as NE
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified Data.Text as T
-import           Data.Text.Encoding (decodeUtf8)
+import           Data.Text.Encoding ( decodeUtf8 )
 import qualified Data.Text.IO as TIO
-import           Data.Text.Read (decimal)
+import           Data.Text.Read ( decimal )
 import qualified Data.Vector as V
 import qualified Data.Yaml as Yaml
 import qualified Distribution.PackageDescription as C
-import           Distribution.Types.Dependency (depLibraries)
-import           Distribution.Version (mkVersion)
-import           Path (parent)
+import           Distribution.Types.Dependency ( depLibraries )
+import           Distribution.Version ( mkVersion )
+import           Path ( parent )
 import           Stack.Build.ConstructPlan
 import           Stack.Build.Execute
 import           Stack.Build.Installed
 import           Stack.Build.Source
 import           Stack.Package
-import           Stack.Setup (withNewLocalBuildTargets)
+import           Stack.Prelude hiding ( loadPackage )
+import           Stack.Setup ( withNewLocalBuildTargets )
 import           Stack.Types.Build
+import           Stack.Types.Compiler ( compilerVersionText, getGhcVersion )
 import           Stack.Types.Config
 import           Stack.Types.NamedComponent
 import           Stack.Types.Package
 import           Stack.Types.SourceMap
+import           System.Terminal ( fixCodePage )
 
-import           Stack.Types.Compiler (compilerVersionText, getGhcVersion)
-import           System.Terminal (fixCodePage)
+data CabalVersionException
+    = AllowNewerNotSupported Version
+    | CabalVersionNotSupported Version
+    deriving (Show, Typeable)
+
+instance Exception CabalVersionException where
+    displayException (AllowNewerNotSupported cabalVer) = concat
+        [ "Error: [S-8503]\n"
+        , "'--allow-newer' requires Cabal version 1.22 or greater, but "
+        , "version "
+        , versionString cabalVer
+        , " was found."
+        ]
+    displayException (CabalVersionNotSupported cabalVer) = concat
+        [ "Error: [S-5973]\n"
+        , "Stack no longer supports Cabal versions before 1.19.2, "
+        , "but version "
+        , versionString cabalVer
+        , " was found. To fix this, consider updating the resolver to lts-3.0 "
+        , "or later or to nightly-2015-05-05 or later."
+        ]
+
+data QueryException
+    = SelectorNotFound [Text]
+    | IndexOutOfRange [Text]
+    | NoNumericSelector [Text]
+    | CannotApplySelector Value [Text]
+    deriving (Show, Typeable)
+
+instance Exception QueryException where
+    displayException (SelectorNotFound sels) =
+        err "[S-4419]" "Selector not found" sels
+    displayException (IndexOutOfRange sels) =
+        err "[S-8422]" "Index out of range" sels
+    displayException (NoNumericSelector sels) =
+        err "[S-4360]" "Encountered array and needed numeric selector" sels
+    displayException (CannotApplySelector value sels) =
+        err "[S-1711]" ("Cannot apply selector to " ++ show value) sels
+
+-- | Helper function for 'QueryException' instance of 'Show'
+err :: String -> String -> [Text] -> String
+err msg code sels = "Error: " ++ code ++ "\n" ++ msg ++ ": " ++ show sels
 
 -- | Build.
 --
@@ -99,7 +142,7 @@ build msetLocalFiles = do
 
     allowLocals <- view $ configL.to configAllowLocals
     unless allowLocals $ case justLocals plan of
-      [] -> return ()
+      [] -> pure ()
       localsIdents -> throwM $ LocalPackagesPresent localsIdents
 
     checkCabalVersion
@@ -136,25 +179,13 @@ checkCabalVersion = do
     cabalVer <- view cabalVersionL
     -- https://github.com/haskell/cabal/issues/2023
     when (allowNewer && cabalVer < mkVersion [1, 22]) $ throwM $
-        CabalVersionException $
-            "Error: --allow-newer requires at least Cabal version 1.22, but version " ++
-            versionString cabalVer ++
-            " was found."
+        AllowNewerNotSupported cabalVer
     -- Since --exact-configuration is always passed, some old cabal
     -- versions can no longer be used. See the following link for why
     -- it's 1.19.2:
     -- https://github.com/haskell/cabal/blob/580fe6b6bf4e1648b2f66c1cb9da9f1f1378492c/cabal-install/Distribution/Client/Setup.hs#L592
     when (cabalVer < mkVersion [1, 19, 2]) $ throwM $
-        CabalVersionException $
-            "Stack no longer supports Cabal versions older than 1.19.2, but version " ++
-            versionString cabalVer ++
-            " was found.  To fix this, consider updating the resolver to lts-3.0 or later / nightly-2015-05-05 or later."
-
-newtype CabalVersionException = CabalVersionException { unCabalVersionException :: String }
-    deriving (Typeable)
-
-instance Show CabalVersionException where show = unCabalVersionException
-instance Exception CabalVersionException
+        CabalVersionNotSupported cabalVer
 
 -- | See https://github.com/commercialhaskell/stack/issues/1198.
 warnIfExecutablesWithSameNameCouldBeOverwritten
@@ -228,7 +259,7 @@ warnIfExecutablesWithSameNameCouldBeOverwritten locals plan = do
 warnAboutSplitObjs :: HasLogFunc env => BuildOpts -> RIO env ()
 warnAboutSplitObjs bopts | boptsSplitObjs bopts = do
     logWarn $ "Building with --split-objs is enabled. " <> fromString splitObjsWarning
-warnAboutSplitObjs _ = return ()
+warnAboutSplitObjs _ = pure ()
 
 splitObjsWarning :: String
 splitObjsWarning = unwords
@@ -248,7 +279,7 @@ mkBaseConfigOpts boptsCli = do
     snapInstallRoot <- installationRootDeps
     localInstallRoot <- installationRootLocal
     packageExtraDBs <- packageDatabaseExtra
-    return BaseConfigOpts
+    pure BaseConfigOpts
         { bcoSnapDB = snapDBPath
         , bcoLocalDB = localDBPath
         , bcoSnapInstallRoot = snapInstallRoot
@@ -289,23 +320,23 @@ queryBuildInfo selectors0 =
     >>= select id selectors0
     >>= liftIO . TIO.putStrLn . addGlobalHintsComment . decodeUtf8 . Yaml.encode
   where
-    select _ [] value = return value
+    select _ [] value = pure value
     select front (sel:sels) value =
         case value of
             Object o ->
-                case HM.lookup sel o of
-                    Nothing -> err "Selector not found"
+                case KeyMap.lookup (Key.fromText sel) o of
+                    Nothing -> throwIO $ SelectorNotFound sels'
                     Just value' -> cont value'
             Array v ->
                 case decimal sel of
                     Right (i, "")
                         | i >= 0 && i < V.length v -> cont $ v V.! i
-                        | otherwise -> err "Index out of range"
-                    _ -> err "Encountered array and needed numeric selector"
-            _ -> err $ "Cannot apply selector to " ++ show value
+                        | otherwise -> throwIO $ IndexOutOfRange sels'
+                    _ -> throwIO $ NoNumericSelector sels'
+            _ -> throwIO $ CannotApplySelector value sels'
       where
         cont = select (front . (sel:)) sels
-        err msg = throwString $ msg ++ ": " ++ show (front [sel])
+        sels' = front [sel]
     -- Include comments to indicate that this portion of the "stack
     -- query" API is not necessarily stable.
     addGlobalHintsComment
@@ -327,8 +358,8 @@ rawBuildInfo = do
     locals <- projectLocalPackages
     wantedCompiler <- view $ wantedCompilerVersionL.to (utf8BuilderToText . display)
     actualCompiler <- view $ actualCompilerVersionL.to compilerVersionText
-    return $ object
-        [ "locals" .= Object (HM.fromList $ map localToPair locals)
+    pure $ object
+        [ "locals" .= Object (KeyMap.fromList $ map localToPair locals)
         , "compiler" .= object
             [ "wanted" .= wantedCompiler
             , "actual" .= actualCompiler
@@ -336,7 +367,7 @@ rawBuildInfo = do
         ]
   where
     localToPair lp =
-        (T.pack $ packageNameString $ packageName p, value)
+        (Key.fromText $ T.pack $ packageNameString $ packageName p, value)
       where
         p = lpPackage lp
         value = object
@@ -358,7 +389,7 @@ checkComponentsBuildable lps =
 checkSubLibraryDependencies :: HasLogFunc env => [ProjectPackage] -> RIO env ()
 checkSubLibraryDependencies proj = do
   forM_ proj $ \p -> do
-    C.GenericPackageDescription _ _ lib subLibs foreignLibs exes tests benches <- liftIO $ cpGPD . ppCommon $ p
+    C.GenericPackageDescription _ _ _ lib subLibs foreignLibs exes tests benches <- liftIO $ cpGPD . ppCommon $ p
 
     let dependencies = concatMap getDeps subLibs <>
                        concatMap getDeps foreignLibs <>
@@ -372,7 +403,7 @@ checkSubLibraryDependencies proj = do
       (logWarn "SubLibrary dependency is not supported, this will almost certainly fail")
   where
     getDeps (_, C.CondNode _ dep _) = dep
-    subLibDepExist lib = 
+    subLibDepExist lib =
       any (\x ->
         case x of
           C.LSubLibName _ -> True

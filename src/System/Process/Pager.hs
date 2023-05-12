@@ -1,5 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE ScopedTypeVariables, RankNTypes, DeriveDataTypeable #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE DeriveDataTypeable  #-}
+{-# LANGUAGE RankNTypes          #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Run external pagers (@$PAGER@, @less@, @more@).
 module System.Process.Pager
@@ -8,16 +10,35 @@ module System.Process.Pager
   , PagerException (..)
   ) where
 
-import Stack.Prelude
-import System.Directory (findExecutable)
-import System.Environment (lookupEnv)
-import System.Process ( createProcess, cmdspec, shell, proc, waitForProcess
-                      , CmdSpec (ShellCommand, RawCommand)
-                      , StdStream (CreatePipe)
-                      , CreateProcess (std_in, close_fds, delegate_ctlc)
-                      )
-import Control.Monad.Trans.Maybe (MaybeT (runMaybeT, MaybeT))
+import           Control.Monad.Trans.Maybe ( MaybeT (runMaybeT, MaybeT) )
 import qualified Data.Text.IO as T
+import           Stack.Prelude
+import           System.Directory ( findExecutable )
+import           System.Environment ( lookupEnv )
+import           System.Process
+                   ( createProcess, cmdspec, shell, proc, waitForProcess
+                   , CmdSpec (ShellCommand, RawCommand)
+                   , StdStream (CreatePipe)
+                   , CreateProcess (std_in, close_fds, delegate_ctlc)
+                   )
+
+-- | Type representing exceptions thrown by functions exported by the
+-- "System.Process.Pager" module.
+data PagerException
+  = PagerExitFailure CmdSpec Int
+  deriving (Show, Typeable)
+
+instance Exception PagerException where
+  displayException (PagerExitFailure cmd n) =
+    let getStr (ShellCommand c) = c
+        getStr (RawCommand exePath _) = exePath
+    in  concat
+          [ "Error: [S-9392]\n"
+          , "Pager (`"
+          , getStr cmd
+          , "') exited with non-zero status: "
+          , show n
+          ]
 
 -- | Run pager, providing a function that writes to the pager's input.
 pageWriter :: (Handle -> IO ()) -> IO ()
@@ -36,9 +57,9 @@ pageWriter writer =
                                                     hClose h)
             exit <- waitForProcess procHandle
             case exit of
-              ExitSuccess -> return ()
+              ExitSuccess -> pure ()
               ExitFailure n -> throwIO (PagerExitFailure (cmdspec pager) n)
-            return ()
+            pure ()
        Nothing -> writer stdout
   where
     cmdspecFromEnvVar = shell <$> MaybeT (lookupEnv "PAGER")
@@ -48,16 +69,3 @@ pageWriter writer =
 -- | Run pager to display a 'Text'
 pageText :: Text -> IO ()
 pageText = pageWriter . flip T.hPutStr
-
--- | Exception running pager.
-data PagerException = PagerExitFailure CmdSpec Int
-  deriving Typeable
-instance Show PagerException where
-  show (PagerExitFailure cmd n) =
-    let
-      getStr (ShellCommand c) = c
-      getStr (RawCommand exePath _) = exePath
-    in
-      "Pager (`" ++ getStr cmd ++ "') exited with non-zero status: " ++ show n
-
-instance Exception PagerException

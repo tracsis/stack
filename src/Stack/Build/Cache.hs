@@ -1,10 +1,10 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE NoImplicitPrelude     #-}
 {-# LANGUAGE ConstraintKinds       #-}
-{-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE DataKinds             #-}
-{-# LANGUAGE ScopedTypeVariables   #-}
 {-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
 
 -- | Cache information about previous builds
 module Stack.Build.Cache
@@ -12,6 +12,7 @@ module Stack.Build.Cache
     , tryGetConfigCache
     , tryGetCabalMod
     , tryGetSetupConfigMod
+    , tryGetPackageProjectRoot
     , getInstalledExes
     , tryGetFlagCache
     , deleteCaches
@@ -22,27 +23,29 @@ module Stack.Build.Cache
     , writeConfigCache
     , writeCabalMod
     , writeSetupConfigMod
+    , writePackageProjectRoot
     , TestStatus (..)
     , setTestStatus
     , getTestStatus
     , writePrecompiledCache
     , readPrecompiledCache
     -- Exported for testing
-    , BuildCache(..)
+    , BuildCache (..)
     ) where
 
-import           Stack.Prelude
-import           Crypto.Hash (hashWith, SHA256(..))
-import qualified Data.ByteArray as Mem (convert)
+import           Crypto.Hash ( hashWith, SHA256 (..) )
+import qualified Data.ByteArray as Mem ( convert )
+import           Data.ByteString.Builder ( byteString )
 import qualified Data.Map as M
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Yaml as Yaml
-import           Foreign.C.Types (CTime)
+import           Foreign.C.Types ( CTime )
 import           Path
 import           Path.IO
 import           Stack.Constants
 import           Stack.Constants.Config
+import           Stack.Prelude
 import           Stack.Storage.Project
 import           Stack.Storage.User
 import           Stack.Types.Build
@@ -50,8 +53,9 @@ import           Stack.Types.Cache
 import           Stack.Types.Config
 import           Stack.Types.GhcPkgId
 import           Stack.Types.NamedComponent
-import           Stack.Types.SourceMap (smRelDir)
-import           System.PosixCompat.Files (modificationTime, getFileStatus, setFileTimes)
+import           Stack.Types.SourceMap ( smRelDir )
+import           System.PosixCompat.Files
+                   ( modificationTime, getFileStatus, setFileTimes )
 
 -- | Directory containing files to mark an executable as installed
 exeInstalledDir :: (HasEnvConfig env)
@@ -64,11 +68,11 @@ getInstalledExes :: (HasEnvConfig env)
                  => InstallLocation -> RIO env [PackageIdentifier]
 getInstalledExes loc = do
     dir <- exeInstalledDir loc
-    (_, files) <- liftIO $ handleIO (const $ return ([], [])) $ listDir dir
-    return $
+    (_, files) <- liftIO $ handleIO (const $ pure ([], [])) $ listDir dir
+    pure $
         concat $
         M.elems $
-        -- If there are multiple install records (from a stack version
+        -- If there are multiple install records (from a Stack version
         -- before https://github.com/commercialhaskell/stack/issues/2373
         -- was fixed), then we don't know which is correct - ignore them.
         M.fromListWith (\_ _ -> []) $
@@ -116,7 +120,7 @@ buildCacheFile dir component = do
         CExe name -> nonLibComponent "exe" name
         CTest name -> nonLibComponent "test" name
         CBench name -> nonLibComponent "bench" name
-    return $ cachesDir </> smDirName </> cacheFileName
+    pure $ cachesDir </> smDirName </> cacheFileName
 
 -- | Try to read the dirtiness cache for the given package directory.
 tryGetBuildCache :: HasEnvConfig env
@@ -135,7 +139,7 @@ tryGetConfigCache :: HasEnvConfig env
 tryGetConfigCache dir =
     loadConfigCache $ configCacheKey dir ConfigCacheTypeConfig
 
--- | Try to read the mod time of the cabal file from the last build
+-- | Try to read the mod time of the Cabal file from the last build
 tryGetCabalMod :: HasEnvConfig env
                => Path Abs Dir -> RIO env (Maybe CTime)
 tryGetCabalMod dir = do
@@ -153,6 +157,18 @@ tryGetFileMod :: MonadIO m => FilePath -> m (Maybe CTime)
 tryGetFileMod fp =
   liftIO $ either (const Nothing) (Just . modificationTime) <$>
       tryIO (getFileStatus fp)
+
+-- | Try to read the project root from the last build of a package
+tryGetPackageProjectRoot :: HasEnvConfig env
+               => Path Abs Dir -> RIO env (Maybe ByteString)
+tryGetPackageProjectRoot dir = do
+  fp <- toFilePath <$> configPackageProjectRoot dir
+  tryReadFileBinary fp
+
+tryReadFileBinary :: MonadIO m => FilePath -> m (Maybe ByteString)
+tryReadFileBinary fp =
+  liftIO $ either (const Nothing) Just <$>
+      tryIO (readFileBinary fp)
 
 -- | Write the dirtiness cache for this package's files.
 writeBuildCache :: HasEnvConfig env
@@ -197,6 +213,16 @@ writeSetupConfigMod dir (Just x) = do
     writeBinaryFileAtomic fp "Just used for its modification time"
     liftIO $ setFileTimes (toFilePath fp) x x
 
+-- | See 'tryGetPackageProjectRoot'
+writePackageProjectRoot
+  :: HasEnvConfig env
+  => Path Abs Dir
+  -> ByteString
+  -> RIO env ()
+writePackageProjectRoot dir projectRoot = do
+    fp <- configPackageProjectRoot dir
+    writeBinaryFileAtomic fp (byteString projectRoot)
+
 -- | Delete the caches for the project.
 deleteCaches :: HasEnvConfig env => Path Abs Dir -> RIO env ()
 deleteCaches dir
@@ -211,10 +237,10 @@ flagCacheKey installed = do
     installationRoot <- installationRootLocal
     case installed of
         Library _ gid _ ->
-            return $
+            pure $
             configCacheKey installationRoot (ConfigCacheTypeFlagLibrary gid)
         Executable ident ->
-            return $
+            pure $
             configCacheKey
                 installationRoot
                 (ConfigCacheTypeFlagExecutable ident)
@@ -312,7 +338,7 @@ getPrecompiledCacheKey loc copts buildHaddocks installedPackageIDs = do
   let input = (coNoDirs copts, installedPackageIDs)
       optionsHash = Mem.convert $ hashWith SHA256 $ encodeUtf8 $ tshow input
 
-  return $ precompiledCacheKey platformGhcDir compiler cabalVersion packageKey optionsHash buildHaddocks
+  pure $ precompiledCacheKey platformGhcDir compiler cabalVersion packageKey optionsHash buildHaddocks
 
 -- | Write out information about a newly built package
 writePrecompiledCache :: HasEnvConfig env
@@ -330,7 +356,7 @@ writePrecompiledCache baseConfigOpts loc copts buildHaddocks depIDs mghcPkgId su
   ec <- view envConfigL
   let stackRootRelative = makeRelative (view stackRootL ec)
   mlibpath <- case mghcPkgId of
-    Executable _ -> return Nothing
+    Executable _ -> pure Nothing
     Library _ ipid _ -> Just <$> pathFromPkgId stackRootRelative ipid
   sublibpaths <- mapM (pathFromPkgId stackRootRelative) sublibs
   exes' <- forM (Set.toList exes) $ \exe -> do
@@ -365,8 +391,8 @@ readPrecompiledCache loc copts buildHaddocks depIDs = do
     maybe (pure Nothing) (fmap Just . mkAbs) mcache
   where
     -- Since commit ed9ccc08f327bad68dd2d09a1851ce0d055c0422,
-    -- pcLibrary paths are stored as relative to the stack
-    -- root. Therefore, we need to prepend the stack root when
+    -- pcLibrary paths are stored as relative to the Stack
+    -- root. Therefore, we need to prepend the Stack root when
     -- checking that the file exists. For the older cached paths, the
     -- file will contain an absolute path, which will make `stackRoot
     -- </>` a no-op.
@@ -374,9 +400,8 @@ readPrecompiledCache loc copts buildHaddocks depIDs = do
     mkAbs pc0 = do
       stackRoot <- view stackRootL
       let mkAbs' = (stackRoot </>)
-      return PrecompiledCache
+      pure PrecompiledCache
         { pcLibrary = mkAbs' <$> pcLibrary pc0
         , pcSubLibs = mkAbs' <$> pcSubLibs pc0
         , pcExes = mkAbs' <$> pcExes pc0
         }
-
