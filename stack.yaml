@@ -26,12 +26,9 @@ nix:
 
 flags:
   stack:
-    developer-mode: true
+    developer-mode: true  
+  lukko:
+    ofd-locking: false
 
 ghc-options:
   "$locals": -fhide-source-paths
-
-
-flags:
-  lukko:
-    ofd-locking: false
