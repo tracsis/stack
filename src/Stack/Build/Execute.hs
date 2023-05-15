@@ -65,7 +65,7 @@ import           Distribution.Version ( mkVersion )
 import           Pantry.Internal.Companion
 import           Path
 import           Path.CheckInstall
-import           Path.Extra ( toFilePathNoTrailingSep, rejectMissingFile )
+import           Path.Extra ( toFilePathNoTrailingSep, rejectMissingFile, forgivingResolveFile )
 import           Path.IO
                    hiding ( findExecutable, makeAbsolute, withSystemTempDir )
 import           RIO.Process
@@ -548,7 +548,7 @@ copyExecutables exes = do
                 case loc of
                     Snap -> snapBin
                     Local -> localBin
-        mfp <- liftIO $ forgivingAbsence (resolveFile bindir $ T.unpack name ++ ext)
+        mfp <- liftIO $ forgivingResolveFile bindir (T.unpack name ++ ext)
           >>= rejectMissingFile
         case mfp of
             Nothing -> do
@@ -2195,7 +2195,7 @@ mungeBuildOutput excludeTHLoading makeAbsolute pkgDir compilerVer = void $
         mabs <-
             if isValidSuffix y
                 then liftIO $ liftM (fmap ((T.takeWhile isSpace x <>) . T.pack . toFilePath)) $
-                         forgivingAbsence (resolveFile pkgDir (T.unpack $ T.dropWhile isSpace x)) `catch`
+                         forgivingResolveFile pkgDir (T.unpack $ T.dropWhile isSpace x) `catch`
                              \(_ :: PathException) -> pure Nothing
                 else pure Nothing
         case mabs of

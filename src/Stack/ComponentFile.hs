@@ -283,7 +283,7 @@ parseHI hiPath = do
                         Iface.unList . Iface.dmods . Iface.deps
           resolveFileDependency file = do
             resolved <-
-              liftIO (forgivingAbsence (resolveFile dir file)) >>=
+              liftIO (forgivingResolveFile dir file) >>=
                 rejectMissingFile
             when (isNothing resolved) $
               prettyWarnL
