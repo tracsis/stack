@@ -721,7 +721,7 @@ warnUnsupportedCompiler ghcVersion = do
         pure True
     | ghcVersion >= mkVersion [9, 5] -> do
         logWarn $
-          "Stack has not been tested with GHC versions above 9.4, and using " <>
+          "Stack has not been tested with GHC versions above 9.6, and using " <>
           fromString (versionString ghcVersion) <>
           ", this may fail"
         pure True
@@ -748,7 +748,7 @@ warnUnsupportedCompilerCabal cp didWarn = do
         logWarn "Acceptable resolvers: lts-3.0/nightly-2015-05-05 or later"
     | cabalVersion >= mkVersion [3, 9] ->
         logWarn $
-          "Stack has not been tested with Cabal versions above 3.8, but version " <>
+          "Stack has not been tested with Cabal versions above 3.10, but version " <>
           fromString (versionString cabalVersion) <>
           " was found, this may fail"
     | otherwise -> pure ()

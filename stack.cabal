@@ -1,6 +1,6 @@
 cabal-version: 2.0
 
--- This file has been generated from package.yaml by hpack version 0.35.1.
+-- This file has been generated from package.yaml by hpack version 0.35.2.
 --
 -- see: https://github.com/sol/hpack
 
@@ -265,7 +265,7 @@ library
       src/
   ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -fwarn-tabs -fwarn-incomplete-uni-patterns -fwarn-incomplete-record-updates -optP-Wno-nonportable-include-path -fwarn-identities
   build-depends:
-      Cabal >=3.6.3.0
+      Cabal >=3.8.1.0
     , aeson >=2.0.3.0
     , annotated-wl-pprint
     , ansi-terminal
@@ -295,7 +295,7 @@ library
     , generic-deriving
     , hackage-security
     , hashable
-    , hi-file-parser
+    , hi-file-parser >=0.1.4.0
     , hpack
     , hpc
     , http-client
@@ -313,10 +313,10 @@ library
     , network-uri
     , open-browser
     , optparse-applicative >=0.17.0.0
-    , pantry >=0.8.1
+    , pantry >=0.8.2.2
     , path
     , path-io
-    , persistent >=2.13.3.5 && <2.14
+    , persistent >=2.14.0.0 && <2.15
     , persistent-sqlite
     , persistent-template
     , pretty
@@ -389,7 +389,7 @@ executable stack
       src/main
   ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -fwarn-tabs -fwarn-incomplete-uni-patterns -fwarn-incomplete-record-updates -optP-Wno-nonportable-include-path -threaded -rtsopts
   build-depends:
-      Cabal >=3.6.3.0
+      Cabal >=3.8.1.0
     , aeson >=2.0.3.0
     , annotated-wl-pprint
     , ansi-terminal
@@ -419,7 +419,7 @@ executable stack
     , generic-deriving
     , hackage-security
     , hashable
-    , hi-file-parser
+    , hi-file-parser >=0.1.4.0
     , hpack
     , hpc
     , http-client
@@ -437,10 +437,10 @@ executable stack
     , network-uri
     , open-browser
     , optparse-applicative >=0.17.0.0
-    , pantry >=0.8.1
+    , pantry >=0.8.2.2
     , path
     , path-io
-    , persistent >=2.13.3.5 && <2.14
+    , persistent >=2.14.0.0 && <2.15
     , persistent-sqlite
     , persistent-template
     , pretty
@@ -512,7 +512,7 @@ executable stack-integration-test
       test/integration/lib
   ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -fwarn-tabs -fwarn-incomplete-uni-patterns -fwarn-incomplete-record-updates -optP-Wno-nonportable-include-path -threaded -rtsopts -with-rtsopts=-N
   build-depends:
-      Cabal >=3.6.3.0
+      Cabal >=3.8.1.0
     , aeson >=2.0.3.0
     , annotated-wl-pprint
     , ansi-terminal
@@ -542,7 +542,7 @@ executable stack-integration-test
     , generic-deriving
     , hackage-security
     , hashable
-    , hi-file-parser
+    , hi-file-parser >=0.1.4.0
     , hpack
     , hpc
     , hspec
@@ -562,10 +562,10 @@ executable stack-integration-test
     , open-browser
     , optparse-applicative >=0.17.0.0
     , optparse-generic
-    , pantry >=0.8.1
+    , pantry >=0.8.2.2
     , path
     , path-io
-    , persistent >=2.13.3.5 && <2.14
+    , persistent >=2.14.0.0 && <2.15
     , persistent-sqlite
     , persistent-template
     , pretty
@@ -642,7 +642,7 @@ test-suite stack-test
       src/test
   ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -fwarn-tabs -fwarn-incomplete-uni-patterns -fwarn-incomplete-record-updates -optP-Wno-nonportable-include-path -threaded
   build-depends:
-      Cabal >=3.6.3.0
+      Cabal >=3.8.1.0
     , QuickCheck
     , aeson >=2.0.3.0
     , annotated-wl-pprint
@@ -673,7 +673,7 @@ test-suite stack-test
     , generic-deriving
     , hackage-security
     , hashable
-    , hi-file-parser
+    , hi-file-parser >=0.1.4.0
     , hpack
     , hpc
     , hspec
@@ -692,10 +692,10 @@ test-suite stack-test
     , network-uri
     , open-browser
     , optparse-applicative >=0.17.0.0
-    , pantry >=0.8.1
+    , pantry >=0.8.2.2
     , path
     , path-io
-    , persistent >=2.13.3.5 && <2.14
+    , persistent >=2.14.0.0 && <2.15
     , persistent-sqlite
     , persistent-template
     , pretty
