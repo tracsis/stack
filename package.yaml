@@ -49,7 +49,7 @@ ghc-options:
 - -optP-Wno-nonportable-include-path # workaround [Filename case on macOS · Issue #4739 · haskell/cabal](https://github.com/haskell/cabal/issues/4739)
 dependencies:
 - base >= 4.14.3.0 && < 5
-- Cabal >= 3.6.3.0
+- Cabal >= 3.8.1.0
 - aeson >= 2.0.3.0
 - annotated-wl-pprint
 - ansi-terminal
@@ -78,7 +78,7 @@ dependencies:
 - generic-deriving
 - hackage-security
 - hashable
-- hi-file-parser
+- hi-file-parser >= 0.1.4.0
 - hpack
 - hpc
 - http-client
@@ -96,13 +96,13 @@ dependencies:
 - network-uri
 - open-browser
 - optparse-applicative >= 0.17.0.0
-- pantry >= 0.8.1
+- pantry >= 0.8.2.2
 - path
 - path-io
 # In order for Cabal (the tool) to build Stack, it needs to be told of the
 # upper bound on persistent. See
 # https://github.com/commercialhaskell/stack/pull/5677#issuecomment-1193318542
-- persistent >= 2.13.3.5 && < 2.14
+- persistent >= 2.14.0.0 && < 2.15
 - persistent-sqlite
 - persistent-template
 - pretty
