@@ -1,7 +1,5 @@
 {-# LANGUAGE NoImplicitPrelude         #-}
-{-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE OverloadedStrings         #-}
-{-# LANGUAGE ScopedTypeVariables       #-}
 
 module Stack.Prelude
   ( withSystemTempDir
@@ -15,8 +13,6 @@ module Stack.Prelude
   , prompt
   , promptPassword
   , promptBool
-  , stackProgName
-  , stackProgName'
   , FirstTrue (..)
   , fromFirstTrue
   , defaultFirstTrue
@@ -27,6 +23,13 @@ module Stack.Prelude
   , bugReport
   , bugPrettyReport
   , blankLine
+  , ppException
+  , prettyThrowIO
+  , prettyThrowM
+  , mcons
+  , MungedPackageId (..)
+  , MungedPackageName (..)
+  , LibraryName (..)
   , module X
   -- * Re-exports from the rio-pretty print package
   , HasStylesUpdate (..)
@@ -44,6 +47,7 @@ module Stack.Prelude
   , debugBracket
   , defaultStyles
   , encloseSep
+  , fill
   , fillSep
   , flow
   , hang
@@ -55,15 +59,20 @@ module Stack.Prelude
   , mkNarrativeList
   , parens
   , parseStylesUpdateFromString
+  , prettyDebug
   , prettyDebugL
   , prettyError
   , prettyErrorL
+  , prettyGeneric
   , prettyInfo
   , prettyInfoL
   , prettyInfoS
   , prettyNote
+  , prettyNoteL
+  , prettyNoteS
   , prettyWarn
   , prettyWarnL
+  , prettyWarnNoIndent
   , prettyWarnS
   , punctuate
   , sep
@@ -83,6 +92,9 @@ import qualified Data.Conduit.List as CL
 import           Data.Conduit.Process.Typed
                    ( byteStringInput, createSource, withLoggedProcess_ )
 import qualified Data.Text.IO as T
+import           Distribution.Types.LibraryName ( LibraryName (..) )
+import           Distribution.Types.MungedPackageId ( MungedPackageId (..) )
+import           Distribution.Types.MungedPackageName ( MungedPackageName (..) )
 import           Pantry as X hiding ( Package (..), loadSnapshot )
 import           Path as X
                    ( Abs, Dir, File, Path, Rel, toFilePath )
@@ -92,12 +104,14 @@ import           RIO.File as X hiding ( writeBinaryFileAtomic )
 import           RIO.PrettyPrint
                    ( HasStylesUpdate (..), HasTerm (..), Pretty (..), Style (..)
                    , StyleDoc, (<+>), align, bulletedList, debugBracket
-                   , encloseSep, fillSep, flow, hang, hcat, hsep, indent, line
-                   , logLevelToStyle, mkNarrativeList, parens, prettyDebugL
-                   , prettyError, prettyErrorL, prettyInfo, prettyInfoL
-                   , prettyInfoS, prettyNote, prettyWarn, prettyWarnL
-                   , prettyWarnS, punctuate, sep, softbreak, softline, string
-                   , style, stylesUpdateL, useColorL, vsep
+                   , displayWithColor, encloseSep, fill, fillSep, flow, hang
+                   , hcat, hsep, indent, line, logLevelToStyle, mkNarrativeList
+                   , parens, prettyDebug, prettyDebugL, prettyError
+                   , prettyErrorL, prettyInfo, prettyInfoL, prettyInfoS
+                   , prettyNote, prettyNoteL, prettyNoteS, prettyWarn
+                   , prettyWarnL, prettyWarnNoIndent, prettyWarnS, punctuate
+                   , sep, softbreak, softline, string, style, stylesUpdateL
+                   , useColorL, vsep
                    )
 import           RIO.PrettyPrint.DefaultStyles (defaultStyles)
 import           RIO.PrettyPrint.PrettyException ( PrettyException (..) )
@@ -135,8 +149,8 @@ withKeepSystemTempDir str inner = withRunInIO $ \run -> do
 --
 -- Throws a 'ReadProcessException' if unsuccessful in launching, or
 -- 'ExitCodeException' if the process itself fails.
-sinkProcessStderrStdout
-  :: forall e o env. (HasProcessContext env, HasLogFunc env, HasCallStack)
+sinkProcessStderrStdout ::
+     forall e o env. (HasProcessContext env, HasLogFunc env, HasCallStack)
   => String -- ^ Command
   -> [String] -- ^ Command line arguments
   -> ConduitM ByteString Void (RIO env) e -- ^ Sink for stderr
@@ -160,27 +174,27 @@ sinkProcessStderrStdout name args sinkStderr sinkStdout =
 -- lots of output; for that use 'sinkProcessStderrStdout'.
 --
 -- Throws a 'ReadProcessException' if unsuccessful.
-sinkProcessStdout
-    :: (HasProcessContext env, HasLogFunc env, HasCallStack)
-    => String -- ^ Command
-    -> [String] -- ^ Command line arguments
-    -> ConduitM ByteString Void (RIO env) a -- ^ Sink for stdout
-    -> RIO env a
+sinkProcessStdout ::
+     (HasProcessContext env, HasLogFunc env, HasCallStack)
+  => String -- ^ Command
+  -> [String] -- ^ Command line arguments
+  -> ConduitM ByteString Void (RIO env) a -- ^ Sink for stdout
+  -> RIO env a
 sinkProcessStdout name args sinkStdout =
   proc name args $ \pc ->
   withLoggedProcess_ (setStdin closed pc) $ \p -> runConcurrently
     $ Concurrently (runConduit $ getStderr p .| CL.sinkNull)
    *> Concurrently (runConduit $ getStdout p .| sinkStdout)
 
-logProcessStderrStdout
-    :: (HasCallStack, HasProcessContext env, HasLogFunc env)
-    => ProcessConfig stdin stdoutIgnored stderrIgnored
-    -> RIO env ()
+logProcessStderrStdout ::
+     (HasCallStack, HasProcessContext env, HasLogFunc env)
+  => ProcessConfig stdin stdoutIgnored stderrIgnored
+  -> RIO env ()
 logProcessStderrStdout pc = withLoggedProcess_ pc $ \p ->
-    let logLines = CB.lines .| CL.mapM_ (logInfo . displayBytesUtf8)
-     in runConcurrently
-            $ Concurrently (runConduit $ getStdout p .| logLines)
-           *> Concurrently (runConduit $ getStderr p .| logLines)
+  let logLines = CB.lines .| CL.mapM_ (logInfo . displayBytesUtf8)
+  in  runConcurrently
+        $  Concurrently (runConduit $ getStdout p .| logLines)
+        *> Concurrently (runConduit $ getStderr p .| logLines)
 
 -- | Read from the process, ignoring any output.
 --
@@ -246,22 +260,15 @@ promptBool txt = liftIO $ do
       T.putStrLn "Please press either 'y' or 'n', and then enter."
       promptBool txt
 
--- | Name of the 'stack' program.
---
--- NOTE: Should be defined in "Stack.Constants", but not doing so due to the
--- GHC stage restrictions.
-stackProgName :: String
-stackProgName = "stack"
-
-stackProgName' :: Text
-stackProgName' = T.pack stackProgName
-
 -- | Like @First Bool@, but the default is @True@.
-newtype FirstTrue = FirstTrue { getFirstTrue :: Maybe Bool }
-  deriving (Show, Eq, Ord)
+newtype FirstTrue
+  = FirstTrue { getFirstTrue :: Maybe Bool }
+  deriving (Eq, Ord, Show)
+
 instance Semigroup FirstTrue where
   FirstTrue (Just x) <> _ = FirstTrue (Just x)
   FirstTrue Nothing <> x = x
+
 instance Monoid FirstTrue where
   mempty = FirstTrue Nothing
   mappend = (<>)
@@ -275,11 +282,14 @@ defaultFirstTrue :: (a -> FirstTrue) -> Bool
 defaultFirstTrue _ = True
 
 -- | Like @First Bool@, but the default is @False@.
-newtype FirstFalse = FirstFalse { getFirstFalse :: Maybe Bool }
-  deriving (Show, Eq, Ord)
+newtype FirstFalse
+  = FirstFalse { getFirstFalse :: Maybe Bool }
+  deriving (Eq, Ord, Show)
+
 instance Semigroup FirstFalse where
   FirstFalse (Just x) <> _ = FirstFalse (Just x)
   FirstFalse Nothing <> x = x
+
 instance Monoid FirstFalse where
   mempty = FirstFalse Nothing
   mappend = (<>)
@@ -313,34 +323,34 @@ writeBinaryFileAtomic fp builder
       sink
 
 newtype PrettyRawSnapshotLocation
-    = PrettyRawSnapshotLocation RawSnapshotLocation
+  = PrettyRawSnapshotLocation RawSnapshotLocation
 
 instance Pretty PrettyRawSnapshotLocation where
-    pretty (PrettyRawSnapshotLocation (RSLCompiler compiler)) =
-        fromString $ T.unpack $ utf8BuilderToText $ display compiler
-    pretty (PrettyRawSnapshotLocation (RSLUrl url Nothing)) =
-        style Url (fromString $ T.unpack url)
-    pretty (PrettyRawSnapshotLocation (RSLUrl url (Just blob))) =
-        fillSep
-        [ style Url (fromString $ T.unpack url)
-        , parens $ fromString $ T.unpack $ utf8BuilderToText $ display blob
-        ]
-    pretty (PrettyRawSnapshotLocation (RSLFilePath resolved)) =
-        style File (fromString $ show $ resolvedRelative resolved)
-    pretty (PrettyRawSnapshotLocation (RSLSynonym syn)) = fromString $ show syn
+  pretty (PrettyRawSnapshotLocation (RSLCompiler compiler)) =
+    fromString $ T.unpack $ utf8BuilderToText $ display compiler
+  pretty (PrettyRawSnapshotLocation (RSLUrl url Nothing)) =
+    style Url (fromString $ T.unpack url)
+  pretty (PrettyRawSnapshotLocation (RSLUrl url (Just blob))) =
+    fillSep
+    [ style Url (fromString $ T.unpack url)
+    , parens $ fromString $ T.unpack $ utf8BuilderToText $ display blob
+    ]
+  pretty (PrettyRawSnapshotLocation (RSLFilePath resolved)) =
+    style File (fromString $ show $ resolvedRelative resolved)
+  pretty (PrettyRawSnapshotLocation (RSLSynonym syn)) = fromString $ show syn
 
 -- | Report a bug in Stack.
 bugReport :: String -> String -> String
 bugReport code msg =
-    "Error: " ++ code ++ "\n" ++
-    bugDeclaration ++ " " ++ msg ++ " " ++ bugRequest
+  "Error: " ++ code ++ "\n" ++
+  bugDeclaration ++ " " ++ msg ++ " " ++ bugRequest
 
 -- | Report a pretty bug in Stack.
 bugPrettyReport :: String -> StyleDoc -> StyleDoc
 bugPrettyReport code msg =
-       "Error:" <+> fromString code
-    <> line
-    <> flow bugDeclaration <+> msg <+> flow bugRequest
+     "Error:" <+> fromString code
+  <> line
+  <> flow bugDeclaration <+> msg <+> flow bugRequest
 
 -- | Bug declaration message.
 bugDeclaration :: String
@@ -353,3 +363,29 @@ bugRequest =  "Please report this bug at Stack's repository."
 -- | A \'pretty\' blank line.
 blankLine :: StyleDoc
 blankLine = line <> line
+
+-- | Provide the prettiest available information about an exception.
+ppException :: SomeException -> StyleDoc
+ppException e = case fromException e of
+  Just (PrettyException e') -> pretty e'
+  Nothing -> (string . displayException) e
+
+-- | Synchronously throw the given exception as a 'PrettyException'.
+prettyThrowIO :: (Exception e, MonadIO m, Pretty e) => e -> m a
+prettyThrowIO = throwIO . PrettyException
+
+-- | Throw the given exception as a 'PrettyException', when the action is run in
+-- the monad @m@.
+prettyThrowM :: (Exception e, MonadThrow m, Pretty e) => e -> m a
+prettyThrowM = throwM . PrettyException
+
+-- | Maybe cons.
+mcons :: Maybe a -> [a] -> [a]
+mcons ma as = maybe as (:as) ma
+
+prettyGeneric ::
+     (HasTerm env, HasCallStack, Pretty b, MonadReader env m, MonadIO m)
+  => LogLevel
+  -> b
+  -> m ()
+prettyGeneric level = logGeneric "" level . display <=< displayWithColor

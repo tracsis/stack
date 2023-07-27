@@ -8,7 +8,7 @@ import           Options.Applicative ( Parser, help, long, metavar )
 import           Options.Applicative.Args ( argsOption )
 import           Stack.Options.Utils ( hideMods )
 import           Stack.Prelude
-import           Stack.Types.Config ( HaddockOptsMonoid (..) )
+import           Stack.Types.BuildOpts ( HaddockOptsMonoid (..) )
 
 -- | Parser for haddock arguments.
 haddockOptsParser :: Bool -> Parser HaddockOptsMonoid
@@ -18,7 +18,7 @@ haddockOptsParser hide0 = HaddockOptsMonoid
         ( optional (argsOption
             (  long "haddock-arguments"
             <> metavar "HADDOCK_ARGS"
-            <> help "Arguments passed to the haddock program"
+            <> help "Arguments passed to the Haddock program."
             <> hide
             ))
         )

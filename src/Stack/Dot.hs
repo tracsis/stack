@@ -1,8 +1,5 @@
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE ConstraintKinds   #-}
-{-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TupleSections     #-}
 
 module Stack.Dot
   ( dot
@@ -17,7 +14,7 @@ module Stack.Dot
   , pruneGraph
   ) where
 
-import           Data.Aeson
+import           Data.Aeson ( ToJSON (..), Value, (.=), encode, object )
 import qualified Data.ByteString.Lazy.Char8 as LBC8
 import qualified Data.Foldable as F
 import qualified Data.Sequence as Seq
@@ -31,23 +28,44 @@ import qualified Distribution.PackageDescription as PD
 import qualified Distribution.SPDX.License as SPDX
 import           Distribution.Text ( display )
 import           Distribution.Types.PackageName ( mkPackageName )
-import qualified Path
+import           Path ( parent )
 import           RIO.Process ( HasProcessContext (..) )
 import           Stack.Build ( loadPackage )
 import           Stack.Build.Installed ( getInstalled, toInstallMap )
 import           Stack.Build.Source
+                   ( loadCommonPackage, loadLocalPackage, loadSourceMap )
 import           Stack.Build.Target( NeedTargets (..), parseTargets )
-import           Stack.Constants
-import           Stack.Package
+import           Stack.Constants ( wiredInPackages )
+import           Stack.Package ( Package (..) )
 import           Stack.Prelude hiding ( Display (..), pkgName, loadPackage )
 import qualified Stack.Prelude ( pkgName )
 import           Stack.Runners
+                   ( ShouldReexec (..), withBuildConfig, withConfig
+                   , withEnvConfig
+                   )
 import           Stack.SourceMap
-import           Stack.Types.Build
+                   ( globalsFromHints, mkProjectPackage, pruneGlobals )
+import           Stack.Types.BuildConfig
+                   ( BuildConfig (..), HasBuildConfig (..) )
+import           Stack.Types.BuildOpts
+                   ( ApplyCLIFlag, BuildOptsCLI (..), buildOptsMonoidBenchmarksL
+                   , buildOptsMonoidTestsL, defaultBuildOptsCLI
+                   )
 import           Stack.Types.Compiler ( wantedToActual )
-import           Stack.Types.Config
+import           Stack.Types.Config ( HasConfig (..) )
+import           Stack.Types.DumpPackage ( DumpPackage (..) )
+import           Stack.Types.EnvConfig ( EnvConfig (..), HasSourceMap (..) )
+import           Stack.Types.GHCVariant ( HasGHCVariant (..) )
 import           Stack.Types.GhcPkgId
+                   ( GhcPkgId, ghcPkgIdString, parseGhcPkgId )
+import           Stack.Types.GlobalOpts ( globalOptsBuildOptsMonoidL )
+import           Stack.Types.Package ( LocalPackage (..) )
+import           Stack.Types.Platform ( HasPlatform (..) )
+import           Stack.Types.Runner ( HasRunner (..), Runner, globalOptsL )
 import           Stack.Types.SourceMap
+                   ( CommonPackage (..), DepPackage (..), ProjectPackage (..)
+                   , SMActual (..), SMWanted (..), SourceMap (..)
+                   )
 
 -- | Type representing exceptions thrown by functions exported by the
 -- "Stack.Dot" module.
@@ -71,43 +89,44 @@ instance Exception DotException where
 -- | Options record for @stack dot@
 data DotOpts = DotOpts
   { dotIncludeExternal :: !Bool
-  -- ^ Include external dependencies
+    -- ^ Include external dependencies
   , dotIncludeBase :: !Bool
-  -- ^ Include dependencies on base
+    -- ^ Include dependencies on base
   , dotDependencyDepth :: !(Maybe Int)
-  -- ^ Limit the depth of dependency resolution to (Just n) or continue until
-  -- fixpoint
+    -- ^ Limit the depth of dependency resolution to (Just n) or continue until
+    -- fixpoint
   , dotPrune :: !(Set PackageName)
-  -- ^ Package names to prune from the graph
+    -- ^ Package names to prune from the graph
   , dotTargets :: [Text]
-  -- ^ Stack TARGETs to trace dependencies for
+    -- ^ Stack TARGETs to trace dependencies for
   , dotFlags :: !(Map ApplyCLIFlag (Map FlagName Bool))
-  -- ^ Flags to apply when calculating dependencies
+    -- ^ Flags to apply when calculating dependencies
   , dotTestTargets :: Bool
-  -- ^ Like the "--test" flag for build, affects the meaning of 'dotTargets'.
+    -- ^ Like the "--test" flag for build, affects the meaning of 'dotTargets'.
   , dotBenchTargets :: Bool
-  -- ^ Like the "--bench" flag for build, affects the meaning of 'dotTargets'.
+    -- ^ Like the "--bench" flag for build, affects the meaning of 'dotTargets'.
   , dotGlobalHints :: Bool
-  -- ^ Use global hints instead of relying on an actual GHC installation.
+    -- ^ Use global hints instead of relying on an actual GHC installation.
   }
 
 data ListDepsFormatOpts = ListDepsFormatOpts
   { listDepsSep :: !Text
-  -- ^ Separator between the package name and details.
+    -- ^ Separator between the package name and details.
   , listDepsLicense :: !Bool
-  -- ^ Print dependency licenses instead of versions.
+    -- ^ Print dependency licenses instead of versions.
   }
 
-data ListDepsFormat = ListDepsText ListDepsFormatOpts
-                    | ListDepsTree ListDepsFormatOpts
-                    | ListDepsJSON
-                    | ListDepsConstraints
+data ListDepsFormat
+  = ListDepsText ListDepsFormatOpts
+  | ListDepsTree ListDepsFormatOpts
+  | ListDepsJSON
+  | ListDepsConstraints
 
 data ListDepsOpts = ListDepsOpts
   { listDepsFormat :: !ListDepsFormat
-  -- ^ Format of printing dependencies
+    -- ^ Format of printing dependencies
   , listDepsDotOpts :: !DotOpts
-  -- ^ The normal dot options.
+    -- ^ The normal dot options.
   }
 
 -- | Visualize the project's dependencies as a graphviz graph
@@ -119,19 +138,22 @@ dot dotOpts = do
 -- | Information about a package in the dependency graph, when available.
 data DotPayload = DotPayload
   { payloadVersion :: Maybe Version
-  -- ^ The package version.
+    -- ^ The package version.
   , payloadLicense :: Maybe (Either SPDX.License License)
-  -- ^ The license the package was released under.
+    -- ^ The license the package was released under.
   , payloadLocation :: Maybe PackageLocation
-  -- ^ The location of the package.
-  } deriving (Eq, Show)
+    -- ^ The location of the package.
+  }
+  deriving (Eq, Show)
 
 -- | Create the dependency graph and also prune it as specified in the dot
 -- options. Returns a set of local names and a map from package names to
 -- dependencies.
-createPrunedDependencyGraph
-  :: DotOpts
-  -> RIO Runner (Set PackageName, Map PackageName (Set PackageName, DotPayload))
+createPrunedDependencyGraph ::
+     DotOpts
+  -> RIO
+       Runner
+       (Set PackageName, Map PackageName (Set PackageName, DotPayload))
 createPrunedDependencyGraph dotOpts = withDotConfig dotOpts $ do
   localNames <- view $ buildConfigL.to (Map.keysSet . smwProject . bcSMWanted)
   logDebug "Creating dependency graph"
@@ -147,8 +169,8 @@ createPrunedDependencyGraph dotOpts = withDotConfig dotOpts $ do
 -- name to a tuple of dependencies and payload if available. This
 -- function mainly gathers the required arguments for
 -- @resolveDependencies@.
-createDependencyGraph
-  :: DotOpts
+createDependencyGraph ::
+     DotOpts
   -> RIO DotConfig (Map PackageName (Set PackageName, DotPayload))
 createDependencyGraph dotOpts = do
   sourceMap <- view sourceMapL
@@ -158,7 +180,7 @@ createDependencyGraph dotOpts = do
   -- TODO: Can there be multiple entries for wired-in-packages? If so,
   -- this will choose one arbitrarily..
   let globalDumpMap = Map.fromList $ map (\dp -> (Stack.Prelude.pkgName (dpPackageIdent dp), dp)) globalDump
-      globalIdMap = Map.fromList $ map (\dp -> (dpGhcPkgId dp, dpPackageIdent dp)) globalDump
+      globalIdMap = Map.fromList $ map (dpGhcPkgId &&& dpPackageIdent) globalDump
   let depLoader = createDepLoader sourceMap globalDumpMap globalIdMap loadPackageDeps
       loadPackageDeps name version loc flags ghcOptions cabalConfigOpts
         -- Skip packages that can't be loaded - see
@@ -175,9 +197,7 @@ createDependencyGraph dotOpts = do
                                    (Just $ packageLicense pkg)
                                    (Just $ PLImmutable loc)
 
-listDependencies
-  :: ListDepsOpts
-  -> RIO Runner ()
+listDependencies :: ListDepsOpts -> RIO Runner ()
 listDependencies opts = do
   let dotOpts = listDepsDotOpts opts
   (pkgs, resultGraph) <- createPrunedDependencyGraph dotOpts
@@ -217,12 +237,12 @@ dependencyToJSON pkg (deps, payload) =
                             ]
       loc = catMaybes
               [("location" .=) . pkgLocToJSON <$> payloadLocation payload]
-  in object $ fieldsAlwaysPresent ++ loc
+  in  object $ fieldsAlwaysPresent ++ loc
 
 pkgLocToJSON :: PackageLocation -> Value
 pkgLocToJSON (PLMutable (ResolvedPath _ dir)) = object
   [ "type" .= ("project package" :: Text)
-  , "url" .= ("file://" ++ Path.toFilePath dir)
+  , "url" .= ("file://" ++ toFilePath dir)
   ]
 pkgLocToJSON (PLImmutable (PLIHackage pkgid _ _)) = object
   [ "type" .= ("hackage" :: Text)
@@ -232,13 +252,13 @@ pkgLocToJSON (PLImmutable (PLIArchive archive _)) =
   let url = case archiveLocation archive of
               ALUrl u -> u
               ALFilePath (ResolvedPath _ path) ->
-                Text.pack $ "file://" ++ Path.toFilePath path
-  in object
-       [ "type" .= ("archive" :: Text)
-       , "url" .= url
-       , "sha256" .= archiveHash archive
-       , "size" .= archiveSize archive
-       ]
+                Text.pack $ "file://" ++ toFilePath path
+  in  object
+        [ "type" .= ("archive" :: Text)
+        , "url" .= url
+        , "sha256" .= archiveHash archive
+        , "size" .= archiveSize archive
+        ]
 pkgLocToJSON (PLImmutable (PLIRepo repo _)) = object
   [ "type" .= case repoType repo of
                 RepoGit -> "git" :: Text
@@ -248,26 +268,28 @@ pkgLocToJSON (PLImmutable (PLIRepo repo _)) = object
   , "subdir" .= repoSubdir repo
   ]
 
-printJSON :: Set PackageName
-          -> Map PackageName (Set PackageName, DotPayload)
-          -> IO ()
+printJSON ::
+     Set PackageName
+  -> Map PackageName (Set PackageName, DotPayload)
+  -> IO ()
 printJSON pkgs dependencyMap =
   LBC8.putStrLn $ encode $ DependencyTree pkgs dependencyMap
 
 treeRoots :: ListDepsOpts -> Set PackageName -> Set PackageName
 treeRoots opts projectPackages' =
   let targets = dotTargets $ listDepsDotOpts opts
-   in if null targets
+  in  if null targets
         then projectPackages'
         else Set.fromList $ map (mkPackageName . Text.unpack) targets
 
-printTree :: ListDepsFormatOpts
-          -> DotOpts
-          -> Int
-          -> [Int]
-          -> Set PackageName
-          -> Map PackageName (Set PackageName, DotPayload)
-          -> IO ()
+printTree ::
+     ListDepsFormatOpts
+  -> DotOpts
+  -> Int
+  -> [Int]
+  -> Set PackageName
+  -> Map PackageName (Set PackageName, DotPayload)
+  -> IO ()
 printTree opts dotOpts depth remainingDepsCounts packages dependencyMap =
   F.sequence_ $ Seq.mapWithIndex go (toSeq packages)
  where
@@ -284,20 +306,21 @@ printTree opts dotOpts depth remainingDepsCounts packages dependencyMap =
           -- TODO: Define this behaviour, maybe pure an error?
           Nothing -> pure ()
 
-printTreeNode :: ListDepsFormatOpts
-              -> DotOpts
-              -> Int
-              -> [Int]
-              -> Set PackageName
-              -> DotPayload
-              -> PackageName
-              -> IO ()
+printTreeNode ::
+     ListDepsFormatOpts
+  -> DotOpts
+  -> Int
+  -> [Int]
+  -> Set PackageName
+  -> DotPayload
+  -> PackageName
+  -> IO ()
 printTreeNode opts dotOpts depth remainingDepsCounts deps payload name =
   let remainingDepth = fromMaybe 999 (dotDependencyDepth dotOpts) - depth
       hasDeps = not $ null deps
-  in Text.putStrLn $
-       treeNodePrefix "" remainingDepsCounts hasDeps remainingDepth <> " " <>
-       listDepsLine opts name payload
+  in  Text.putStrLn $
+        treeNodePrefix "" remainingDepsCounts hasDeps remainingDepth <> " " <>
+        listDepsLine opts name payload
 
 treeNodePrefix :: Text -> [Int] -> Bool -> Int -> Text
 treeNodePrefix t [] _ _      = t
@@ -333,25 +356,27 @@ versionText payload =
 -- | @pruneGraph dontPrune toPrune graph@ prunes all packages in
 -- @graph@ with a name in @toPrune@ and removes resulting orphans
 -- unless they are in @dontPrune@
-pruneGraph :: (F.Foldable f, F.Foldable g, Eq a)
-           => f PackageName
-           -> g PackageName
-           -> Map PackageName (Set PackageName, a)
-           -> Map PackageName (Set PackageName, a)
+pruneGraph ::
+     (F.Foldable f, F.Foldable g, Eq a)
+  => f PackageName
+  -> g PackageName
+  -> Map PackageName (Set PackageName, a)
+  -> Map PackageName (Set PackageName, a)
 pruneGraph dontPrune names =
   pruneUnreachable dontPrune . Map.mapMaybeWithKey (\pkg (pkgDeps,x) ->
     if pkg `F.elem` names
       then Nothing
-      else let filtered = Set.filter (\n -> n `F.notElem` names) pkgDeps
-           in if Set.null filtered && not (Set.null pkgDeps)
-                then Nothing
-                else Just (filtered,x))
+      else let filtered = Set.filter (`F.notElem` names) pkgDeps
+           in  if Set.null filtered && not (Set.null pkgDeps)
+                 then Nothing
+                 else Just (filtered,x))
 
 -- | Make sure that all unreachable nodes (orphans) are pruned
-pruneUnreachable :: (Eq a, F.Foldable f)
-                 => f PackageName
-                 -> Map PackageName (Set PackageName, a)
-                 -> Map PackageName (Set PackageName, a)
+pruneUnreachable ::
+     (Eq a, F.Foldable f)
+  => f PackageName
+  -> Map PackageName (Set PackageName, a)
+  -> Map PackageName (Set PackageName, a)
 pruneUnreachable dontPrune = fixpoint prune
  where
   fixpoint :: Eq a => (a -> a) -> a -> a
@@ -363,8 +388,8 @@ pruneUnreachable dontPrune = fixpoint prune
 
 
 -- | Resolve the dependency graph up to (Just depth) or until fixpoint is reached
-resolveDependencies
-  :: (Applicative m, Monad m)
+resolveDependencies ::
+     (Applicative m, Monad m)
   => Maybe Int
   -> Map PackageName (Set PackageName, DotPayload)
   -> (PackageName -> m (Set PackageName, DotPayload))
@@ -386,16 +411,21 @@ resolveDependencies limit graph loadPackageDeps = do
 
 -- | Given a SourceMap and a dependency loader, load the set of dependencies for
 -- a package
-createDepLoader
-  :: SourceMap
+createDepLoader ::
+     SourceMap
   -> Map PackageName DumpPackage
   -> Map GhcPkgId PackageIdentifier
-  -> (PackageName -> Version -> PackageLocationImmutable ->
-      Map FlagName Bool -> [Text] -> [Text] ->
-      RIO DotConfig (Set PackageName, DotPayload))
+  -> (  PackageName
+     -> Version
+     -> PackageLocationImmutable
+     -> Map FlagName Bool
+     -> [Text]
+     -> [Text]
+     -> RIO DotConfig (Set PackageName, DotPayload)
+     )
   -> PackageName
   -> RIO DotConfig (Set PackageName, DotPayload)
-createDepLoader sourceMap globalDumpMap globalIdMap loadPackageDeps pkgName = do
+createDepLoader sourceMap globalDumpMap globalIdMap loadPackageDeps pkgName =
   fromMaybe (throwIO $ PackageNotFoundBug pkgName)
     (projectPackageDeps <|> dependencyDeps <|> globalDeps)
  where
@@ -436,10 +466,9 @@ createDepLoader sourceMap globalDumpMap globalIdMap loadPackageDeps pkgName = do
               Stack.Prelude.pkgName
               (Map.lookup depId globalIdMap)
 
-  payloadFromLocal pkg loc =
-    DotPayload (Just $ packageVersion pkg)
-               (Just $ packageLicense pkg)
-               loc
+  payloadFromLocal pkg =
+    DotPayload (Just $ packageVersion pkg) (Just $ packageLicense pkg)
+
   payloadFromDump dp =
     DotPayload (Just $ pkgVersion $ dpPackageIdent dp)
                (Right <$> dpLicense dp)
@@ -447,13 +476,13 @@ createDepLoader sourceMap globalDumpMap globalIdMap loadPackageDeps pkgName = do
 
 -- | Resolve the direct (depth 0) external dependencies of the given local
 -- packages (assumed to come from project packages)
-projectPackageDependencies
-  :: DotOpts
+projectPackageDependencies ::
+     DotOpts
   -> [LocalPackage]
   -> [(PackageName, (Set PackageName, DotPayload))]
 projectPackageDependencies dotOpts locals =
   map (\lp -> let pkg = localPackageToPackage lp
-                  pkgDir = Path.parent $ lpCabalFile lp
+                  pkgDir = parent $ lpCabalFile lp
                   loc = PLMutable $ ResolvedPath (RelFilePath "N/A") pkgDir
               in  (packageName pkg, (deps pkg, lpPayload pkg loc)))
       locals
@@ -469,11 +498,12 @@ projectPackageDependencies dotOpts locals =
 
 -- | Print a graphviz graph of the edges in the Map and highlight the given
 -- local packages
-printGraph :: (Applicative m, MonadIO m)
-           => DotOpts
-           -> Set PackageName -- ^ all locals
-           -> Map PackageName (Set PackageName, DotPayload)
-           -> m ()
+printGraph ::
+     (Applicative m, MonadIO m)
+  => DotOpts
+  -> Set PackageName -- ^ all locals
+  -> Map PackageName (Set PackageName, DotPayload)
+  -> m ()
 printGraph dotOpts locals graph = do
   liftIO $ Text.putStrLn "strict digraph deps {"
   printLocalNodes dotOpts filteredLocals
@@ -485,10 +515,11 @@ printGraph dotOpts locals graph = do
     Set.filter (\local' -> local' `Set.notMember` dotPrune dotOpts) locals
 
 -- | Print the local nodes with a different style depending on options
-printLocalNodes :: (F.Foldable t, MonadIO m)
-                => DotOpts
-                -> t PackageName
-                -> m ()
+printLocalNodes ::
+     (F.Foldable t, MonadIO m)
+  => DotOpts
+  -> t PackageName
+  -> m ()
 printLocalNodes dotOpts locals =
   liftIO $ Text.putStrLn (Text.intercalate "\n" lpNodes)
  where
@@ -500,9 +531,10 @@ printLocalNodes dotOpts locals =
   lpNodes = map (applyStyle . nodeName) (F.toList locals)
 
 -- | Print nodes without dependencies
-printLeaves :: MonadIO m
-            => Map PackageName (Set PackageName, DotPayload)
-            -> m ()
+printLeaves ::
+     MonadIO m
+  => Map PackageName (Set PackageName, DotPayload)
+  -> m ()
 printLeaves = F.mapM_ printLeaf . Map.keysSet . Map.filter Set.null . fmap fst
 
 -- | @printDedges p ps@ prints an edge from p to every ps
@@ -537,10 +569,10 @@ localPackageToPackage lp =
   fromMaybe (lpPackage lp) (lpTestBench lp)
 
 -- Plumbing for --test and --bench flags
-withDotConfig
-    :: DotOpts
-    -> RIO DotConfig a
-    -> RIO Runner a
+withDotConfig ::
+     DotOpts
+  -> RIO DotConfig a
+  -> RIO Runner a
 withDotConfig opts inner =
   local (over globalOptsL modifyGO) $
     if dotGlobalHints opts
@@ -618,23 +650,42 @@ data DotConfig = DotConfig
   , dcSourceMap :: !SourceMap
   , dcGlobalDump :: ![DumpPackage]
   }
+
 instance HasLogFunc DotConfig where
   logFuncL = runnerL.logFuncL
+
 instance HasPantryConfig DotConfig where
   pantryConfigL = configL.pantryConfigL
+
 instance HasTerm DotConfig where
   useColorL = runnerL.useColorL
   termWidthL = runnerL.termWidthL
+
 instance HasStylesUpdate DotConfig where
   stylesUpdateL = runnerL.stylesUpdateL
-instance HasGHCVariant DotConfig
-instance HasPlatform DotConfig
+
+instance HasGHCVariant DotConfig where
+  ghcVariantL = configL.ghcVariantL
+  {-# INLINE ghcVariantL #-}
+
+instance HasPlatform DotConfig where
+  platformL = configL.platformL
+  {-# INLINE platformL #-}
+  platformVariantL = configL.platformVariantL
+  {-# INLINE platformVariantL #-}
+
 instance HasRunner DotConfig where
   runnerL = configL.runnerL
+
 instance HasProcessContext DotConfig where
   processContextL = runnerL.processContextL
-instance HasConfig DotConfig
+
+instance HasConfig DotConfig where
+  configL = buildConfigL.lens bcConfig (\x y -> x { bcConfig = y })
+  {-# INLINE configL #-}
+
 instance HasBuildConfig DotConfig where
   buildConfigL = lens dcBuildConfig (\x y -> x { dcBuildConfig = y })
+
 instance HasSourceMap DotConfig where
   sourceMapL = lens dcSourceMap (\x y -> x { dcSourceMap = y })

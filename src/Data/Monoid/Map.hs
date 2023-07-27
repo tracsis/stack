@@ -1,6 +1,3 @@
-{-# LANGUAGE DeriveGeneric              #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-
 module Data.Monoid.Map
   ( MonoidMap (..)
   ) where
@@ -10,7 +7,8 @@ import           Stack.Prelude
 
 -- | Utility newtype wrapper to make Map's Monoid also use the
 -- element's Monoid.
-newtype MonoidMap k a = MonoidMap (Map k a)
+newtype MonoidMap k a
+  = MonoidMap (Map k a)
   deriving (Eq, Functor, Generic, Ord, Read, Show)
 
 instance (Ord k, Semigroup a) => Semigroup (MonoidMap k a) where

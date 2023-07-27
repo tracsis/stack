@@ -37,13 +37,14 @@ ghciOptsParser = GhciOpts
               []
               ["-Wall", "-Werror"]
               (  long "pedantic"
-              <> help "Turn on -Wall and -Werror"
+              <> help "Turn on -Wall and -Werror."
               )
         <*> many (argsOption
               (  long "ghci-options"
               <> metavar "OPTIONS"
               <> completer ghcOptsCompleter
-              <> help "Additional options passed to GHCi"
+              <> help "Additional options passed to GHCi (can be specified \
+                      \multiple times)."
               ))
       )
   <*> (     concat
@@ -51,19 +52,20 @@ ghciOptsParser = GhciOpts
               (  long "ghc-options"
               <> metavar "OPTIONS"
               <> completer ghcOptsCompleter
-              <> help "Additional options passed to both GHC and GHCi"
+              <> help "Additional options passed to both GHC and GHCi (can be \
+                      \specified multiple times)."
               ))
       )
   <*> flagsParser
   <*> optional (strOption
         (  long "with-ghc"
         <> metavar "GHC"
-        <> help "Use this GHC to run GHCi"
+        <> help "Use this GHC to run GHCi."
         ))
   <*> (     not
         <$> boolFlags True
               "load"
-              "load modules on start-up"
+              "load modules on start-up."
               idm
       )
   <*> packagesParser
@@ -76,12 +78,12 @@ ghciOptsParser = GhciOpts
         ))
   <*> switch
         (  long "load-local-deps"
-        <> help "Load all local dependencies of your targets"
+        <> help "Load all local dependencies of your targets."
         )
   -- TODO: deprecate this? probably useless.
   <*> switch
         (  long "skip-intermediate-deps"
-        <> help "Skip loading intermediate target dependencies"
+        <> help "Skip loading intermediate target dependencies."
         <> internal
         )
   <*> optional (boolFlagsNoDefault
@@ -90,7 +92,7 @@ ghciOptsParser = GhciOpts
         idm)
   <*> switch
         (  long "no-build"
-        <> help "Don't build before launching GHCi"
+        <> help "Don't build before launching GHCi."
         <> internal
         )
   <*> switch

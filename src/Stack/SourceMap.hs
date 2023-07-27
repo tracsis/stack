@@ -1,5 +1,4 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes        #-}
 {-# LANGUAGE RecordWildCards   #-}
 
 module Stack.SourceMap
@@ -25,18 +24,31 @@ module Stack.SourceMap
 
 import           Data.ByteString.Builder ( byteString )
 import qualified Data.Conduit.List as CL
+import qualified Data.Text as T
 import qualified Distribution.PackageDescription as PD
 import           Distribution.System ( Platform (..) )
 import qualified Pantry.SHA256 as SHA256
 import qualified RIO.Map as Map
-import           RIO.Process
+import           RIO.Process ( HasProcessContext )
 import qualified RIO.Set as Set
-import           Stack.PackageDump
+import           Stack.Constants ( stackProgName' )
+import           Stack.PackageDump ( conduitDumpPackage, ghcPkgDump )
 import           Stack.Prelude
-import           Stack.Types.Build
+import           Stack.Types.Build.Exception ( BuildPrettyException (..) )
 import           Stack.Types.Compiler
-import           Stack.Types.Config
+                   ( ActualCompiler, actualToWanted, wantedToActual )
+import           Stack.Types.CompilerPaths
+                   ( CompilerPaths (..), GhcPkgExe, HasCompiler (..) )
+import           Stack.Types.Config ( HasConfig )
+import           Stack.Types.DumpPackage ( DumpPackage (..) )
+import           Stack.Types.UnusedFlags ( FlagSource, UnusedFlags (..) )
+import           Stack.Types.Platform ( HasPlatform (..) )
+import           Stack.Types.Runner ( rslInLogL )
 import           Stack.Types.SourceMap
+                   ( CommonPackage (..), DepPackage (..), FromSnapshot (..)
+                   , GlobalPackage (..), GlobalPackageVersion (..)
+                   , ProjectPackage (..), SMActual (..), SMWanted (..)
+                   )
 
 -- | Create a 'ProjectPackage' from a directory containing a package.
 mkProjectPackage ::
@@ -129,7 +141,7 @@ getPLIVersion (PLIArchive _ pm) = pkgVersion $ pmIdent pm
 getPLIVersion (PLIRepo _ pm) = pkgVersion $ pmIdent pm
 
 globalsFromDump ::
-     (HasLogFunc env, HasProcessContext env)
+     (HasProcessContext env, HasTerm env)
   => GhcPkgExe
   -> RIO env (Map PackageName DumpedGlobalPackage)
 globalsFromDump pkgexe = do
@@ -148,7 +160,10 @@ globalsFromHints compiler = do
   case mglobalHints of
     Just hints -> pure hints
     Nothing -> do
-      logWarn $ "Unable to load global hints for " <> display compiler
+      prettyWarnL
+        [ flow "Unable to load global hints for"
+        , fromString $ T.unpack $ textDisplay compiler
+        ]
       pure mempty
 
 type DumpedGlobalPackage = DumpPackage
@@ -207,7 +222,7 @@ checkFlagsUsedThrowing packageFlags source prjPackages deps = do
     forMaybeM (Map.toList packageFlags) $ \(pname, flags) ->
       getUnusedPackageFlags (pname, flags) source prjPackages deps
   unless (null unusedFlags) $
-    throwM $ InvalidFlagSpecification $ Set.fromList unusedFlags
+    prettyThrowM $ InvalidFlagSpecification $ Set.fromList unusedFlags
 
 getUnusedPackageFlags ::
      MonadIO m
@@ -243,8 +258,8 @@ pruneGlobals globals deps =
   let (prunedGlobals, keptGlobals) =
         partitionReplacedDependencies globals (pkgName . dpPackageIdent)
           dpGhcPkgId dpDepends deps
-  in Map.map (GlobalPackage . pkgVersion . dpPackageIdent) keptGlobals <>
-     Map.map ReplacedGlobalPackage prunedGlobals
+  in  Map.map (GlobalPackage . pkgVersion . dpPackageIdent) keptGlobals <>
+      Map.map ReplacedGlobalPackage prunedGlobals
 
 getCompilerInfo :: (HasConfig env, HasCompiler env) => RIO env Builder
 getCompilerInfo = view $ compilerPathsL.to (byteString . cpGhcInfo)

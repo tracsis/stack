@@ -1,8 +1,5 @@
 {-# LANGUAGE NoImplicitPrelude  #-}
-{-# LANGUAGE ConstraintKinds    #-}
 {-# LANGUAGE DataKinds          #-}
-{-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE FlexibleContexts   #-}
 {-# LANGUAGE OverloadedStrings  #-}
 
 -- | Run commands in a nix-shell
@@ -22,9 +19,11 @@ import           Stack.Constants
                    , platformVariantEnvVar
                    )
 import           Stack.Prelude
+import           Stack.Types.BuildConfig ( wantedCompilerVersionL )
 import           Stack.Types.Config
-import           Stack.Types.Docker
-import           Stack.Types.Nix
+                   ( Config (..), HasConfig (..), configProjectRoot )
+import           Stack.Types.Docker ( reExecArgName )
+import           Stack.Types.Nix ( NixOpts (..) )
 import           Stack.Types.Version ( showStackVersion )
 import           System.Environment ( getArgs, getExecutablePath, lookupEnv )
 import qualified System.FilePath as F
@@ -117,7 +116,7 @@ runShellAndExit = do
             ]
 
         fullArgs = concat
-          [ if pureShell then ["--pure"] else []
+          [ [ "--pure" | pureShell ]
           , if addGCRoots
               then [ "--indirect"
                    , "--add-root"

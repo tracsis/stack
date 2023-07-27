@@ -1,21 +1,84 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module StackTest where
+module StackTest
+  ( run'
+  , run
+  , runShell
+  , runWithCwd
+  , stackExe
+  , stackSrc
+  , testDir
+  , stack'
+  , stack
+  , stackCleanFull
+  , stackIgnoreException
+  , stackErr
+  , Repl
+  , ReplConnection (..)
+  , nextPrompt
+  , replCommand
+  , replGetChar
+  , replGetLine
+  , runRepl
+  , repl
+  , stackStderr
+  , stackCheckStderr
+  , stackErrStderr
+  , runEx
+  , runEx'
+  , stackCheckStdout
+  , doesNotExist
+  , doesExist
+  , doesFileOrDirExist
+  , copy
+  , fileContentsMatch
+  , logInfo
+  , showProcessArgDebug
+  , exeExt
+  , isWindows
+  , isLinux
+  , getIsAlpine
+  , isARM
+  , isAarch64
+  , isMacOSX
+  , defaultResolverArg
+  , removeFileIgnore
+  , removeDirIgnore
+  , withCwd
+  , withSourceDirectory
+  , superslow
+  ) where
 
-import Control.Monad
-import Control.Monad.IO.Class
-import Control.Monad.Trans.Reader
-import Control.Concurrent
-import Control.Exception
-import Data.Maybe (fromMaybe)
-import System.Environment
-import System.Directory
-import System.IO
-import System.IO.Error
-import System.Process
-import System.Exit
-import System.Info (arch, os)
-import GHC.Stack (HasCallStack)
+import           Control.Monad ( forever, unless, void, when )
+import           Control.Monad.IO.Class ( liftIO )
+import           Control.Monad.Trans.Reader ( ReaderT, ask, runReaderT )
+import           Control.Concurrent ( forkIO )
+import           Control.Exception
+                   ( Exception (..), IOException, bracket_, catch, throw
+                   , throwIO
+                   )
+import           Data.Maybe ( fromMaybe )
+import           GHC.Stack ( HasCallStack )
+import           System.Environment ( getEnv, lookupEnv )
+import           System.Directory
+                   ( copyFile, doesDirectoryExist, doesFileExist
+                   , getCurrentDirectory, removeDirectoryRecursive, removeFile
+                   , setCurrentDirectory
+                   )
+import           System.IO
+                   ( BufferMode (..), Handle, IOMode (..), hGetChar, hGetLine
+                   , hPutChar, hPutStr, hPutStrLn, hSetBuffering, stderr
+                   , withFile
+                   )
+import           System.IO.Error
+                   ( isDoesNotExistError, isEOFError )
+import           System.Process
+                   ( CreateProcess (..), StdStream (..), createProcess, proc
+                   , readCreateProcessWithExitCode, readProcessWithExitCode
+                   , shell, waitForProcess
+                   )
+import           System.Exit ( ExitCode (..) )
+import           System.Info ( arch, os )
 
 run' :: HasCallStack => FilePath -> [String] -> IO ExitCode
 run' cmd args = do
@@ -250,9 +313,10 @@ showProcessArgDebug :: String -> String
 showProcessArgDebug x
     | any special x = show x
     | otherwise = x
-  where special '"' = True
-        special ' ' = True
-        special _ = False
+  where
+    special '"' = True
+    special ' ' = True
+    special _ = False
 
 -- | Extension of executables
 exeExt :: String
@@ -272,6 +336,10 @@ getIsAlpine = doesFileExist "/etc/alpine-release"
 -- | Is the architecture ARM?
 isARM :: Bool
 isARM = arch == "arm"
+
+-- | Is the architecture Aarch64?
+isAarch64 :: Bool
+isAarch64 = arch == "aarch64"
 
 -- | Is the OS Mac OS X?
 isMacOSX :: Bool

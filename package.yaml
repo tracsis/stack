@@ -1,5 +1,8 @@
+# Hpack >= 0.35.0 is provided by Stack >= 2.9.1.
+spec-version: 0.35.0
+
 name: stack
-version: '2.9.3'
+version: '2.11.1'
 synopsis: The Haskell Tool Stack
 description: |
   Please see the documentation at <https://docs.haskellstack.org>
@@ -8,7 +11,7 @@ description: |
   If building a 'stack' executable for distribution, please download the
   source code from <https://github.com/commercialhaskell/stack/releases>
   and build it using Stack itself in order to ensure identical behaviour
-  to official binaries.  This package on Hackage is provided for convenience
+  to official binaries. This package on Hackage is provided for convenience
   and bootstrapping purposes.
   .
   Note that the API for the library is not currently stable, and may
@@ -39,20 +42,23 @@ extra-source-files:
 - test/package-dump/ghc-head.txt
 - src/test/Stack/Untar/test1.tar.gz
 - src/test/Stack/Untar/test2.tar.gz
+# GHC's GHC2021 language extension is supported by GHC >= 9.2.1
+language: GHC2021
 ghc-options:
 - -fwrite-ide-info
 - -hiedir=.hie
 - -Wall
-- -fwarn-tabs
-- -fwarn-incomplete-uni-patterns
-- -fwarn-incomplete-record-updates
-- -optP-Wno-nonportable-include-path # workaround [Filename case on macOS · Issue #4739 · haskell/cabal](https://github.com/haskell/cabal/issues/4739)
+- -Wmissing-export-lists
+# Workaround for https://github.com/haskell/cabal/issues/4739.
+# -Wnon-noportable-include-path is a Clang diagnostic flag. See
+# https://clang.llvm.org/docs/DiagnosticsReference.html#wnonportable-include-path
+- -optP-Wno-nonportable-include-path
 dependencies:
 - base >= 4.14.3.0 && < 5
 - Cabal >= 3.8.1.0
 - aeson >= 2.0.3.0
 - annotated-wl-pprint
-- ansi-terminal
+- ansi-terminal >= 1.0
 - array
 - async
 - attoparsec
@@ -119,7 +125,6 @@ dependencies:
 - streaming-commons
 - tar
 - template-haskell
-- temporary
 - text
 - text-metrics
 - th-reify-many
@@ -147,6 +152,9 @@ when:
           hsc2hs:hsc2hs
     dependencies:
     - unix
+# See https://github.com/haskell/network/pull/552.
+- condition: impl(ghc >= 9.4.5) && os(windows)
+  dependencies: network >= 3.1.2.9
 - condition: flag(developer-mode)
   then:
     cpp-options: -DSTACK_DEVELOPER_MODE_DEFAULT=True
@@ -155,7 +163,7 @@ when:
 library:
   source-dirs: src/
   ghc-options:
-  - -fwarn-identities
+  - -Widentities
   generated-exposed-modules:
   - Paths_stack
   exposed-modules:
@@ -191,7 +199,10 @@ library:
   - Stack.Coverage
   - Stack.DefaultColorWhen
   - Stack.Docker
+  - Stack.DockerCmd
   - Stack.Dot
+  - Stack.Eval
+  - Stack.Exec
   - Stack.FileWatch
   - Stack.GhcPkg
   - Stack.Ghci
@@ -212,6 +223,7 @@ library:
   - Stack.Options.Completion
   - Stack.Options.DockerParser
   - Stack.Options.DotParser
+  - Stack.Options.EvalParser
   - Stack.Options.ExecParser
   - Stack.Options.GhcBuildParser
   - Stack.Options.GhciParser
@@ -219,20 +231,26 @@ library:
   - Stack.Options.GlobalParser
   - Stack.Options.HaddockParser
   - Stack.Options.HpcReportParser
+  - Stack.Options.InitParser
   - Stack.Options.LogLevelParser
+  - Stack.Options.LsParser
   - Stack.Options.NewParser
   - Stack.Options.NixParser
   - Stack.Options.PackageParser
+  - Stack.Options.PathParser
   - Stack.Options.ResolverParser
-  - Stack.Options.ScriptParser
   - Stack.Options.SDistParser
+  - Stack.Options.ScriptParser
+  - Stack.Options.SetupParser
   - Stack.Options.TestParser
+  - Stack.Options.UpgradeParser
   - Stack.Options.UploadParser
   - Stack.Options.Utils
   - Stack.Package
   - Stack.PackageDump
   - Stack.Path
   - Stack.Prelude
+  - Stack.Query
   - Stack.Runners
   - Stack.Script
   - Stack.SDist
@@ -243,22 +261,65 @@ library:
   - Stack.Storage.Project
   - Stack.Storage.User
   - Stack.Storage.Util
+  - Stack.Templates
+  - Stack.Types.AddCommand
+  - Stack.Types.AllowNewerDeps
+  - Stack.Types.ApplyGhcOptions
+  - Stack.Types.ApplyProgOptions
   - Stack.Types.Build
+  - Stack.Types.Build.Exception
+  - Stack.Types.BuildConfig
+  - Stack.Types.BuildOpts
+  - Stack.Types.CabalConfigKey
+  - Stack.Types.ColorWhen
   - Stack.Types.CompilerBuild
+  - Stack.Types.CompilerPaths
   - Stack.Types.Compiler
   - Stack.Types.Config
-  - Stack.Types.Config.Build
+  - Stack.Types.Config.Exception
+  - Stack.Types.ConfigMonoid
+  - Stack.Types.ConfigureOpts
+  - Stack.Types.Curator
   - Stack.Types.Docker
+  - Stack.Types.DockerEntrypoint
+  - Stack.Types.DownloadInfo
+  - Stack.Types.DumpLogs
+  - Stack.Types.DumpPackage
+  - Stack.Types.EnvConfig
+  - Stack.Types.EnvSettings
+  - Stack.Types.ExtraDirs
+  - Stack.Types.GHCDownloadInfo
+  - Stack.Types.GHCVariant
+  - Stack.Types.GhcOptionKey
+  - Stack.Types.GhcOptions
   - Stack.Types.GhcPkgId
+  - Stack.Types.GlobalOpts
+  - Stack.Types.GlobalOptsMonoid
+  - Stack.Types.IsMutable
+  - Stack.Types.LockFileBehavior
   - Stack.Types.NamedComponent
   - Stack.Types.Nix
   - Stack.Types.Package
   - Stack.Types.PackageName
+  - Stack.Types.ParentMap
+  - Stack.Types.Platform
+  - Stack.Types.Project
+  - Stack.Types.ProjectAndConfigMonoid
+  - Stack.Types.ProjectConfig
+  - Stack.Types.PvpBounds
   - Stack.Types.Resolver
+  - Stack.Types.Runner
+  - Stack.Types.SCM
+  - Stack.Types.SetupInfo
   - Stack.Types.SourceMap
+  - Stack.Types.StackYamlLoc
   - Stack.Types.TemplateName
+  - Stack.Types.UnusedFlags
   - Stack.Types.Version
+  - Stack.Types.VersionedDownloadInfo
+  - Stack.Uninstall
   - Stack.Unpack
+  - Stack.Update
   - Stack.Upgrade
   - Stack.Upload
   - System.Info.ShortPathName
@@ -322,6 +383,12 @@ tests:
   stack-test:
     main: Spec.hs
     source-dirs: src/test
+    when:
+    - condition: 'os(windows)'
+      then:
+        source-dirs: src/test/windows/
+      else:
+        source-dirs: src/test/unix/
     ghc-options:
     - -threaded
     dependencies:

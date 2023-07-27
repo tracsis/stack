@@ -8,7 +8,7 @@ import qualified Data.Map as Map
 import           Options.Applicative ( ReadM, readerError )
 import           Options.Applicative.Types ( readerAsk )
 import           Stack.Prelude
-import           Stack.Types.Config.Build ( ApplyCLIFlag (..) )
+import           Stack.Types.BuildOpts ( ApplyCLIFlag (..) )
 
 -- | Parser for package:[-]flag
 readFlag :: ReadM (Map ApplyCLIFlag (Map FlagName Bool))
@@ -28,4 +28,4 @@ readFlag = do
                  Nothing -> readerError $ "Invalid flag name: " ++ flagS
                  Just x -> pure x
       pure $ Map.singleton pn' $ Map.singleton flagN b
-    _ -> readerError "Must have a colon"
+    _ -> readerError "Must have a colon."

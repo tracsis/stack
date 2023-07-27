@@ -9,7 +9,7 @@ import           Options.Applicative
 import           Options.Applicative.Types ( readerAsk )
 import           Stack.Prelude
 import           Stack.Options.Utils ( hideMods )
-import           Stack.Types.Config ( GHCVariant, parseGHCVariant )
+import           Stack.Types.GHCVariant ( GHCVariant, parseGHCVariant )
 
 -- | GHC variant parser
 ghcVariantParser :: Bool -> Parser GHCVariant
@@ -17,7 +17,7 @@ ghcVariantParser hide = option readGHCVariant
   (  long "ghc-variant"
   <> metavar "VARIANT"
   <> help "Specialized GHC variant, e.g. int-native or integersimple \
-          \(incompatible with --system-ghc)"
+          \(incompatible with --system-ghc)."
   <> hideMods hide
   )
  where

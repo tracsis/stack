@@ -1,39 +1,67 @@
 {-# LANGUAGE NoImplicitPrelude   #-}
-{-# LANGUAGE ConstraintKinds     #-}
-{-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE OverloadedStrings   #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections       #-}
 
--- | Functions for IDEs.
+-- | Types and functions related to Stack's @ide@ command.
 module Stack.IDE
-    ( OutputStream (..)
-    , ListPackagesCmd (..)
-    , listPackages
-    , listTargets
-    ) where
+  ( OutputStream (..)
+  , ListPackagesCmd (..)
+  , idePackagesCmd
+  , ideTargetsCmd
+  , listPackages
+  , listTargets
+  ) where
 
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import           Stack.Prelude
-import           Stack.Types.Config
+import           Stack.Runners
+                   ( ShouldReexec (..), withBuildConfig, withConfig )
+import           Stack.Types.BuildConfig
+                   ( BuildConfig (..), HasBuildConfig (..) )
 import           Stack.Types.NamedComponent
+                   ( NamedComponent, renderPkgComponent )
+import           Stack.Types.Runner ( Runner )
 import           Stack.Types.SourceMap
-import           System.IO (putStrLn)
+                   ( ProjectPackage (..), SMWanted (..), ppComponents )
+import           System.IO ( putStrLn )
 
-data OutputStream = OutputLogInfo
-                  | OutputStdout
+-- Type representing output channel choices for the @stack ide packages@ and
+-- @stack ide targets@ commands.
+data OutputStream
+  = OutputLogInfo
+    -- ^ To the same output channel as other log information.
+  | OutputStdout
+    -- ^ To the standard output channel.
 
-data ListPackagesCmd = ListPackageNames
-                     | ListPackageCabalFiles
+-- Type representing output choices for the @stack ide packages@ command.
+data ListPackagesCmd
+  = ListPackageNames
+    -- ^ Package names.
+  | ListPackageCabalFiles
+    -- ^ Paths to Cabal files.
 
-outputFunc :: HasLogFunc env => OutputStream -> String -> RIO env ()
-outputFunc OutputLogInfo = logInfo . fromString
+-- | Function underlying the @stack ide packages@ command. List packages in the
+-- project.
+idePackagesCmd :: (OutputStream, ListPackagesCmd) -> RIO Runner ()
+idePackagesCmd =
+  withConfig NoReexec . withBuildConfig . uncurry listPackages
+
+-- | Function underlying the @stack ide targets@ command. List targets in the
+-- project.
+ideTargetsCmd :: OutputStream -> RIO Runner ()
+ideTargetsCmd = withConfig NoReexec . withBuildConfig . listTargets
+
+outputFunc :: HasTerm env => OutputStream -> String -> RIO env ()
+outputFunc OutputLogInfo = prettyInfo . fromString
 outputFunc OutputStdout  = liftIO . putStrLn
 
 -- | List the packages inside the current project.
-listPackages :: HasBuildConfig env => OutputStream -> ListPackagesCmd -> RIO env ()
+listPackages ::
+     HasBuildConfig env
+  => OutputStream
+  -> ListPackagesCmd
+  -> RIO env ()
 listPackages stream flag = do
   packages <- view $ buildConfigL.to (smwProject . bcSMWanted)
   let strs = case flag of
@@ -50,10 +78,10 @@ listTargets stream = do
   pairs <- concat <$> Map.traverseWithKey toNameAndComponent packages
   outputFunc stream $ T.unpack $ T.intercalate "\n" $
     map renderPkgComponent pairs
-  where
-    toNameAndComponent
-      :: PackageName
-      -> ProjectPackage
-      -> RIO env [(PackageName, NamedComponent)]
-    toNameAndComponent pkgName' =
-        fmap (map (pkgName', ) . Set.toList) . ppComponents
+ where
+  toNameAndComponent ::
+       PackageName
+    -> ProjectPackage
+    -> RIO env [(PackageName, NamedComponent)]
+  toNameAndComponent pkgName' =
+    fmap (map (pkgName', ) . Set.toList) . ppComponents

@@ -9,8 +9,8 @@ on:
     - rc/**
   workflow_dispatch:
 
-# As of 14 November 2022, ubuntu-latest, windows-latest and macos-latest come
-# with Stack 2.9.1 and GHC 9.4.2.
+# As of 5 May 2023, ubuntu-latest, windows-latest and macos-latest come
+# with Stack 2.9.3 and GHC 9.6.1.
 
 jobs:
   pedantic:
@@ -67,20 +67,11 @@ jobs:
           ~\AppData\Roaming\stack
           ~\AppData\Local\Programs\stack
         key: ${{ runner.os }}-${{ hashFiles('stack.yaml') }}-${{ matrix.extra-suffix }}
-    - name: Update PATH on Windows
-      if: startsWith(runner.os, 'Windows')
-      run: |
-        # On Windows, `stack upgrade` fails to overwrite the stack executable at
-        # C:\hostedtoolcache\windows\stack\2.9.1\x64\, so add location of
-        # upgraded Stack executable to the PATH for subsequent steps:
-        Add-Content $env:GITHUB_PATH "C:\Users\runneradmin\AppData\Roaming\local\bin"
+
     - name: Run tests
       shell: bash
       run: |
         set -ex
-
-        # Stack 2.9.3 is required to build Stack
-        stack upgrade
 
         if [[ "${{ matrix.extra-suffix }}" == "alpine" ]]
         then

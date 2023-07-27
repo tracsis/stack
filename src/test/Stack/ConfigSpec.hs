@@ -1,26 +1,53 @@
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards   #-}
 
-module Stack.ConfigSpec where
+module Stack.ConfigSpec
+  ( sampleConfig
+  , buildOptsConfig
+  , hpackConfig
+  , resolverConfig
+  , snapshotConfig
+  , resolverSnapshotConfig
+  , stackDotYaml
+  , setup
+  , noException
+  , spec
+  ) where
 
-import Control.Arrow
-import Distribution.Verbosity (verbose)
-import Pantry.Internal.AesonExtended
-import Data.Yaml
-import Pantry.Internal (pcHpackExecutable)
-import Path
-import Path.IO hiding (withSystemTempDir)
-import Stack.Config
-import Stack.Prelude
-import Stack.Runners
-import Stack.Types.Config
-import Stack.Options.GlobalParser (globalOptsFromMonoid)
-import System.Directory
-import System.Environment
-import System.IO (writeFile)
-import Test.Hspec
+import           Control.Arrow ( left )
+import           Data.Yaml ( decodeEither', parseEither )
+import           Distribution.Verbosity ( verbose )
+import           Pantry.Internal ( pcHpackExecutable )
+import           Pantry.Internal.AesonExtended
+import           Path ( (</>), parent, parseAbsDir, parseRelDir, parseRelFile )
+import           Path.IO hiding ( withSystemTempDir )
+import           Stack.Config (defaultConfigYaml, loadConfig, loadConfigYaml )
+import           Stack.Options.GlobalParser ( globalOptsFromMonoid )
+import           Stack.Prelude
+import           Stack.Runners ( withBuildConfig, withRunnerGlobal )
+import           Stack.Types.BuildConfig ( BuildConfig (..), projectRootL )
+import           Stack.Types.BuildOpts
+                   ( BenchmarkOpts (..), BuildOpts (..), CabalVerbosity (..)
+                   , TestOpts (..)
+                   )
+import           Stack.Types.Config ( Config (..) )
+import           Stack.Types.ConfigMonoid
+                   ( ConfigMonoid (..), parseConfigMonoid )
+import           Stack.Types.GlobalOpts ( GlobalOpts (..) )
+import           Stack.Types.Project ( Project (..) )
+import           Stack.Types.ProjectAndConfigMonoid
+                   ( ProjectAndConfigMonoid (..), parseProjectAndConfigMonoid )
+import           System.Directory
+                   ( createDirectory, createDirectoryIfMissing
+                   , getCurrentDirectory, setCurrentDirectory
+                   )
+import           System.Environment ( lookupEnv, setEnv, unsetEnv )
+import           System.IO ( writeFile )
+import           Test.Hspec
+                   ( Selector, Spec, anyException, beforeAll, describe, example
+                   , it, shouldBe, shouldThrow
+                   )
 
 sampleConfig :: String
 sampleConfig =

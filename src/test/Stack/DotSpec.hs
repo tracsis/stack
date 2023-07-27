@@ -1,22 +1,25 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TupleSections     #-}
 
 -- | Test suite for Stack.Dot
-module Stack.DotSpec where
+module Stack.DotSpec
+  ( dummyPayload
+  , spec
+  , sublistOf
+  , pkgName
+  , stubLoader
+  ) where
 
-import           Data.Functor.Identity
 import           Data.List ((\\))
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import           Distribution.License (License (BSD3))
+import           Distribution.License ( License (BSD3) )
 import qualified RIO.Text as T
-import           Stack.Prelude hiding (pkgName)
-import           Test.Hspec
-import           Test.Hspec.QuickCheck (prop)
-import           Test.QuickCheck (forAll,choose,Gen)
-
-import           Stack.Dot
+import           Stack.Dot ( DotPayload (..), pruneGraph, resolveDependencies )
+import           Stack.Prelude hiding ( pkgName )
+import           Test.Hspec ( Spec, describe, it, shouldBe )
+import           Test.Hspec.QuickCheck ( prop )
+import           Test.QuickCheck ( Gen, choose, forAll )
 
 dummyPayload :: DotPayload
 dummyPayload = DotPayload (parseVersion "0.0.0.0") (Just (Right BSD3)) Nothing
@@ -56,7 +59,7 @@ spec = do
           allPackages g = Map.keysSet g `Set.union` foldMap fst g
       forAll (sublistOf (Set.toList (allPackages resolvedGraph))) $ \toPrune ->
         let pruned = pruneGraph [pkgName "one", pkgName "two"] toPrune resolvedGraph
-        in Set.null (allPackages pruned `Set.intersection` Set.fromList toPrune)
+        in  Set.null (allPackages pruned `Set.intersection` Set.fromList toPrune)
 
     prop "pruning removes orphans" $ do
       let resolvedGraph = runIdentity (resolveDependencies Nothing graph stubLoader)
@@ -64,7 +67,7 @@ spec = do
           orphans g = Map.filterWithKey (\k _ -> not (graphElem k g)) g
       forAll (sublistOf (Set.toList (allPackages resolvedGraph))) $ \toPrune ->
         let pruned = pruneGraph [pkgName "one", pkgName "two"] toPrune resolvedGraph
-        in null (Map.keys (orphans (fmap fst pruned)) \\ [pkgName "one", pkgName "two"])
+        in  null (Map.keys (orphans (fmap fst pruned)) \\ [pkgName "one", pkgName "two"])
 
 {- Helper functions below -}
 -- Backport from QuickCheck 2.8 to 2.7.6
@@ -79,43 +82,53 @@ pkgName = fromMaybe failure . parsePackageName . T.unpack
 
 -- Stub, simulates the function to load package dependencies
 stubLoader :: PackageName -> Identity (Set PackageName, DotPayload)
-stubLoader name = pure . (, dummyPayload) . Set.fromList . map pkgName $ case show name of
-  "StateVar" -> ["stm","transformers"]
-  "array" -> []
-  "bifunctors" -> ["semigroupoids","semigroups","tagged"]
-  "binary" -> ["array","bytestring","containers"]
-  "bytestring" -> ["deepseq","ghc-prim","integer-gmp"]
-  "comonad" -> ["containers","contravariant","distributive"
-               ,"semigroups","tagged","transformers","transformers-compat"
-               ]
-  "cont" -> ["StateVar","semigroups","transformers","transformers-compat","void"]
-  "containers" -> ["array","deepseq","ghc-prim"]
-  "deepseq" -> ["array"]
-  "distributive" -> ["ghc-prim","tagged","transformers","transformers-compat"]
-  "free" -> ["bifunctors","comonad","distributive","mtl"
-            ,"prelude-extras","profunctors","semigroupoids"
-            ,"semigroups","template-haskell","transformers"
-            ]
-  "ghc" -> []
-  "hashable" -> ["bytestring","ghc-prim","integer-gmp","text"]
-  "integer" -> []
-  "mtl" -> ["transformers"]
-  "nats" -> []
-  "one" -> ["free"]
-  "prelude" -> []
-  "profunctors" -> ["comonad","distributive","semigroupoids","tagged","transformers"]
-  "semigroupoids" -> ["comonad","containers","contravariant","distributive"
-                     ,"semigroups","transformers","transformers-compat"
+stubLoader name = pure $ (, dummyPayload) . Set.fromList . map pkgName $
+  case show name of
+    "StateVar" -> ["stm", "transformers"]
+    "array" -> []
+    "bifunctors" -> ["semigroupoids", "semigroups", "tagged"]
+    "binary" -> ["array", "bytestring", "containers"]
+    "bytestring" -> ["deepseq", "ghc-prim", "integer-gmp"]
+    "comonad" -> [ "containers", "contravariant", "distributive", "semigroups"
+                 , "tagged","transformers","transformers-compat"
+                 ]
+    "cont" -> [ "StateVar", "semigroups", "transformers", "transformers-compat"
+              , "void"
+              ]
+    "containers" -> ["array", "deepseq", "ghc-prim"]
+    "deepseq" -> ["array"]
+    "distributive" -> [ "ghc-prim", "tagged", "transformers"
+                      , "transformers-compat"
+                      ]
+    "free" -> [ "bifunctors", "comonad", "distributive", "mtl", "prelude-extras"
+              , "profunctors", "semigroupoids", "semigroups", "template-haskell"
+              , "transformers"
+              ]
+    "ghc" -> []
+    "hashable" -> ["bytestring", "ghc-prim", "integer-gmp", "text"]
+    "integer" -> []
+    "mtl" -> ["transformers"]
+    "nats" -> []
+    "one" -> ["free"]
+    "prelude" -> []
+    "profunctors" -> [ "comonad", "distributive", "semigroupoids", "tagged"
+                     , "transformers"
                      ]
-  "semigroups" -> ["bytestring","containers","deepseq","hashable"
-                  ,"nats","text","unordered-containers"
-                  ]
-  "stm" -> ["array"]
-  "tagged" -> ["template-haskell"]
-  "template" -> []
-  "text" -> ["array","binary","bytestring","deepseq","ghc-prim","integer-gmp"]
-  "transformers" -> []
-  "two" -> ["free","mtl","one","transformers"]
-  "unordered" -> ["deepseq","hashable"]
-  "void" -> ["ghc-prim","hashable","semigroups"]
-  _ -> []
+    "semigroupoids" -> [ "comonad", "containers", "contravariant"
+                       , "distributive", "semigroups", "transformers"
+                       , "transformers-compat"
+                       ]
+    "semigroups" -> [ "bytestring", "containers", "deepseq", "hashable", "nats"
+                    , "text", "unordered-containers"
+                    ]
+    "stm" -> ["array"]
+    "tagged" -> ["template-haskell"]
+    "template" -> []
+    "text" -> [ "array", "binary", "bytestring", "deepseq", "ghc-prim"
+              , "integer-gmp"
+              ]
+    "transformers" -> []
+    "two" -> ["free", "mtl", "one", "transformers"]
+    "unordered" -> ["deepseq", "hashable"]
+    "void" -> ["ghc-prim", "hashable", "semigroups"]
+    _ -> []

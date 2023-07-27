@@ -29,34 +29,36 @@ import           Options.Applicative.Builder.Internal
                    ( Mod (..), mkCommand, mkParser )
 import           Options.Applicative.Types ( OptReader (..) )
 import           Stack.Prelude
-import           Stack.Types.Config ( AddCommand, GlobalOptsMonoid, Runner )
+import           Stack.Types.AddCommand ( AddCommand )
+import           Stack.Types.GlobalOptsMonoid ( GlobalOptsMonoid )
+import           Stack.Types.Runner ( Runner )
 import           System.Environment ( getArgs )
 
 -- | Generate and execute a complicated options parser.
 complicatedOptions ::
      Version
-  -- ^ numeric version
+     -- ^ numeric version
   -> Maybe String
-  -- ^ version string
+     -- ^ version string
   -> String
-  -- ^ Hpack numeric version, as string
+     -- ^ Hpack numeric version, as string
   -> String
-  -- ^ header
+     -- ^ header
   -> String
-  -- ^ program description (displayed between usage and options listing in the
-  -- help output)
+     -- ^ program description (displayed between usage and options listing in
+     -- the help output)
   -> String
-  -- ^ footer
+     -- ^ footer
   -> Parser GlobalOptsMonoid
-  -- ^ common settings
+     -- ^ common settings
   -> Maybe (  ParserFailure ParserHelp
            -> [String]
            -> IO (GlobalOptsMonoid, (RIO Runner (), GlobalOptsMonoid))
            )
-  -- ^ optional handler for parser failure; 'handleParseResult' is called by
-  -- default
+     -- ^ optional handler for parser failure; 'handleParseResult' is called by
+     -- default
   -> AddCommand
-  -- ^ commands (use 'addCommand')
+     -- ^ commands (use 'addCommand')
   -> IO (GlobalOptsMonoid, RIO Runner ())
 complicatedOptions numericVersion stringVersion numericHpackVersion h pd
   footerStr commonParser mOnFailure commandParser = do
@@ -86,19 +88,19 @@ complicatedOptions numericVersion stringVersion numericHpackVersion h pd
     infoOption
       s
       (  long "version"
-      <> help "Show version"
+      <> help "Show version."
       )
   numericVersionOption =
     infoOption
       (versionString numericVersion)
       (  long "numeric-version"
-      <> help "Show only version number"
+      <> help "Show only version number."
       )
   numericHpackVersionOption =
     infoOption
       numericHpackVersion
       (  long "hpack-numeric-version"
-      <> help "Show only Hpack's version number"
+      <> help "Show only Hpack's version number."
       )
 
 -- | Add a command to the options dispatcher.
@@ -119,15 +121,15 @@ addCommand cmd title footerStr constr extendCommon =
 -- | Add a command that takes sub-commands to the options dispatcher.
 addSubCommands ::
      String
-  -- ^ command string
+     -- ^ command string
   -> String
-  -- ^ title of command
+     -- ^ title of command
   -> String
-  -- ^ footer of command help
+     -- ^ footer of command help
   -> Parser GlobalOptsMonoid
-  -- ^ common parser
+     -- ^ common parser
   -> AddCommand
-  -- ^ sub-commands (use 'addCommand')
+     -- ^ sub-commands (use 'addCommand')
   -> AddCommand
 addSubCommands cmd title footerStr commonParser commandParser =
   addCommand'
@@ -160,11 +162,11 @@ addCommand' cmd title footerStr constr commonParser inner =
 -- | Generate a complicated options parser.
 complicatedParser ::
      String
-  -- ^ metavar for the sub-command
+     -- ^ metavar for the sub-command
   -> Parser GlobalOptsMonoid
-  -- ^ common settings
+     -- ^ common settings
   -> AddCommand
-  -- ^ commands (use 'addCommand')
+     -- ^ commands (use 'addCommand')
   -> Parser (GlobalOptsMonoid, (RIO Runner (), GlobalOptsMonoid))
 complicatedParser commandMetavar commonParser commandParser =
   (,)
@@ -189,4 +191,4 @@ helpOption :: Parser (a -> a)
 helpOption =
   abortOption showHelpText $
        long "help"
-    <> help "Show this help text"
+    <> help "Show this help text."

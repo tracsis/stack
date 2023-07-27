@@ -10,6 +10,8 @@ module Stack.Constants
   , buildPlanCacheDir
   , haskellFileExts
   , haskellDefaultPreprocessorExts
+  , stackProgName
+  , stackProgName'
   , stackDotYaml
   , stackWorkEnvVar
   , stackRootEnvVar
@@ -17,7 +19,6 @@ module Stack.Constants
   , stackRootOptionName
   , stackGlobalConfigOptionName
   , pantryRootEnvVar
-  , deprecatedStackRootOptionName
   , inContainerEnvVar
   , inNixShellEnvVar
   , stackProgNameUpper
@@ -45,6 +46,8 @@ module Stack.Constants
   , relFileCabalMacrosH
   , relDirBuild
   , relDirBin
+  , relDirGhci
+  , relDirGhciScript
   , relDirPantry
   , relDirPrograms
   , relDirUpperPrograms
@@ -52,6 +55,7 @@ module Stack.Constants
   , relDirStackWork
   , relFileReadmeTxt
   , relDirScript
+  , relDirScripts
   , relFileConfigYaml
   , relDirSnapshots
   , relDirGlobalHints
@@ -88,7 +92,6 @@ module Stack.Constants
   , relDirAll
   , relFilePackageCache
   , relFileDockerfile
-  , relDirHaskellStackGhci
   , relFileGhciScript
   , relDirCombined
   , relFileHpcIndexHtml
@@ -125,16 +128,22 @@ module Stack.Constants
   , relFileBuildLock
   , stackDeveloperModeDefault
   , globalFooter
+  , gitHubBasicAuthType
+  , gitHubTokenEnvVar
+  , altGitHubTokenEnvVar
   ) where
 
 import           Data.ByteString.Builder ( byteString )
 import           Data.Char ( toUpper )
 import           Data.FileEmbed ( embedFile, makeRelativeToProject )
 import qualified Data.Set as Set
+import qualified Data.Text as T
 import           Distribution.Package ( mkPackageName )
 import           Hpack.Config ( packageConfig )
 import qualified Language.Haskell.TH.Syntax as TH ( runIO, lift )
-import           Path as FL
+import           Path ( (</>), mkRelDir, mkRelFile, parseAbsFile )
+import           Stack.Constants.StackProgName ( stackProgName )
+import           Stack.Constants.UsrLibDirs ( usrLibDirs )
 import           Stack.Prelude
 import           Stack.Types.Compiler ( WhichCompiler (..) )
 import           System.Permissions ( osIsWindows )
@@ -149,6 +158,10 @@ data ConstantsException
 instance Exception ConstantsException where
   displayException WiredInPackagesNotParsedBug = bugReport "[S-6057]"
     "Parse error in wiredInPackages."
+
+-- | Name of the Stack program.
+stackProgName' :: Text
+stackProgName' = T.pack stackProgName
 
 -- | Extensions used for Haskell modules. Excludes preprocessor ones.
 haskellFileExts :: [Text]
@@ -189,15 +202,6 @@ stackGlobalConfigOptionName = "global-config"
 -- | Environment variable used to override the location of the Pantry store
 pantryRootEnvVar :: String
 pantryRootEnvVar = "PANTRY_ROOT"
-
--- | Deprecated option name for the global Stack root.
---
--- Deprecated since stack-1.1.0.
---
--- TODO: Remove occurrences of this variable and use 'stackRootOptionName' only
--- after an appropriate deprecation period.
-deprecatedStackRootOptionName :: String
-deprecatedStackRootOptionName = "global-stack-root"
 
 -- | Environment variable used to indicate Stack is running in container.
 inContainerEnvVar :: String
@@ -303,8 +307,8 @@ buildPlanDir :: Path Abs Dir -- ^ Stack root
 buildPlanDir = (</> $(mkRelDir "build-plan"))
 
 -- | Path where binary caches of the build plans are stored.
-buildPlanCacheDir
-  :: Path Abs Dir -- ^ Stack root
+buildPlanCacheDir ::
+     Path Abs Dir -- ^ Stack root
   -> Path Abs Dir
 buildPlanCacheDir = (</> $(mkRelDir "build-plan-cache"))
 
@@ -362,6 +366,12 @@ relDirBuild = $(mkRelDir "build")
 relDirBin :: Path Rel Dir
 relDirBin = $(mkRelDir "bin")
 
+relDirGhci :: Path Rel Dir
+relDirGhci = $(mkRelDir "ghci")
+
+relDirGhciScript :: Path Rel Dir
+relDirGhciScript = $(mkRelDir "ghci-script")
+
 relDirPantry :: Path Rel Dir
 relDirPantry = $(mkRelDir "pantry")
 
@@ -382,6 +392,9 @@ relFileReadmeTxt = $(mkRelFile "README.txt")
 
 relDirScript :: Path Rel Dir
 relDirScript = $(mkRelDir "script")
+
+relDirScripts :: Path Rel Dir
+relDirScripts = $(mkRelDir "scripts")
 
 relFileConfigYaml :: Path Rel File
 relFileConfigYaml = $(mkRelFile "config.yaml")
@@ -495,9 +508,6 @@ relFilePackageCache = $(mkRelFile "package.cache")
 relFileDockerfile :: Path Rel File
 relFileDockerfile = $(mkRelFile "Dockerfile")
 
-relDirHaskellStackGhci :: Path Rel Dir
-relDirHaskellStackGhci = $(mkRelDir "haskell-stack-ghci")
-
 relFileGhciScript :: Path Rel File
 relFileGhciScript = $(mkRelFile "ghci-script")
 
@@ -598,14 +608,6 @@ hadrianScriptsWindows = [$(mkRelFile "hadrian/build-stack.bat"), $(mkRelFile "ha
 hadrianScriptsPosix :: [Path Rel File]
 hadrianScriptsPosix = [$(mkRelFile "hadrian/build-stack"), $(mkRelFile "hadrian/build.stack.sh")]
 
--- | Used in Stack.Setup for detecting libtinfo, see comments at use site
-usrLibDirs :: [Path Abs Dir]
-#if WINDOWS
-usrLibDirs = []
-#else
-usrLibDirs = [$(mkAbsDir "/usr/lib"),$(mkAbsDir "/usr/lib64")]
-#endif
-
 -- | Relative file path for a temporary GHC environment file for tests
 testGhcEnvRelFile :: Path Rel File
 testGhcEnvRelFile = $(mkRelFile "test-ghc-env")
@@ -622,3 +624,17 @@ stackDeveloperModeDefault = STACK_DEVELOPER_MODE_DEFAULT
 globalFooter :: String
 globalFooter =
   "Command 'stack --help' for global options that apply to all subcommands."
+
+-- | The type for GitHub REST API HTTP \'Basic\' authentication.
+gitHubBasicAuthType :: ByteString
+gitHubBasicAuthType = "Bearer"
+
+-- | Environment variable to hold credentials for GitHub REST API HTTP \'Basic\'
+-- authentication.
+gitHubTokenEnvVar :: String
+gitHubTokenEnvVar = "GH_TOKEN"
+
+-- | Alternate environment variable to hold credentials for GitHub REST API HTTP
+-- \'Basic\' authentication.
+altGitHubTokenEnvVar :: String
+altGitHubTokenEnvVar = "GITHUB_TOKEN"

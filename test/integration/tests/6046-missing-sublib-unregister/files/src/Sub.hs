@@ -1,4 +1,4 @@
-module SubLib
+module Sub
     ( someFunc
     ) where
 

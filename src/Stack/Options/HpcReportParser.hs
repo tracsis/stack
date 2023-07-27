@@ -16,7 +16,7 @@ import           Options.Applicative.Types ( readerAsk )
 import           Stack.Coverage ( HpcReportOpts (..) )
 import           Stack.Options.Completion ( targetCompleter )
 import           Stack.Prelude
-import           Stack.Types.Config ( PvpBounds, parsePvpBounds )
+import           Stack.Types.PvpBounds ( PvpBounds, parsePvpBounds )
 
 -- | Parser for @stack hpc report@.
 hpcReportOptsParser :: Parser HpcReportOpts
@@ -28,17 +28,17 @@ hpcReportOptsParser = HpcReportOpts
   <*> switch
         (  long "all"
         <> help "Use results from all packages and components involved in \
-                \previous --coverage run"
+                \previous --coverage run."
         )
   <*> optional (strOption
         (  long "destdir"
         <> metavar "DIR"
         <> completer dirCompleter
-        <> help "Output directory for HTML report"
+        <> help "Output directory for HTML report."
         ))
   <*> switch
         (  long "open"
-        <> help "Open the report in the browser"
+        <> help "Open the report in the browser."
         )
 
 pvpBoundsOption :: Parser PvpBounds
@@ -47,7 +47,7 @@ pvpBoundsOption = option readPvpBounds
   <> metavar "PVP-BOUNDS"
   <> completeWith ["none", "lower", "upper", "both"]
   <> help "How PVP version bounds should be added to Cabal file: none, lower, \
-          \upper, both"
+          \upper, both."
   )
  where
   readPvpBounds = do

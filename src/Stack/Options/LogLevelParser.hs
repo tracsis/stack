@@ -14,13 +14,13 @@ import           Stack.Options.Utils ( hideMods )
 import           Stack.Prelude
 
 -- | Parser for a logging level.
-logLevelOptsParser :: Bool -> Maybe LogLevel -> Parser (Maybe LogLevel)
-logLevelOptsParser hide defLogLevel = fmap (Just . parse)
+logLevelOptsParser :: Bool -> Parser (Maybe LogLevel)
+logLevelOptsParser hide = fmap (Just . parse)
       (strOption
         (  long "verbosity"
         <> metavar "VERBOSITY"
         <> completeWith ["silent", "error", "warn", "info", "debug"]
-        <> help "Verbosity: silent, error, warn, info, debug"
+        <> help "Set verbosity level: silent, error, warn, info or debug."
         <> hideMods hide
         ))
   <|> flag' (Just verboseLevel)
@@ -29,7 +29,7 @@ logLevelOptsParser hide defLogLevel = fmap (Just . parse)
         <> help
              (  "Enable verbose mode: verbosity level \""
              <> showLevel verboseLevel
-             <> "\""
+             <> "\"."
              )
         <> hideMods hide
         )
@@ -37,11 +37,11 @@ logLevelOptsParser hide defLogLevel = fmap (Just . parse)
         (  long "silent"
         <> help (  "Enable silent mode: verbosity level \""
                 <> showLevel silentLevel
-                <> "\""
+                <> "\"."
                 )
         <> hideMods hide
         )
-  <|> pure defLogLevel
+  <|> pure Nothing
  where
   verboseLevel = LevelDebug
   silentLevel = LevelOther "silent"

@@ -1,5 +1,4 @@
 {-# LANGUAGE NoImplicitPrelude  #-}
-{-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE OverloadedStrings  #-}
 {-# LANGUAGE RecordWildCards    #-}
 
@@ -16,7 +15,7 @@ import qualified Data.Text.IO as TIO
 import           Distribution.System ( OS (..) )
 import           Stack.Constants ( osIsWindows )
 import           Stack.Prelude
-import           Stack.Types.Config ( HasRunner )
+import           Stack.Types.Runner ( HasRunner )
 import           Stack.Types.Nix ( NixOpts (..), NixOptsMonoid (..) )
 import           System.Directory ( doesFileExist )
 
@@ -43,7 +42,7 @@ instance Exception ConfigNixException where
 
 -- | Interprets NixOptsMonoid options.
 nixOptsFromMonoid ::
-     HasRunner env
+     (HasRunner env, HasTerm env)
   => NixOptsMonoid
   -> OS
   -> RIO env NixOpts
@@ -62,13 +61,13 @@ nixOptsFromMonoid NixOptsMonoid{..} os = do
   osIsNixOS <- isNixOS
   let nixEnable0 = fromFirst osIsNixOS nixMonoidEnable
 
-  nixEnable <- case () of
-    _
-      | nixEnable0 && osIsWindows -> do
-          logInfo
-            "Note: Disabling nix integration, since this is being run in Windows"
-          pure False
-      | otherwise -> pure nixEnable0
+  nixEnable <-
+    if nixEnable0 && osIsWindows
+      then do
+        prettyNoteS
+          "Disabling Nix integration, since this is being run in Windows."
+        pure False
+      else pure nixEnable0
 
   when (not (null nixPackages) && isJust nixInitFile) $
     throwIO NixCannotUseShellFileAndPackagesException

@@ -1,51 +1,59 @@
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards   #-}
 
--- | Handy path information.
+-- | Types and functions related to Stack's @path@ command.
 module Stack.Path
-  ( path
-  , pathParser
+  ( PathInfo
+  , path
+  , paths
   ) where
 
 import           Data.List ( intercalate )
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
-import qualified Options.Applicative as OA
 import           Path ( (</>), parent )
 import           Path.Extra ( toFilePathNoTrailingSep )
 import           RIO.Process ( HasProcessContext (..), exeSearchPathL )
 import           Stack.Constants
-import           Stack.Constants.Config
+                   ( docDirSuffix, stackGlobalConfigOptionName
+                   , stackRootOptionName
+                   )
+import           Stack.Constants.Config ( distRelativeDir )
 import           Stack.GhcPkg as GhcPkg
 import           Stack.Prelude
 import           Stack.Runners
+                   ( ShouldReexec (..), withConfig, withDefaultEnvConfig )
+import           Stack.Types.BuildConfig
+                   ( BuildConfig (..), HasBuildConfig (..), projectRootL
+                   , stackYamlL
+                   )
+import           Stack.Types.BuildOpts ( buildOptsMonoidHaddockL )
+import           Stack.Types.CompilerPaths
+                   ( CompilerPaths (..), HasCompiler (..), getCompilerPath )
 import           Stack.Types.Config
+                   ( Config (..), HasConfig (..), stackGlobalConfigL, stackRootL
+                   )
+import           Stack.Types.EnvConfig
+                   ( EnvConfig, HasEnvConfig (..), bindirCompilerTools
+                   , hoogleRoot, hpcReportDir, installationRootDeps
+                   , installationRootLocal, packageDatabaseDeps
+                   , packageDatabaseExtra, packageDatabaseLocal
+                   )
+import           Stack.Types.GHCVariant ( HasGHCVariant (..) )
+import           Stack.Types.GlobalOpts ( globalOptsBuildOptsMonoidL )
+import           Stack.Types.Platform ( HasPlatform (..) )
+import           Stack.Types.Runner ( HasRunner (..), Runner, globalOptsL )
 import qualified System.FilePath as FP
 
 -- | Print out useful path information in a human-readable format (and
 -- support others later).
 path :: [Text] -> RIO Runner ()
 path keys = do
-  let deprecated = filter ((`elem` keys) . fst) deprecatedPathKeys
-  forM_ deprecated $ \(oldOption, newOption) ->
-    logWarn $
-         "\n"
-      <> "'--"
-      <> display oldOption
-      <> "' will be removed in a future release.\n"
-      <> "Please use '--"
-      <> display newOption
-      <> "' instead.\n"
-      <> "\n"
-  let -- filter the chosen paths in flags (keys),
-      -- or show all of them if no specific paths chosen.
+  let -- filter the chosen paths in flags (keys), or show all of them if no
+      -- specific paths chosen.
       goodPaths = filter
-        ( \(_, key, _) ->
-               (null keys && key /= T.pack deprecatedStackRootOptionName)
-            || elem key keys
-        )
+        ( \(_, key, _) -> null keys || elem key keys )
         paths
       singlePath = length goodPaths == 1
       toEither (_, k, UseHaddocks p) = Left (k, p)
@@ -96,19 +104,7 @@ fillPathInfo = do
   piCompiler <- getCompilerPath
   pure PathInfo {..}
 
-pathParser :: OA.Parser [Text]
-pathParser =
-  mapMaybeA
-    ( \(desc,name,_) ->
-        OA.flag Nothing
-                (Just name)
-                (  OA.long (T.unpack name)
-                <> OA.help desc
-                )
-    )
-    paths
-
--- | Passed to all the path printers as a source of info.
+-- | Type representing information passed to all the path printers.
 data PathInfo = PathInfo
   { piBuildConfig  :: !BuildConfig
   , piSnapDb       :: !(Path Abs Dir)
@@ -124,37 +120,55 @@ data PathInfo = PathInfo
   , piCompiler     :: !(Path Abs File)
   }
 
-instance HasPlatform PathInfo
+instance HasPlatform PathInfo where
+  platformL = configL.platformL
+  {-# INLINE platformL #-}
+  platformVariantL = configL.platformVariantL
+  {-# INLINE platformVariantL #-}
+
 instance HasLogFunc PathInfo where
   logFuncL = configL.logFuncL
+
 instance HasRunner PathInfo where
   runnerL = configL.runnerL
+
 instance HasStylesUpdate PathInfo where
   stylesUpdateL = runnerL.stylesUpdateL
+
 instance HasTerm PathInfo where
   useColorL = runnerL.useColorL
   termWidthL = runnerL.termWidthL
-instance HasGHCVariant PathInfo
-instance HasConfig PathInfo
+
+instance HasGHCVariant PathInfo where
+  ghcVariantL = configL.ghcVariantL
+  {-# INLINE ghcVariantL #-}
+
+instance HasConfig PathInfo where
+  configL = buildConfigL.lens bcConfig (\x y -> x { bcConfig = y })
+  {-# INLINE configL #-}
+
 instance HasPantryConfig PathInfo where
   pantryConfigL = configL.pantryConfigL
+
 instance HasProcessContext PathInfo where
   processContextL = configL.processContextL
+
 instance HasBuildConfig PathInfo where
   buildConfigL = lens piBuildConfig (\x y -> x { piBuildConfig = y })
                  . buildConfigL
 
-data UseHaddocks a = UseHaddocks a | WithoutHaddocks a
+data UseHaddocks a
+  = UseHaddocks a
+  | WithoutHaddocks a
 
--- | The paths of interest to a user. The first tuple string is used
--- for a description that the optparse flag uses, and the second
--- string as a machine-readable key and also for @--foo@ flags. The user
--- can choose a specific path to list like @--stack-root@. But
--- really it's mainly for the documentation aspect.
+-- | The paths of interest to a user. The first tuple string is used for a
+-- description that the optparse flag uses, and the second string as a
+-- machine-readable key and also for @--foo@ flags. The user can choose a
+-- specific path to list like @--stack-root@. But really it's mainly for the
+-- documentation aspect.
 --
--- When printing output we generate @PathInfo@ and pass it to the
--- function to generate an appropriate string.  Trailing slashes are
--- removed, see #506
+-- When printing output we generate @PathInfo@ and pass it to the function to
+-- generate an appropriate string. Trailing slashes are removed, see #506.
 paths :: [(String, Text, UseHaddocks (PathInfo -> Text))]
 paths =
   [ ( "Global Stack root directory"
@@ -243,22 +257,4 @@ paths =
   , ( "Where HPC reports and tix files are stored"
     , "local-hpc-root"
     , WithoutHaddocks $ T.pack . toFilePathNoTrailingSep . piHpcDir )
-  , ( "DEPRECATED: Use '--local-bin' instead"
-    , "local-bin-path"
-    , WithoutHaddocks $
-        T.pack . toFilePathNoTrailingSep . configLocalBin . view configL )
-  , ( "DEPRECATED: Use '--programs' instead"
-    , "ghc-paths"
-    , WithoutHaddocks $
-        T.pack . toFilePathNoTrailingSep . configLocalPrograms . view configL )
-  , ( "DEPRECATED: Use '--" <> stackRootOptionName <> "' instead"
-    , T.pack deprecatedStackRootOptionName
-    , WithoutHaddocks $ T.pack . toFilePathNoTrailingSep . view stackRootL )
-  ]
-
-deprecatedPathKeys :: [(Text, Text)]
-deprecatedPathKeys =
-  [ (T.pack deprecatedStackRootOptionName, T.pack stackRootOptionName)
-  , ("ghc-paths", "programs")
-  , ("local-bin-path", "local-bin")
   ]
