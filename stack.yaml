@@ -38,8 +38,6 @@ nix:
   - unzip
 
 flags:
-  lukko:
-    ofd-locking: false
   hackage-security:
     Cabal-syntax: true
   mintty:
