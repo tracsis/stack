@@ -1,25 +1,36 @@
 {-# LANGUAGE NoImplicitPrelude   #-}
-{-# LANGUAGE BangPatterns        #-}
-{-# LANGUAGE DeriveGeneric       #-}
 {-# LANGUAGE OverloadedStrings   #-}
-{-# LANGUAGE RankNTypes          #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 
 import           Conduit
-import           Data.List                (stripPrefix)
+                   ( (.|), connect, filterC, filterMC, foldMapC, mapM_C
+                   , runConduit, runConduitRes, runResourceT, sourceDirectory
+                   , sourceDirectoryDeep, stderrC, withSourceFile
+                   )
+import           Data.List ( stripPrefix )
 import           Options.Generic
+                   ( ParseField, ParseRecord (..), defaultModifiers
+                   , fieldNameModifier, firstLetter, getRecord
+                   , parseRecordWithModifiers, shortNameModifier
+                   )
 import           RIO
-import           RIO.Char                 (toLower)
-import           RIO.Directory            hiding (findExecutable)
+import           RIO.Char ( toLower )
+import           RIO.Directory hiding ( findExecutable )
 import           RIO.FilePath
-import           RIO.List                 (isInfixOf, partition)
-import qualified RIO.Map                  as Map
+                   ( (</>), (<.>), isPathSeparator, takeDirectory
+                   , takeExtensions, takeFileName
+                   )
+import           RIO.List ( isInfixOf, partition )
+import qualified RIO.Map as Map
 import           RIO.Process
-import qualified RIO.Set                  as Set
-import qualified RIO.Text                 as T
-import           System.Environment       (lookupEnv, getExecutablePath)
-import           System.Info (os)
-import           System.PosixCompat.Files
+                   ( HasProcessContext (..), closed, findExecutable, proc
+                   , runProcess, runProcess_, setStderr, setStdin, setStdout
+                   , useHandleOpen, withModifyEnvVars, withWorkingDir
+                   )
+import qualified RIO.Set as Set
+import qualified RIO.Text as T
+import           System.Environment ( getExecutablePath, lookupEnv )
+import           System.Info ( os )
+import           System.PosixCompat.Files ( createSymbolicLink )
 
 -- This code does not use a test framework so that we get direct
 -- control of how the output is displayed.
@@ -67,7 +78,9 @@ main = runSimpleApp $ do
 data Options = Options
   { optSpeed :: Maybe Speed
   , optMatch :: Maybe String
-  } deriving Generic
+  , optNot :: [String]
+  }
+  deriving Generic
 
 instance ParseRecord Options where
   parseRecord = parseRecordWithModifiers modifiers
@@ -104,9 +117,10 @@ runApp options inner = do
   logInfo $ "Using runghc located at " <> fromString runghc
   proc runghc ["--version"] runProcess_
 
-  let matchTest = case optMatch options of
-        Nothing -> const True
-        Just str -> (str `isInfixOf`)
+  let matchTest = case (optMatch options, optNot options) of
+        (Just str, _) -> (str `isInfixOf`)
+        (_, []) -> const True
+        (_, nl) -> \a -> all (\b -> not $ b `isInfixOf` a) nl
   testDirs
     <- runConduitRes
      $ sourceDirectory (testsRoot </> "tests")

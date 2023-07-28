@@ -1,11 +1,7 @@
 {-# LANGUAGE NoImplicitPrelude   #-}
-{-# LANGUAGE ConstraintKinds     #-}
 {-# LANGUAGE DataKinds           #-}
-{-# LANGUAGE DeriveDataTypeable  #-}
-{-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE GADTs               #-}
 {-# LANGUAGE OverloadedStrings   #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Resolving a build plan for a set of packages in a given Stackage
 -- snapshot.
@@ -21,29 +17,44 @@ module Stack.BuildPlan
     , showItems
     ) where
 
-import           Stack.Prelude hiding (Display (..))
 import qualified Data.Foldable as F
-import qualified Data.Set as Set
 import           Data.List (intercalate)
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Map as Map
+import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Distribution.Package as C
-import           Distribution.PackageDescription (GenericPackageDescription,
-                                                  flagDefault, flagManual,
-                                                  flagName, genPackageFlags)
+import           Distribution.PackageDescription
+                   ( GenericPackageDescription, flagDefault, flagName
+                   , flagManual, genPackageFlags
+                   )
 import qualified Distribution.PackageDescription as C
-import           Distribution.System (Platform)
-import           Distribution.Text (display)
-import           Distribution.Types.UnqualComponentName (unUnqualComponentName)
+import           Distribution.System ( Platform )
+import           Distribution.Text ( display )
+import           Distribution.Types.UnqualComponentName
+                   ( unUnqualComponentName )
 import qualified Distribution.Version as C
-import           Stack.Constants
+import           Stack.Constants ( wiredInPackages )
 import           Stack.Package
+                   ( PackageConfig (..), packageDependencies
+                   , pdpModifiedBuildable, resolvePackageDescription
+                   )
+import           Stack.Prelude hiding ( Display (..) )
 import           Stack.SourceMap
-import           Stack.Types.SourceMap
-import           Stack.Types.Version
-import           Stack.Types.Config
+                   ( SnapshotCandidate, loadProjectSnapshotCandidate )
 import           Stack.Types.Compiler
+                   ( ActualCompiler, WhichCompiler (..), compilerVersionText
+                   , whichCompiler
+                   )
+import           Stack.Types.Config ( HasConfig )
+import           Stack.Types.GHCVariant ( HasGHCVariant )
+import           Stack.Types.Platform ( HasPlatform (..) )
+import           Stack.Types.SourceMap
+                   ( CommonPackage (..), DepPackage (..)
+                   , GlobalPackageVersion (..), ProjectPackage (..)
+                   , SMActual (..)
+                   )
+import           Stack.Types.Version ( VersionRange, withinRange )
 
 -- | Type representing exceptions thrown by functions exported by the
 -- "Stack.BuildPlan" module.
@@ -64,7 +75,8 @@ instance Exception BuildPlanException where
         , "Non existing resolver: " ++ snapName' ++ "."
         , "For a complete list of available snapshots see https://www.stackage.org/snapshots"
         ]
-      where snapName' = show snapName
+      where
+        snapName' = show snapName
     displayException (UnknownPackages stackYaml unknown shadowed) =
         "Error: [S-7571]\n"
         ++ unlines (unknown' ++ shadowed')
@@ -147,8 +159,8 @@ gpdPackages = Map.fromList . map (toPair . C.package . C.packageDescription)
     where
         toPair (C.PackageIdentifier name version) = (name, version)
 
-gpdPackageDeps
-    :: GenericPackageDescription
+gpdPackageDeps ::
+       GenericPackageDescription
     -> ActualCompiler
     -> Platform
     -> Map FlagName Bool
@@ -188,11 +200,11 @@ removeSrcPkgDefaultFlags gpds flags =
     where
         removeSame f1 f2 =
             let diff v v' = if v == v' then Nothing else Just v
-            in Just $ Map.differenceWith diff f1 f2
+            in  Just $ Map.differenceWith diff f1 f2
 
         gpdDefaultFlags gpd =
             let tuples = map getDefault (C.genPackageFlags gpd)
-            in Map.singleton (gpdPackageName gpd) (Map.fromList tuples)
+            in  Map.singleton (gpdPackageName gpd) (Map.fromList tuples)
 
         getDefault f
             | C.flagDefault f = (C.flagName f, True)
@@ -202,8 +214,8 @@ removeSrcPkgDefaultFlags gpds flags =
 -- @GenericPackageDescription@ to compile against the given @BuildPlan@. Will
 -- only modify non-manual flags, and will prefer default values for flags.
 -- Returns the plan which produces least number of dep errors
-selectPackageBuildPlan
-    :: Platform
+selectPackageBuildPlan ::
+       Platform
     -> ActualCompiler
     -> Map PackageName Version
     -> GenericPackageDescription
@@ -218,13 +230,15 @@ selectPackageBuildPlan platform compiler pool gpd =
             | nErrors p1 == 0 = p1
             | nErrors p1 <= nErrors p2 = p1
             | otherwise = p2
-          where nErrors = Map.size . snd
+          where
+            nErrors = Map.size . snd
 
     -- Avoid exponential complexity in flag combinations making us sad pandas.
     -- See: https://github.com/commercialhaskell/stack/issues/543
     limitSearchSpace :: NonEmpty a -> NonEmpty a
     limitSearchSpace (x :| xs) = x :| take (maxFlagCombinations - 1) xs
-      where maxFlagCombinations = 128
+     where
+      maxFlagCombinations = 128
 
     makePlan :: [(FlagName, Bool)] -> (Map PackageName (Map FlagName Bool), DepErrors)
     makePlan flags = checkPackageBuildPlan platform compiler pool (Map.fromList flags) gpd
@@ -237,12 +251,13 @@ selectPackageBuildPlan platform compiler pool gpd =
             | flagManual f = (fname, flagDefault f) :| []
             | flagDefault f = (fname, True) :| [(fname, False)]
             | otherwise = (fname, False) :| [(fname, True)]
-          where fname = flagName f
+          where
+            fname = flagName f
 
 -- | Check whether with the given set of flags a package's dependency
 -- constraints can be satisfied against a given build plan or pool of packages.
-checkPackageBuildPlan
-    :: Platform
+checkPackageBuildPlan ::
+       Platform
     -> ActualCompiler
     -> Map PackageName Version
     -> Map FlagName Bool
@@ -258,8 +273,8 @@ checkPackageBuildPlan platform compiler pool flags gpd =
 -- | Checks if the given package dependencies can be satisfied by the given set
 -- of packages. Will fail if a package is either missing or has a version
 -- outside of the version range.
-checkPackageDeps
-    :: PackageName -- ^ package using dependencies, for constructing DepErrors
+checkPackageDeps ::
+       PackageName -- ^ package using dependencies, for constructing DepErrors
     -> Map PackageName VersionRange -- ^ dependency constraints
     -> Map PackageName Version -- ^ Available package pool or index
     -> DepErrors
@@ -284,7 +299,8 @@ type DepErrors = Map PackageName DepError
 data DepError = DepError
     { deVersion :: !(Maybe Version)
     , deNeededBy :: !(Map PackageName VersionRange)
-    } deriving Show
+    }
+    deriving Show
 
 -- | Combine two 'DepError's for the same 'Version'.
 combineDepError :: DepError -> DepError -> DepError
@@ -295,8 +311,8 @@ combineDepError (DepError a x) (DepError b y) =
 -- build and an available package pool (snapshot) check whether the bundle's
 -- dependencies can be satisfied. If flags is passed as Nothing flag settings
 -- will be chosen automatically.
-checkBundleBuildPlan
-    :: Platform
+checkBundleBuildPlan ::
+       Platform
     -> ActualCompiler
     -> Map PackageName Version
     -> Maybe (Map PackageName (Map FlagName Bool))
@@ -330,7 +346,7 @@ compareBuildPlanCheck (BuildPlanCheckPartial _ e1) (BuildPlanCheckPartial _ e2) 
     compare (Map.size e2) (Map.size e1)
 compareBuildPlanCheck (BuildPlanCheckFail _ e1 _) (BuildPlanCheckFail _ e2 _) =
     let numUserPkgs e = Map.size $ Map.unions (Map.elems (fmap deNeededBy e))
-    in compare (numUserPkgs e2) (numUserPkgs e1)
+    in  compare (numUserPkgs e2) (numUserPkgs e1)
 compareBuildPlanCheck BuildPlanCheckOk{}      BuildPlanCheckOk{}      = EQ
 compareBuildPlanCheck BuildPlanCheckOk{}      BuildPlanCheckPartial{} = GT
 compareBuildPlanCheck BuildPlanCheckOk{}      BuildPlanCheckFail{}    = GT
@@ -345,8 +361,8 @@ instance Show BuildPlanCheck where
 -- | Check a set of 'GenericPackageDescription's and a set of flags against a
 -- given snapshot. Returns how well the snapshot satisfies the dependencies of
 -- the packages.
-checkSnapBuildPlan
-    :: (HasConfig env, HasGHCVariant env)
+checkSnapBuildPlan ::
+       (HasConfig env, HasGHCVariant env)
     => [ResolvedPath Dir]
     -> Maybe (Map PackageName (Map FlagName Bool))
     -> SnapshotCandidate env
@@ -371,7 +387,7 @@ checkSnapBuildPlan pkgDirs flags snapCandidate = do
 
     if Map.null errs then
         pure $ BuildPlanCheckOk f
-    else if Map.null cerrs then do
+    else if Map.null cerrs then
             pure $ BuildPlanCheckPartial f errs
         else
             pure $ BuildPlanCheckFail f cerrs compiler
@@ -385,8 +401,8 @@ checkSnapBuildPlan pkgDirs flags snapCandidate = do
 
 -- | Find a snapshot and set of flags that is compatible with and matches as
 -- best as possible with the given 'GenericPackageDescription's.
-selectBestSnapshot
-    :: (HasConfig env, HasGHCVariant env)
+selectBestSnapshot ::
+       (HasConfig env, HasGHCVariant env)
     => [ResolvedPath Dir]
     -> NonEmpty SnapName
     -> RIO env (SnapshotCandidate env, RawSnapshotLocation, BuildPlanCheck)
@@ -469,8 +485,8 @@ showPackageFlags pkg fl =
 showMapPackages :: Map PackageName a -> Text
 showMapPackages mp = showItems $ map packageNameString $ Map.keys mp
 
-showCompilerErrors
-    :: Map PackageName (Map FlagName Bool)
+showCompilerErrors ::
+       Map PackageName (Map FlagName Bool)
     -> DepErrors
     -> ActualCompiler
     -> Text

@@ -1,19 +1,26 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 
+-- | Functions to parse command line arguments for Stack's @exec@, @ghc@, @run@,
+-- @runghc@ and @runhaskell@ commands.
 module Stack.Options.ExecParser
-  ( evalOptsParser
+  ( execOptsParser
   , execOptsExtraParser
-  , execOptsParser
   ) where
 
 import           Options.Applicative
-import           Options.Applicative.Builder.Extra
-import           Options.Applicative.Args
-import           Stack.Options.Completion
+                   ( Parser, completer, help, idm, long, metavar, strArgument
+                   , strOption
+                   )
+import           Options.Applicative.Builder.Extra ( boolFlags, dirCompleter )
+import           Options.Applicative.Args ( argsOption )
+import           Stack.Exec
+                   ( ExecOpts (..), ExecOptsExtra (..), SpecialExecCmd (..) )
+import           Stack.Options.Completion ( projectExeCompleter )
 import           Stack.Prelude
-import           Stack.Types.Config
+import           Stack.Types.EnvSettings ( EnvSettings (..) )
 
--- | Parser for exec command
+-- | Parse command line arguments for Stack's @exec@, @ghc@, @run@,
+-- @runghc@ and @runhaskell@ commands.
 execOptsParser :: Maybe SpecialExecCmd -> Parser ExecOpts
 execOptsParser mcmd = ExecOpts
   <$> maybe eoCmdParser pure mcmd
@@ -35,15 +42,6 @@ execOptsParser mcmd = ExecOpts
       Just ExecRunGhc -> "-- ARGUMENT(S) (e.g. stack runghc -- X.hs)"
     normalTxt = "-- ARGUMENT(S) (e.g. stack exec ghc-pkg -- describe base)"
 
-evalOptsParser :: String -- ^ metavar
-               -> Parser EvalOpts
-evalOptsParser meta = EvalOpts
-  <$> eoArgsParser
-  <*> execOptsExtraParser
- where
-  eoArgsParser :: Parser String
-  eoArgsParser = strArgument (metavar meta)
-
 -- | Parser for extra options to exec command
 execOptsExtraParser :: Parser ExecOptsExtra
 execOptsExtraParser = ExecOptsExtra
@@ -56,12 +54,12 @@ execOptsExtraParser = ExecOptsExtra
   eoEnvSettingsParser = EnvSettings True
     <$> boolFlags True
           "ghc-package-path"
-          "setting the GHC_PACKAGE_PATH variable for the subprocess"
+          "setting the GHC_PACKAGE_PATH variable for the subprocess."
           idm
     <*> boolFlags True
           "stack-exe"
           "setting the STACK_EXE environment variable to the path for the \
-          \stack executable"
+          \stack executable."
           idm
     <*> pure False
     <*> pure True
@@ -70,20 +68,20 @@ execOptsExtraParser = ExecOptsExtra
   eoPackagesParser = many (strOption
     (  long "package"
     <> metavar "PACKAGE"
-    <> help "Add a package (can be specified multiple times)"
+    <> help "Add a package (can be specified multiple times)."
     ))
 
   eoRtsOptionsParser :: Parser [String]
   eoRtsOptionsParser = concat <$> many (argsOption
     ( long "rts-options"
-    <> help "Explicit RTS options to pass to application"
+    <> help "Explicit RTS options to pass to application."
     <> metavar "RTSFLAG"
     ))
 
   eoCwdParser :: Parser (Maybe FilePath)
   eoCwdParser = optional (strOption
     (  long "cwd"
-    <> help "Sets the working directory before executing"
+    <> help "Sets the working directory before executing."
     <> metavar "DIR"
     <> completer dirCompleter
     ))

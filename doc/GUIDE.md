@@ -42,10 +42,11 @@ package will be built against.
 
 Finally, Stack is __isolated__: it will not make changes outside of specific
 Stack directories. Stack-built files generally go in either the Stack root
-directory or `./.stack-work` directories local to each project. The Stack root
-directory holds packages belonging to snapshots and any Stack-installed versions
-of GHC. Stack will not tamper with any system version of GHC or interfere with
-packages installed by other build tools, such as Cabal (the tool).
+directory or `./.stack-work` directories local to each project. The
+[Stack root](stack_root.md) directory holds packages belonging to snapshots and
+any Stack-installed versions of GHC. Stack will not tamper with any system
+version of GHC or interfere with packages installed by other build tools, such
+as Cabal (the tool).
 
 ## Downloading and Installation
 
@@ -83,7 +84,7 @@ We'll call our project `helloworld`, and we'll use the `new-template` project
 template. This template is used by default, but in our example we will refer to
 it expressly. Other templates are available. For further information about
 templates, see the `stack templates` command
-[documentation](GUIDE_advanced.md#the-stack-templates-command).
+[documentation](templates_command.md).
 
 From the root directory for all our Haskell projects, we command:
 
@@ -247,15 +248,15 @@ this:
 
 ~~~yaml
 resolver:
-  url: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/lts/19/28.yaml
+  url: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/lts/20/19.yaml
 packages:
 - .
 ~~~
 
 The value of the `resolver` key tells Stack *how* to build your package: which
 GHC version to use, versions of package dependencies, and so on. Our value here
-says to use [LTS Haskell 19.28](https://www.stackage.org/lts-19.28), which
-implies GHC 9.0.2 (which is why `stack build` installs that version of GHC if it
+says to use [LTS Haskell 20.19](https://www.stackage.org/lts-20.19), which
+implies GHC 9.2.7 (which is why `stack build` installs that version of GHC if it
 is not already available to Stack). There are a number of values you can use for
 `resolver`, which we'll cover later.
 
@@ -502,7 +503,7 @@ also known as *snapshots*. We mentioned the LTS resolvers, and you can get quite
 a bit of information about it at
 [https://www.stackage.org/lts](https://www.stackage.org/lts), including:
 
-* The appropriate resolver value (`resolver: lts-20.4`, as is currently the
+* The appropriate resolver value (`resolver: lts-20.19`, as is currently the
   latest LTS)
 * The GHC version used
 * A full list of all packages available in this snapshot
@@ -521,16 +522,16 @@ towards by default as well).
 
 ## Resolvers and changing your compiler version
 
-Let's explore package sets a bit further. Instead of lts-19.17, let's change our
-`stack.yaml` file to use the [latest nightly](https://www.stackage.org/nightly).
-Right now, this is currently 2022-12-16 - please see the resolver from the link
-above to get the latest.
+Let's explore package sets a bit further. Instead of `lts-20.19`, let's change
+our `stack.yaml` file to use the
+[latest nightly](https://www.stackage.org/nightly). Right now, this is currently
+2023-05-05 - please see the resolver from the link above to get the latest.
 
 Then, commanding `stack build` again will produce:
 
 ~~~text
 stack build
-# Downloaded nightly-2022-12-16 build plan.
+# Downloaded nightly-2023-05-05 build plan.
 # build output ...
 ~~~
 
@@ -545,8 +546,8 @@ stack --resolver lts-18.28 build
 
 When passed on the command line, you also get some additional "short-cut"
 versions of resolvers: `--resolver nightly` will use the newest Nightly resolver
-available, `--resolver lts` will use the newest LTS, and `--resolver lts-19`
-will use the newest LTS in the 19.x series. The reason these are only available
+available, `--resolver lts` will use the newest LTS, and `--resolver lts-20`
+will use the newest LTS in the 20.x series. The reason these are only available
 on the command line and not in your `stack.yaml` file is that using them:
 
 1. Will slow down your build (since Stack then needs to download information on
@@ -556,11 +557,11 @@ on the command line and not in your `stack.yaml` file is that using them:
 
 ### Changing GHC versions
 
-Finally, let's try using an older LTS snapshot. We'll use the newest 18.x
+Finally, let's try using an older LTS snapshot. We'll use the newest 19.x
 snapshot with the command:
 
 ~~~text
-stack --resolver lts-18 build
+stack --resolver lts-19 build
 # build output ...
 ~~~
 
@@ -807,7 +808,7 @@ The reason we have this structure is that:
   non-standard content into the shared snapshot database.
 
 As you probably guessed, there can be multiple snapshot databases available. See
-the contents of the `snapshots` directory in the Stack root.
+the contents of the `snapshots` directory in the [Stack root](stack_root.md).
 
 * On Unix-like operating systems, each snapshot is in the last of a sequence of
   three subdirectories named after the platform, a 256-bit hash of the source
@@ -1265,9 +1266,6 @@ the output of the command:
 --local-hoogle-root      Local project documentation root
 --dist-dir               Dist work directory, relative to package directory
 --local-hpc-root         Where HPC reports and tix files are stored
---local-bin-path         DEPRECATED: Use '--local-bin' instead
---ghc-paths              DEPRECATED: Use '--programs' instead
---global-stack-root      DEPRECATED: Use '--stack-root' instead
 ~~~
 
 In addition, `stack path` accepts the flags above on the command line to state
@@ -1342,7 +1340,7 @@ yields output like:
 
 ~~~text
 Run from outside a project, using implicit global project config
-Using latest snapshot resolver: lts-18.3
+Using latest snapshot resolver: lts-20.19
 Writing global (non-project-specific) config file to: /home/michael/.stack/global/stack.yaml
 Note: You can change the snapshot via the resolver field there.
 I installed the stm package via --package stm
@@ -1428,72 +1426,6 @@ Keep in mind that there's nothing magical about this implicit global
 configuration. It has no effect on projects at all. Every package you install
 with it is put into isolated databases just like everywhere else. The only magic
 is that it's the catch-all project whenever you're running Stack somewhere else.
-
-## Setting the Stack root location
-
-The Stack root is a directory where Stack stores important files. The location
-and contents of the directory depend on the operating system and/or whether
-Stack is configured to use the XDG Base Directory Specification.
-
-The location of the Stack root can be configured by setting the `STACK_ROOT`
-environment variable or using Stack's `--stack-root` option on the command line.
-
-=== "Unix-like"
-
-    The Stack root contains snapshot packages; tools such as GHC, in a
-    `programs` directory; and Stack's global YAML configuration file
-    (`config.yaml`).
-
-    The default Stack root is `~/.stack`.
-
-=== "Windows"
-
-    The Stack root contains snapshot packages; and Stack's global YAML
-    configuration file (`config.yaml`). The default location of tools such as
-    GHC and MSYS2 is outside of the Stack root.
-
-    The default Stack root is `%APPDIR%\stack`.
-
-    The default location of tools is `%LOCALAPPDATA%\Programs\stack`.
-
-    On Windows, the length of filepaths may be limited (to
-    [MAX_PATH](https://docs.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation?tabs=cmd)),
-    and things can break when this limit is exceeded. Setting a Stack root with
-    a short path to its location (for example, `C:\sr`) can help.
-
-=== "XDG Base Directory Specification"
-
-    On Unix-like operating systems and Windows, Stack can be configured to
-    follow the XDG Base Directory Specification if the environment variable
-    `STACK_XDG` is set to any non-empty value. However, Stack will ignore that
-    configuration if the Stack root location has been set on the command line or
-    the `STACK_ROOT` environment variable exists.
-
-    If Stack is following the XDG Base Directory Specification, the Stack root
-    contains what it would otherwise contain for the operating system, but
-    Stack's global YAML configuration file (`config.yaml`) may be located
-    elsewhere.
-
-    The Stack root is `<XDG_DATA_HOME>/stack`. If the `XDG_DATA_HOME`
-    environment variable does not exist, the default is `~/.local/share/stack`
-    on Unix-like operating systems and `%APPDIR%\stack` on Windows.
-
-    The location of `config.yaml` is `<XDG_CONFIG_HOME>/stack`. If the
-    `XDG_CONFIG_HOME` environment variable does not exist, the default is
-    `~/.config/stack` on Unix-like operating systems and `%APPDIR%\stack` on
-    Windows.
-
-The location of the Stack root is reported by command:
-
-~~~text
-stack path --stack-root
-~~~
-
-The full path of Stack's global YAML configuration file is reported by command:
-
-~~~text
-stack path --global-config
-~~~
 
 ## `stack.yaml` versus Cabal files
 

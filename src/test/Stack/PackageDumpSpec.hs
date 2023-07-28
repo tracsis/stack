@@ -1,10 +1,15 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TupleSections     #-}
 
-module Stack.PackageDumpSpec where
+module Stack.PackageDumpSpec
+  ( main
+  , spec
+  , bestPrune
+  , checkDepsPresent
+  , runEnvNoLogging
+  ) where
 
-import           Conduit
+import           Conduit ( withSourceFile, yield )
 import qualified Data.Conduit.List as CL
 import           Data.Conduit.Text ( decodeUtf8 )
 import qualified Data.Map as Map
@@ -13,13 +18,21 @@ import           Distribution.License ( License (..) )
 import           Distribution.Types.PackageName ( mkPackageName )
 import           Distribution.Version ( mkVersion )
 import           Path ( parseAbsFile )
-import           Stack.PackageDump
-import           Stack.Prelude
-import           Stack.Types.Config
-import           Stack.Types.GhcPkgId
+import           RIO.PrettyPrint.Simple ( SimplePrettyApp, mkSimplePrettyApp )
 import           RIO.Process
+                   ( envVarsL, findExecutable, mkDefaultProcessContext
+                   , mkProcessContext
+                   )
+import           Stack.PackageDump
+                   ( DumpPackage (..), conduitDumpPackage, eachPair
+                   , eachSection, ghcPkgDump, pruneDeps, sinkMatching
+                   )
+import           Stack.Prelude
+import           Stack.Types.CompilerPaths ( GhcPkgExe (..) )
+import           Stack.Types.GhcPkgId ( parseGhcPkgId )
 import           Test.Hspec
-import           Test.Hspec.QuickCheck
+                   ( Spec, describe, hspec, it, shouldBe )
+import           Test.Hspec.QuickCheck ( prop )
 
 main :: IO ()
 main = hspec spec
@@ -240,7 +253,7 @@ spec = do
         prop "invariant holds" $ \prunes' ->
             -- Force uniqueness
             let prunes = Map.toList $ Map.fromList prunes'
-             in checkDepsPresent prunes $ fst <$> pruneDeps fst fst snd bestPrune prunes
+            in  checkDepsPresent prunes $ fst <$> pruneDeps fst fst snd bestPrune prunes
 
 type PruneCheck = ((Int, Char), [(Int, Char)])
 
@@ -261,10 +274,11 @@ checkDepsPresent prunes selected =
             Nothing -> error "checkDepsPresent: missing in depMap"
             Just deps -> Set.null $ Set.difference (Set.fromList deps) allIds
 
-runEnvNoLogging :: (GhcPkgExe -> RIO LoggedProcessContext a) -> IO a
+runEnvNoLogging :: (GhcPkgExe -> RIO SimplePrettyApp a) -> IO a
 runEnvNoLogging inner = do
   envVars <- view envVarsL <$> mkDefaultProcessContext
   menv <- mkProcessContext $ Map.delete "GHC_PACKAGE_PATH" envVars
   let find name = runRIO menv (findExecutable name) >>= either throwIO parseAbsFile
   pkg <- GhcPkgExe <$> find "ghc-pkg"
-  runRIO (LoggedProcessContext menv mempty) (inner pkg)
+  app <- mkSimplePrettyApp mempty (Just menv) True 80 mempty
+  runRIO app (inner pkg)

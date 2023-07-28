@@ -1,10 +1,10 @@
 {-# LANGUAGE NoImplicitPrelude   #-}
 {-# LANGUAGE OverloadedStrings   #-}
-{-# LANGUAGE ScopedTypeVariables   #-}
 
 -- | A module which exports all package-level file-gathering logic.
 module Stack.PackageFile
-  ( packageDescModulesAndFiles
+  ( getPackageFile
+  , packageDescModulesAndFiles
   ) where
 
 import qualified Data.Map.Strict as M
@@ -15,11 +15,22 @@ import           Distribution.ModuleName ( ModuleName )
 import           Distribution.PackageDescription hiding ( FlagName )
 import           Distribution.Simple.Glob ( matchDirFileGlob )
 import qualified Distribution.Types.UnqualComponentName as Cabal
-import           Path as FL hiding ( replaceExtension )
-import           Path.Extra
+import           Path ( parent, (</>) )
+import           Path.Extra ( forgivingResolveFile, rejectMissingFile )
+import           Path.IO ( doesFileExist )
 import           Stack.ComponentFile
-import           Stack.Prelude hiding ( Display (..) )
-import           Stack.Types.NamedComponent
+                   ( benchmarkFiles, executableFiles, libraryFiles
+                   , resolveOrWarn, testFiles
+                   )
+import           Stack.Constants
+                   ( relFileHpackPackageConfig, relFileSetupHs, relFileSetupLhs
+                   )
+import           Stack.Constants.Config ( distDirFromDir )
+import           Stack.Prelude
+import           Stack.Types.BuildConfig ( HasBuildConfig (..) )
+import           Stack.Types.CompilerPaths ( cabalVersionL )
+import           Stack.Types.EnvConfig ( HasEnvConfig )
+import           Stack.Types.NamedComponent ( NamedComponent (..) )
 import           Stack.Types.PackageFile
                    ( DotCabalPath (..), GetPackageFileContext (..)
                    , PackageWarning (..)
@@ -33,18 +44,18 @@ resolveFileOrWarn :: FilePath.FilePath
                   -> RIO GetPackageFileContext (Maybe (Path Abs File))
 resolveFileOrWarn = resolveOrWarn "File" f
  where
-  f p x = liftIO (forgivingResolveFile p x) >>= rejectMissingFile
+  f p x = forgivingResolveFile p x >>= rejectMissingFile
 
 -- | Get all files referenced by the package.
-packageDescModulesAndFiles
-    :: PackageDescription
-    -> RIO
-         GetPackageFileContext
-         ( Map NamedComponent (Map ModuleName (Path Abs File))
-         , Map NamedComponent [DotCabalPath]
-         , Set (Path Abs File)
-         , [PackageWarning]
-         )
+packageDescModulesAndFiles ::
+     PackageDescription
+  -> RIO
+       GetPackageFileContext
+       ( Map NamedComponent (Map ModuleName (Path Abs File))
+       , Map NamedComponent [DotCabalPath]
+       , Set (Path Abs File)
+       , [PackageWarning]
+       )
 packageDescModulesAndFiles pkg = do
   (libraryMods, libDotCabalFiles, libWarnings) <-
     maybe
@@ -52,25 +63,25 @@ packageDescModulesAndFiles pkg = do
       (asModuleAndFileMap libComponent libraryFiles)
       (library pkg)
   (subLibrariesMods, subLibDotCabalFiles, subLibWarnings) <-
-    liftM
+    fmap
       foldTuples
       ( mapM
           (asModuleAndFileMap internalLibComponent libraryFiles)
           (subLibraries pkg)
       )
   (executableMods, exeDotCabalFiles, exeWarnings) <-
-    liftM
+    fmap
       foldTuples
       ( mapM
           (asModuleAndFileMap exeComponent executableFiles)
           (executables pkg)
       )
   (testMods, testDotCabalFiles, testWarnings) <-
-    liftM
+    fmap
       foldTuples
       (mapM (asModuleAndFileMap testComponent testFiles) (testSuites pkg))
   (benchModules, benchDotCabalPaths, benchWarnings) <-
-    liftM
+    fmap
       foldTuples
       ( mapM
           (asModuleAndFileMap benchComponent benchmarkFiles)
@@ -103,21 +114,21 @@ packageDescModulesAndFiles pkg = do
 
 
 -- | Resolve globbing of files (e.g. data files) to absolute paths.
-resolveGlobFiles
-  :: CabalSpecVersion -- ^ Cabal file version
+resolveGlobFiles ::
+     CabalSpecVersion -- ^ Cabal file version
   -> [String]
   -> RIO GetPackageFileContext (Set (Path Abs File))
 resolveGlobFiles cabalFileVersion =
-  liftM (S.fromList . catMaybes . concat) .
+  fmap (S.fromList . catMaybes . concat) .
   mapM resolve
  where
   resolve name =
     if '*' `elem` name
       then explode name
-      else liftM pure (resolveFileOrWarn name)
+      else fmap pure (resolveFileOrWarn name)
   explode name = do
     dir <- asks (parent . ctxFile)
-    names <- matchDirFileGlob' (FL.toFilePath dir) name
+    names <- matchDirFileGlob' (toFilePath dir) name
     mapM resolveFileOrWarn names
   matchDirFileGlob' dir glob =
     catch
@@ -133,4 +144,51 @@ resolveGlobFiles cabalFileVersion =
               ]
             pure []
           else throwIO e
+      )
+
+-- | Gets all of the modules, files, build files, and data files that constitute
+-- the package. This is primarily used for dirtiness checking during build, as
+-- well as use by "stack ghci"
+getPackageFile ::
+     ( HasEnvConfig s, MonadReader s m, MonadThrow m, MonadUnliftIO m )
+  => PackageDescription
+  -> Path Abs File
+  -> m ( Map NamedComponent (Map ModuleName (Path Abs File))
+       , Map NamedComponent [DotCabalPath]
+       , Set (Path Abs File)
+       , [PackageWarning]
+       )
+getPackageFile pkg cabalfp =
+  debugBracket ("getPackageFiles" <+> pretty cabalfp) $ do
+    let pkgDir = parent cabalfp
+    distDir <- distDirFromDir pkgDir
+    bc <- view buildConfigL
+    cabalVer <- view cabalVersionL
+    (componentModules, componentFiles, dataFiles', warnings) <-
+      runRIO
+        (GetPackageFileContext cabalfp distDir bc cabalVer)
+        (packageDescModulesAndFiles pkg)
+    setupFiles <-
+      if buildType pkg == Custom
+      then do
+        let setupHsPath = pkgDir </> relFileSetupHs
+            setupLhsPath = pkgDir </> relFileSetupLhs
+        setupHsExists <- doesFileExist setupHsPath
+        if setupHsExists
+          then pure (S.singleton setupHsPath)
+          else do
+            setupLhsExists <- doesFileExist setupLhsPath
+            if setupLhsExists
+              then pure (S.singleton setupLhsPath)
+              else pure S.empty
+      else pure S.empty
+    buildFiles <- fmap (S.insert cabalfp . S.union setupFiles) $ do
+      let hpackPath = pkgDir </> relFileHpackPackageConfig
+      hpackExists <- doesFileExist hpackPath
+      pure $ if hpackExists then S.singleton hpackPath else S.empty
+    pure
+      ( componentModules
+      , componentFiles
+      , buildFiles <> dataFiles'
+      , warnings
       )

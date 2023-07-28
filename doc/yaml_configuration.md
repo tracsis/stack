@@ -21,7 +21,8 @@ preference):
 1. A file specified by the `--stack-yaml` command line option.
 2. A file specified by the `STACK_YAML` environment variable.
 3. A file named `stack.yaml` in the current directory or an ancestor directory.
-4. A file name `stack.yaml` in the `global-project` directory in the Stack root.
+4. A file name `stack.yaml` in the `global-project` directory in the
+   [Stack root](stack_root.md).
 
 The **global** configuration file (`config.yaml`) contains only
 non-project-specific options.
@@ -33,19 +34,19 @@ use the XDG Base Directory Specification.
 === "Unix-like"
 
     `config.yaml` is located in `/etc/stack` (for system-wide options); and/or
-    in the Stack root (for user-specific options).
+    in the [Stack root](stack_root.md) (for user-specific options).
 
 === "Windows"
 
-    `config.yaml` is located in the Stack root.
+    `config.yaml` is located in the [Stack root](stack_root.md).
 
 === "XDG Base Directory Specification"
 
     On Unix-like operating systems and Windows, Stack can be configured to
     follow the XDG Base Directory Specification if the environment variable
     `STACK_XDG` is set to any non-empty value. However, Stack will ignore that
-    configuration if the Stack root location has been set on the command line or
-    the `STACK_ROOT` environment variable exists.
+    configuration if the [Stack root](stack_root.md) location has been set on
+    the command line or the `STACK_ROOT` environment variable exists.
 
     If Stack is following the XDG Base Directory Specification, the location of
     `config.yaml` (for user-specific options) is `<XDG_CONFIG_HOME>/stack`. If
@@ -95,10 +96,10 @@ installation, and various settings like build flags. It is called a resolver
 since a snapshot states how dependencies are resolved. There are currently
 four resolver types:
 
-* LTS Haskell snapshots, e.g. `resolver: lts-19.17`
-* Stackage Nightly snapshots, e.g. `resolver: nightly-2002-08-04`
+* LTS Haskell snapshots, e.g. `resolver: lts-20.19`
+* Stackage Nightly snapshots, e.g. `resolver: nightly-2023-05-05`
 * No snapshot, just use packages shipped with the compiler. For GHC this looks
-  like `resolver: ghc-9.2.4`
+  like `resolver: ghc-9.6.1`
 * Custom snapshot, via a URL or relative file path. For further information, see
   the [Pantry](pantry.md) documentation.
 
@@ -118,132 +119,106 @@ packages:
 - .
 ~~~
 
-_NOTE_ From Stack 1.11, Stack moved over to Pantry for managing extra-deps, and
-removed some legacy syntax for specifying dependencies in `packages`. Some
-conversion notes are provided below.
-
 The `packages` key specifies a list of packages that are part of your local
-project. These are specified via paths to local directories. The paths are
+project. These are specified via paths to local directories. A path is
 considered relative to the directory containing the `stack.yaml` file. For
-example, if your `stack.yaml` is located at `/foo/bar/stack.yaml`, and you have:
+example, if the `stack.yaml` is located at `/dir1/dir2/stack.yaml`, and has:
 
 ~~~yaml
 packages:
-- hello
-- there/world
+- my-package
+- dir3/my-other-package
 ~~~
 
-Your configuration means "I have packages in `/foo/bar/hello` and
-`/foo/bar/there/world`.
+the configuration means "project packages in directories `/dir1/dir2/my-package`
+and `/dir1/dir2/dir3/my-other-package`".
 
-If these packages should be treated as dependencies instead, specify them in
-`extra-deps` key, described below.
+The `packages` key is optional. The default value, '`.`', means that the
+project has a single package located in the current directory.
 
-The `packages` key is _optional_. The default item, '`.`', means that your
-project has exactly one package, and it is located in the current directory.
+Each specified package directory must have a valid Cabal file or Hpack
+`package.yaml` file present. Any subdirectories of the directory are not
+searched for Cabal files. A subdirectory has to be specified as an independent
+item in the list of packages.
 
-Each package directory specified must have a valid Cabal file or Hpack
-`package.yaml` file present. The subdirectories of the directory are not
-searched for Cabal files. Subdirectories will have to be specified as
-independent items in the list of packages.
+A project package is different from a dependency, both a snapshot dependency
+(via the [`resolver` or `snapshot`](#resolver-or-snapshot) key) and an
+extra-deps dependency (via the [`extra-deps`](#extra-deps) key). For example:
 
-Project packages are different from snapshot dependencies (via `resolver`) and
-extra dependencies (via `extra-deps`) in multiple ways, e.g.:
-
-* Project packages will be built by default with a `stack build` without
-  specific targets. Dependencies will only be built if they are depended upon.
-* Test suites and benchmarks may be run for project packages. They are never run
-  for extra dependencies.
-
-__Legacy syntax__ Prior to Stack 1.11, it was possible to specify dependencies
-in your `packages` configuration value as well. This support was removed to
-simplify the file format. Instead, these values should be moved to `extra-deps`.
-As a concrete example, you would convert:
-
-~~~yaml
-packages:
-- .
-- location:
-    git: https://github.com/bitemyapp/esqueleto.git
-    commit: 08c9b4cdf977d5bcd1baba046a007940c1940758
-  extra-dep: true
-- location:
-    git: https://github.com/yesodweb/wai.git
-    commit: 6bf765e000c6fd14e09ebdea6c4c5b1510ff5376
-    subdirs:
-      - wai-extra
-  extra-dep: true
-
-extra-deps:
-  - streaming-commons-0.2.0.0
-  - time-1.9.1
-  - yesod-colonnade-1.3.0.1
-  - yesod-elements-1.1
-~~~
-
-into
-
-~~~yaml
-packages:
-- .
-
-extra-deps:
-  - streaming-commons-0.2.0.0
-  - time-1.9.1
-  - yesod-colonnade-1.3.0.1
-  - yesod-elements-1.1
-  - git: https://github.com/bitemyapp/esqueleto.git
-    commit: 08c9b4cdf977d5bcd1baba046a007940c1940758
-  - git: https://github.com/yesodweb/wai.git
-    commit: 6bf765e000c6fd14e09ebdea6c4c5b1510ff5376
-    subdirs:
-      - wai-extra
-~~~
-
-And, in fact, the `packages` value could be left off entirely since it's using
-the default value.
+* a project package will be built by default by commanding
+  [`stack build`](build_command.md) without specific targets. A dependency will
+  only be built if it is depended upon; and
+* test suites and benchmarks may be run for a project package. They are never
+  run for a dependency.
 
 ### extra-deps
 
 Default: `[]`
 
-This key allows you to specify extra dependencies on top of what is defined in
-your snapshot (specified by the `resolver` key mentioned above). These
-dependencies may either come from a local file path or a Pantry package
-location.
+The `extra-deps` key specifies a list of extra dependencies on top of what is
+defined in the snapshot (specified by the
+[`resolver` or `snapshot`](#resolver-or-snapshot) key). A dependency may come
+from either a Pantry package location or a local file path.
 
-For the local file path case, the same relative path rules as apply to
-`packages` apply.
+A Pantry package location is one or three different kinds of sources:
 
-Pantry package locations allow you to include dependencies from three different
-kinds of sources:
+* the package index (Hackage);
+* an archive (a tarball or zip file, either local or over HTTP or HTTPS); or
+* a Git or Mercurial repository.
 
-* Hackage
-* Archives (tarballs or zip files, either local or over HTTP or HTTPS)
-* Git or Mercurial repositories
-
-Here's an example using all of the above:
+For further information on the format for specifying a Pantry package location,
+see the [Pantry](pantry.md) documentation. For example:
 
 ~~~yaml
 extra-deps:
-- vendor/hashable
-- streaming-commons-0.2.0.0
-- time-1.9.1
-- yesod-colonnade-1.3.0.1
-- yesod-elements-1.1
-- git: https://github.com/bitemyapp/esqueleto.git
+# The latest revision of a package in the package index (Hackage):
+- acme-missiles-0.3
+# A specific revision of a package in the package index (Hackage):
+- acme-missiles-0.3@rev:0
+# An *.tar.gz archive file over HTTPS:
+- url: https://github.com/example-user/my-repo/archive/08c9b4cdf977d5bcd1baba046a007940c1940758.tar.gz
+  subdirs:
+  - my-package
+# A Git repository at a specific commit:
+- git: https://github.com/example-user/my-repo.git
   commit: 08c9b4cdf977d5bcd1baba046a007940c1940758
-- url: https://github.com/yesodweb/wai/archive/6bf765e000c6fd14e09ebdea6c4c5b1510ff5376.tar.gz
+# An archive of files at a point in the history of a GitHub repository
+# (identified by a specific commit):
+- github: example-user/my-repo
+  commit: 08c9b4cdf977d5bcd1baba046a007940c1940758
   subdirs:
-    - wai-extra
-- github: snoyberg/conduit
-  commit: 2e3e41de93821bcfe8ec6210aeca21be3f2087bf
-  subdirs:
-    - network-conduit-tls
+  - my-package
 ~~~
 
-For further information on the format for specifying dependencies, see the
-[Pantry](pantry.md) documentation.
+!!! note
+
+    GHC boot packages are special. An extra-dep with the same package name and
+    version as a GHC boot package will be ignored.
+
+For a local file path source, the path is considered relative to the directory
+containing the `stack.yaml` file. For example, if the `stack.yaml` is located
+at `/dir1/dir2/stack.yaml`, and has:
+
+~~~yaml
+extra-deps:
+- my-package
+- dir3/my-other-package
+~~~
+
+the configuration means "extra-deps packages in directories
+`/dir1/dir2/my-package` and `/dir1/dir2/dir3/my-other-package`".
+
+!!! note
+
+    A local file path that has the format of a package identifier will be
+    interpreted as a reference to a package on Hackage. Prefix it with `./` to
+    avoid that confusion.
+
+!!! note
+
+    A specified extra-dep that does not have the format of a valid Pantry
+    package location (for example, a reference to a package on Hackage that
+    omits the package's version) will be interpreted as a local file path.
 
 ### flags
 
@@ -340,8 +315,8 @@ Default: `false`
 
 Command line equivalent (takes precedence): `--[no-]allow-different-user` flag
 
-Allow users other than the owner of the Stack root to use the Stack
-installation.
+Allow users other than the owner of the [Stack root](stack_root.md) to use the
+Stack installation.
 
 ~~~yaml
 allow-different-user: true
@@ -367,7 +342,9 @@ The name `allow-newer` is chosen to match the commonly-used Cabal option.
 allow-newer: true
 ~~~
 
-### allow-newer-deps (experimental)
+### allow-newer-deps
+
+:octicons-beaker-24: Experimental
 
 [:octicons-tag-24: 2.9.3](https://github.com/commercialhaskell/stack/releases/tag/v2.9.3)
 
@@ -388,17 +365,39 @@ allow-newer-deps:
 
 Default: `locals`
 
-Which packages do ghc-options on the command line get applied to? Before Stack
-0.1.6, the default value was `targets`
+Related command line:
+[`stack build --ghc-options`](build_command.md#-ghc-options-option) option
 
-~~~yaml
-apply-ghc-options: locals # all local packages
-# apply-ghc-options: targets # all local packages that are targets
-# apply-ghc-options: everything # applied even to snapshot and extra-deps
-~~~
+Determines to which packages any GHC command line options specified on the
+command line are applied. Possible values are: `everything` (all packages, local
+or otherwise), `locals` (all local packages, targets or otherwise), and
+`targets` (all local packages that are targets).
 
-Note that `everything` is a slightly dangerous value, as it can break invariants
-about your snapshot database.
+!!! note
+
+    The use of `everything` can break invariants about your snapshot database.
+
+!!! note
+
+    Before Stack 0.1.6.0, the default value was `targets`.
+
+### apply-prog-options
+
+[:octicons-tag-24: 2.11.1](https://github.com/commercialhaskell/stack/releases/tag/v2.11.1)
+
+Default: `locals`
+
+Related command line:
+[`stack build --PROG-option`](build_command.md#-prog-option-options) options
+
+Determines to which packages all and any `--PROG-option` command line options
+specified on the command line are applied. Possible values are: `everything`
+(all packages, local or otherwise), `locals` (all local packages, targets or
+otherwise), and `targets` (all local packages that are targets).
+
+!!! note
+
+    The use of `everything` can break invariants about your snapshot database.
 
 ### arch
 
@@ -475,6 +474,18 @@ of the same name. For further information, see the
 [`stack build` command](build_command.md) documentation and the
 [users guide](GUIDE.md#the-build-command).
 
+### casa-repo-prefix
+
+[:octicons-tag-24: 2.3.1](https://github.com/commercialhaskell/stack/releases/tag/v2.3.1)
+
+Default: `https://casa.fpcomplete.com`
+
+This option specifies the prefix for the URL used to pull information from the
+Casa (content-addressable storage archive) server that is used by Stack to cache
+Cabal files and all other files in packages. For further information, see this
+blog post about
+[Casa and Stack](https://www.fpcomplete.com/blog/casa-and-stack/).
+
 ### color
 
 Command line equivalent (takes precedence): `--color` option
@@ -495,16 +506,18 @@ Command line equivalent (takes precedence): `--compiler` option
 
 Overrides the compiler version in the resolver. Note that the `compiler-check`
 flag also applies to the version numbers. This uses the same syntax as compiler
-resolvers like `ghc-9.2.4`. This can be used to override the
+resolvers like `ghc-9.6.1`. This can be used to override the
 compiler for a Stackage snapshot, like this:
 
 ~~~yaml
-resolver: lts-14.20
-compiler: ghc-8.6.4
+resolver: lts-20.19
+compiler: ghc-9.6.1
 compiler-check: match-exact
 ~~~
 
-#### Building GHC from source (experimental)
+#### Building GHC from source
+
+:octicons-beaker-24: Experimental
 
 [:octicons-tag-24: 2.1.1](https://github.com/commercialhaskell/stack/releases/tag/v2.1.1)
 
@@ -614,16 +627,23 @@ concurrent-tests: false
 
 [:octicons-tag-24: 2.1.1](https://github.com/commercialhaskell/stack/releases/tag/v2.1.1)
 
-Options which are passed to the configure step of the Cabal build process.
-These can either be set by package name, or using the `$everything`,
-`$targets`, and `$locals` special keys. These special keys have the same
-meaning as in `ghc-options`.
+Related command line (takes precedence):
+[`stack build --PROG-option`](build_command.md#prog-option-options) options
+
+`configure-options` can specify Cabal (the library) options (including
+`--PROG-option` or `--PROG-options` options) for the configure step of the Cabal
+build process for a named package, all local packages that are targets (using
+the `$targets` key), all local packages (targets or otherwise) (using the
+`$locals` key), or all packages (local or otherwise) (using the `$everything`
+key).
 
 ~~~yaml
 configure-options:
   $everything:
   - --with-gcc
   - /some/path
+  $locals:
+  - --happy-option=--ghc
   my-package:
   - --another-flag
 ~~~
@@ -749,25 +769,38 @@ See [`setup-info`](#setup-info).
 
 `ghc-build` specifies a specialized architecture for the GHC executable.
 Normally this is determined automatically, but it can be overridden. Possible
-arguments include `standard`, `gmp4`, `nopie`, `tinfo6`, `tinfo6-nopie`,
-`ncurses6`, `int-native` and `integersimple`.
+arguments include `standard`, `gmp4`, `nopie`, `tinfo6`, `tinfo6-libc6-pre232`,
+`tinfo6-nopie`, `ncurses6`, `int-native` and `integersimple`.
 
 ### ghc-options
 
 [:octicons-tag-24: 0.1.4.0](https://github.com/commercialhaskell/stack/releases/tag/v0.1.4.0)
 
-Allows specifying per-package and global GHC options:
+Default: `{}`
+
+Related command line (takes precedence):
+[`stack build --ghc-options`](build_command.md#ghc-options-option) option
+
+`ghc-options` can specify GHC command line options for a named package, all
+local packages that are targets (using the `$targets` key), all local packages
+(targets or otherwise) (using the `$locals` key), or all packages (local or
+otherwise) (using the `$everything` key).
 
 ~~~yaml
 ghc-options:
-    # All packages
-    "$locals": -Wall
-    "$targets": -Werror
-    "$everything": -O2
-    some-package: -DSOME_CPP_FLAG
+  "$everything": -O2
+  "$locals": -Wall
+  "$targets": -Werror
+  some-package: -DSOME_CPP_FLAG
 ~~~
 
-Since Stack 1.6.0, setting a GHC options for a specific package will
+GHC's command line options are _order-dependent_ and evaluated from left to
+right. Later options can override earlier options. Stack applies options (as
+applicable) in the order of `$everything`, `$locals`, `$targets`, and then those
+for the named package. Any existing GHC command line options of a package are
+applied after those specified in Stack's YAML configuration.
+
+Since Stack 1.6.1, setting a GHC options for a specific package will
 automatically promote it to a local package (much like setting a custom package
 flag). However, setting options via `$everything` on all flags will not do so
 (see
@@ -775,17 +808,10 @@ flag). However, setting options via `$everything` on all flags will not do so
 for reasoning). This can lead to unpredictable behavior by affecting your
 snapshot packages.
 
-The behavior of the `$locals`, `$targets`, and `$everything` special keys
-mirrors the behavior for the
-[`apply-ghc-options` setting](#apply-ghc-options), which affects command line
-parameters.
-
 !!! note
 
-    Prior to Stack 1.6.0, the `$locals`, `$targets`, and `$everything` keys
-    were not supported. Instead, you could use `"*"` for the behavior
-    represented now by `$everything`. It is highly recommended to switch to the
-    new, more expressive, keys.
+    Before Stack 1.6.1, the key `*` (then deprecated) had the same function as
+    the key `$everything`.
 
 ### ghc-variant
 
@@ -899,44 +925,48 @@ Default (on Windows): `%APPDATA%\local\bin`
 
 Command line equivalent (takes precedence): `--local-bin-path` option
 
-Target directory for `stack install` and `stack build --copy-bins`.
+Specifies the target directory for
+[`stack build --copy-bins`](build_command.md#-no-copy-bins-flag) and
+`stack install`. An absolute or relative path can be specified.
+
+If the project-level configuration is provided in the `global-project` directory
+in the [Stack root](stack_root.md), a relative path is assumed to be relative to
+the current directory. Otherwise, it is assumed to be relative to the directory
+of the project-level configuration file.
 
 ### local-programs-path
 
 [:octicons-tag-24: 1.3.0](https://github.com/commercialhaskell/stack/releases/tag/v1.3.0)
 
-The behaviour of this option differs between Unix-like operating systems and
-Windows.
+This overrides the location of the Stack 'programs' directory, where tools like
+GHC get installed. The path must be an absolute one.
+
+Stack's defaults differ between Unix-like operating systems and Windows.
 
 === "Unix-like"
 
-    Default: `programs` directory in the Stack root.
-
-    This overrides the location of the Stack 'programs' directory, where tools
-    like GHC get installed.
+    Default: `programs` directory in the [Stack root](stack_root.md).
 
 === "Windows"
 
     Default: `%LOCALAPPDATA%\Programs\stack`, if the `%LOCALAPPDATA%`
-    environment variable exists.
+    environment variable exists. Otherwise, the `programs` directory in the
+    [Stack root](stack_root.md).
 
-    This overrides the location of the Stack 'programs' directory, where tools
-    like GHC and MSYS2 get installed.
+    The MSYS2 tool is also installed in the Stack 'programs' directory.
 
     !!! warning
 
-        If there is a space character in the `%LOCALAPPDATA%` path (which may be
-        the case if the relevant user account name and its corresponding user
-        profile path have a space) this may cause problems with building
-        packages that make use of the GNU project's `autoconf` package and
-        `configure` shell script files. That may be the case particularly if
-        there is no corresponding short name ('8 dot 3' name) for the directory
-        in the path with the space (which may be the case if '8 dot 3' names
-        have been stripped or their creation not enabled by default). If there
-        are problems building, it will be necessary to override the default
-        location of Stack's 'programs' directory to specify an alternative path
-        that does not contain space characters. Examples of packages on
-        Hackage that make use of `configure` are `network` and `process`.
+        If there is a space character in the path to Stack's 'programs'
+        directory this may cause problems with building packages that make use
+        of the GNU project's `autoconf` package and `configure` shell script
+        files. That may be the case particularly if there is no corresponding
+        short name ('8 dot 3' name) for the directory in the path with the space
+        (which may be the case if '8 dot 3' names have been stripped or their
+        creation not enabled by default). If there are problems building, it
+        will be necessary to specify an alternative path that does not contain
+        space characters. Examples of packages on Hackage that make use of
+        `configure` are `network` and `process`.
 
 ### modify-code-page
 
@@ -1211,7 +1241,7 @@ setup-info:
 
 'Platforms' are pairs of an operating system and a machine architecture (for
 example, 32-bit i386 or 64-bit x86-64) (represented by the
-`Cabal.Distribution.Systems.Platform` type). Stack currently (version 2.9.1)
+`Cabal.Distribution.Systems.Platform` type). Stack currently (version 2.11.1)
 supports the following pairs in the format of the `setup-info` key:
 
 |Operating system|I386 arch|X86_64 arch|Other machine architectures                                 |
@@ -1509,7 +1539,7 @@ templates:
     author-name: Your Name
     author-email: youremail@example.com
     category: Your Projects Category
-    copyright: 'Copyright (c) 2022 Your Name'
+    copyright: 'Copyright (c) 2023 Your Name'
     github-username: yourusername
 ~~~
 
@@ -1561,12 +1591,16 @@ with-hpack: /usr/local/bin/hpack
 
 Default: `.stack-work`
 
-Command line equivalent (takes precedence): `--work-dir` option
+Command line equivalent (takes precedence):
+[`--work-dir`](global_flags.md#-work-dir-option) option
 
-Environment variable alternative (lowest precedence): `STACK_WORK`
+Environment variable alternative (lowest precedence):
+[`STACK_WORK`](environment_variables.md#stack_work)
 
-`work-dir` (or the contents of `STACK_WORK`) specifies the relative path of
-Stack's 'work' directory.
+`work-dir` specifies the path of Stack's work directory, within a local project
+or package directory. The path must be a relative one, relative to the
+root directory of the project or package. The relative path cannot include a
+`..` (parent directory) component.
 
 ## Customisation scripts
 
@@ -1575,10 +1609,10 @@ Stack's 'work' directory.
 [:octicons-tag-24: 2.9.1](https://github.com/commercialhaskell/stack/releases/tag/v2.9.1)
 
 On Unix-like operating systems and Windows, Stack's installation procedure can
-be fully customised by placing a `sh` shell script (a 'hook') in the Stack root
-directory at `hooks/ghc-install.sh`. On Unix-like operating systems, the script
-file must be made executable. The script is run by the `sh` application (which
-is provided by MSYS2 on Windows).
+be fully customised by placing a `sh` shell script (a 'hook') in the
+[Stack root](stack_root.md) directory at `hooks/ghc-install.sh`. On Unix-like
+operating systems, the script file must be made executable. The script is run by
+the `sh` application (which is provided by MSYS2 on Windows).
 
 The script **must** return an exit code of `0` and the standard output **must**
 be the absolute path to the GHC binary that was installed. Otherwise Stack will

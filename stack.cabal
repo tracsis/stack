@@ -5,7 +5,7 @@ cabal-version: 2.0
 -- see: https://github.com/sol/hpack
 
 name:           stack
-version:        2.9.3
+version:        2.11.1
 synopsis:       The Haskell Tool Stack
 description:    Please see the documentation at <https://docs.haskellstack.org>
                 for usage information.
@@ -13,7 +13,7 @@ description:    Please see the documentation at <https://docs.haskellstack.org>
                 If building a 'stack' executable for distribution, please download the
                 source code from <https://github.com/commercialhaskell/stack/releases>
                 and build it using Stack itself in order to ensure identical behaviour
-                to official binaries.  This package on Hackage is provided for convenience
+                to official binaries. This package on Hackage is provided for convenience
                 and bootstrapping purposes.
                 .
                 Note that the API for the library is not currently stable, and may
@@ -85,6 +85,7 @@ extra-source-files:
     doc/shell_autocompletion.md
     doc/SIGNING_KEY.md
     doc/Stack_and_VS_Code.md
+    doc/stack_root.md
     doc/stack_yaml_vs_cabal_package_file.md
     doc/templates_command.md
     doc/travis_ci.md
@@ -176,7 +177,10 @@ library
       Stack.Coverage
       Stack.DefaultColorWhen
       Stack.Docker
+      Stack.DockerCmd
       Stack.Dot
+      Stack.Eval
+      Stack.Exec
       Stack.FileWatch
       Stack.GhcPkg
       Stack.Ghci
@@ -197,6 +201,7 @@ library
       Stack.Options.Completion
       Stack.Options.DockerParser
       Stack.Options.DotParser
+      Stack.Options.EvalParser
       Stack.Options.ExecParser
       Stack.Options.GhcBuildParser
       Stack.Options.GhciParser
@@ -204,20 +209,26 @@ library
       Stack.Options.GlobalParser
       Stack.Options.HaddockParser
       Stack.Options.HpcReportParser
+      Stack.Options.InitParser
       Stack.Options.LogLevelParser
+      Stack.Options.LsParser
       Stack.Options.NewParser
       Stack.Options.NixParser
       Stack.Options.PackageParser
+      Stack.Options.PathParser
       Stack.Options.ResolverParser
-      Stack.Options.ScriptParser
       Stack.Options.SDistParser
+      Stack.Options.ScriptParser
+      Stack.Options.SetupParser
       Stack.Options.TestParser
+      Stack.Options.UpgradeParser
       Stack.Options.UploadParser
       Stack.Options.Utils
       Stack.Package
       Stack.PackageDump
       Stack.Path
       Stack.Prelude
+      Stack.Query
       Stack.Runners
       Stack.Script
       Stack.SDist
@@ -228,22 +239,65 @@ library
       Stack.Storage.Project
       Stack.Storage.User
       Stack.Storage.Util
+      Stack.Templates
+      Stack.Types.AddCommand
+      Stack.Types.AllowNewerDeps
+      Stack.Types.ApplyGhcOptions
+      Stack.Types.ApplyProgOptions
       Stack.Types.Build
+      Stack.Types.Build.Exception
+      Stack.Types.BuildConfig
+      Stack.Types.BuildOpts
+      Stack.Types.CabalConfigKey
+      Stack.Types.ColorWhen
       Stack.Types.CompilerBuild
+      Stack.Types.CompilerPaths
       Stack.Types.Compiler
       Stack.Types.Config
-      Stack.Types.Config.Build
+      Stack.Types.Config.Exception
+      Stack.Types.ConfigMonoid
+      Stack.Types.ConfigureOpts
+      Stack.Types.Curator
       Stack.Types.Docker
+      Stack.Types.DockerEntrypoint
+      Stack.Types.DownloadInfo
+      Stack.Types.DumpLogs
+      Stack.Types.DumpPackage
+      Stack.Types.EnvConfig
+      Stack.Types.EnvSettings
+      Stack.Types.ExtraDirs
+      Stack.Types.GHCDownloadInfo
+      Stack.Types.GHCVariant
+      Stack.Types.GhcOptionKey
+      Stack.Types.GhcOptions
       Stack.Types.GhcPkgId
+      Stack.Types.GlobalOpts
+      Stack.Types.GlobalOptsMonoid
+      Stack.Types.IsMutable
+      Stack.Types.LockFileBehavior
       Stack.Types.NamedComponent
       Stack.Types.Nix
       Stack.Types.Package
       Stack.Types.PackageName
+      Stack.Types.ParentMap
+      Stack.Types.Platform
+      Stack.Types.Project
+      Stack.Types.ProjectAndConfigMonoid
+      Stack.Types.ProjectConfig
+      Stack.Types.PvpBounds
       Stack.Types.Resolver
+      Stack.Types.Runner
+      Stack.Types.SCM
+      Stack.Types.SetupInfo
       Stack.Types.SourceMap
+      Stack.Types.StackYamlLoc
       Stack.Types.TemplateName
+      Stack.Types.UnusedFlags
       Stack.Types.Version
+      Stack.Types.VersionedDownloadInfo
+      Stack.Uninstall
       Stack.Unpack
+      Stack.Update
       Stack.Upgrade
       Stack.Upload
       System.Info.ShortPathName
@@ -254,6 +308,8 @@ library
   other-modules:
       Path.Extended
       Stack.ComponentFile
+      Stack.Constants.StackProgName
+      Stack.Internal.BuildInfo
       Stack.PackageFile
       Stack.Types.Cache
       Stack.Types.Dependency
@@ -263,12 +319,12 @@ library
       Paths_stack
   hs-source-dirs:
       src/
-  ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -fwarn-tabs -fwarn-incomplete-uni-patterns -fwarn-incomplete-record-updates -optP-Wno-nonportable-include-path -fwarn-identities
+  ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -Wmissing-export-lists -optP-Wno-nonportable-include-path -Widentities
   build-depends:
       Cabal >=3.8.1.0
     , aeson >=2.0.3.0
     , annotated-wl-pprint
-    , ansi-terminal
+    , ansi-terminal >=1.0
     , array
     , async
     , attoparsec
@@ -333,7 +389,6 @@ library
     , streaming-commons
     , tar
     , template-haskell
-    , temporary
     , text
     , text-metrics
     , th-reify-many
@@ -349,7 +404,7 @@ library
     , yaml
     , zip-archive
     , zlib
-  default-language: Haskell2010
+  default-language: GHC2021
   if os(windows)
     cpp-options: -DWINDOWS
     build-depends:
@@ -359,17 +414,25 @@ library
         unix
     build-tool-depends:
         hsc2hs:hsc2hs
+  if impl(ghc >= 9.4.5) && os(windows)
+    build-depends:
+        network >=3.1.2.9
   if flag(developer-mode)
     cpp-options: -DSTACK_DEVELOPER_MODE_DEFAULT=True
   else
     cpp-options: -DSTACK_DEVELOPER_MODE_DEFAULT=False
   if os(windows)
     other-modules:
+        Stack.Constants.UsrLibDirs
+        Stack.Docker.Handlers
+        System.Posix.User
         System.Uname
     hs-source-dirs:
         src/windows/
   else
     other-modules:
+        Stack.Constants.UsrLibDirs
+        Stack.Docker.Handlers
         System.Uname
     hs-source-dirs:
         src/unix/
@@ -380,6 +443,7 @@ executable stack
   main-is: Main.hs
   other-modules:
       BuildInfo
+      Stack.CLI
       Build_stack
       Paths_stack
   autogen-modules:
@@ -387,12 +451,12 @@ executable stack
       Paths_stack
   hs-source-dirs:
       src/main
-  ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -fwarn-tabs -fwarn-incomplete-uni-patterns -fwarn-incomplete-record-updates -optP-Wno-nonportable-include-path -threaded -rtsopts
+  ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -Wmissing-export-lists -optP-Wno-nonportable-include-path -threaded -rtsopts
   build-depends:
       Cabal >=3.8.1.0
     , aeson >=2.0.3.0
     , annotated-wl-pprint
-    , ansi-terminal
+    , ansi-terminal >=1.0
     , array
     , async
     , attoparsec
@@ -458,7 +522,6 @@ executable stack
     , streaming-commons
     , tar
     , template-haskell
-    , temporary
     , text
     , text-metrics
     , th-reify-many
@@ -474,7 +537,7 @@ executable stack
     , yaml
     , zip-archive
     , zlib
-  default-language: Haskell2010
+  default-language: GHC2021
   if os(windows)
     cpp-options: -DWINDOWS
     build-depends:
@@ -484,6 +547,9 @@ executable stack
         unix
     build-tool-depends:
         hsc2hs:hsc2hs
+  if impl(ghc >= 9.4.5) && os(windows)
+    build-depends:
+        network >=3.1.2.9
   if flag(developer-mode)
     cpp-options: -DSTACK_DEVELOPER_MODE_DEFAULT=True
   else
@@ -510,12 +576,12 @@ executable stack-integration-test
   hs-source-dirs:
       test/integration
       test/integration/lib
-  ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -fwarn-tabs -fwarn-incomplete-uni-patterns -fwarn-incomplete-record-updates -optP-Wno-nonportable-include-path -threaded -rtsopts -with-rtsopts=-N
+  ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -Wmissing-export-lists -optP-Wno-nonportable-include-path -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       Cabal >=3.8.1.0
     , aeson >=2.0.3.0
     , annotated-wl-pprint
-    , ansi-terminal
+    , ansi-terminal >=1.0
     , array
     , async
     , attoparsec
@@ -582,7 +648,6 @@ executable stack-integration-test
     , streaming-commons
     , tar
     , template-haskell
-    , temporary
     , text
     , text-metrics
     , th-reify-many
@@ -598,7 +663,7 @@ executable stack-integration-test
     , yaml
     , zip-archive
     , zlib
-  default-language: Haskell2010
+  default-language: GHC2021
   if os(windows)
     cpp-options: -DWINDOWS
     build-depends:
@@ -608,6 +673,9 @@ executable stack-integration-test
         unix
     build-tool-depends:
         hsc2hs:hsc2hs
+  if impl(ghc >= 9.4.5) && os(windows)
+    build-depends:
+        network >=3.1.2.9
   if flag(developer-mode)
     cpp-options: -DSTACK_DEVELOPER_MODE_DEFAULT=True
   else
@@ -627,7 +695,6 @@ test-suite stack-test
       Stack.Config.DockerSpec
       Stack.ConfigSpec
       Stack.DotSpec
-      Stack.Ghci.PortableFakePaths
       Stack.Ghci.ScriptSpec
       Stack.GhciSpec
       Stack.LockSpec
@@ -640,13 +707,13 @@ test-suite stack-test
       Paths_stack
   hs-source-dirs:
       src/test
-  ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -fwarn-tabs -fwarn-incomplete-uni-patterns -fwarn-incomplete-record-updates -optP-Wno-nonportable-include-path -threaded
+  ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -Wmissing-export-lists -optP-Wno-nonportable-include-path -threaded
   build-depends:
       Cabal >=3.8.1.0
     , QuickCheck
     , aeson >=2.0.3.0
     , annotated-wl-pprint
-    , ansi-terminal
+    , ansi-terminal >=1.0
     , array
     , async
     , attoparsec
@@ -715,7 +782,6 @@ test-suite stack-test
     , streaming-commons
     , tar
     , template-haskell
-    , temporary
     , text
     , text-metrics
     , th-reify-many
@@ -731,7 +797,7 @@ test-suite stack-test
     , yaml
     , zip-archive
     , zlib
-  default-language: Haskell2010
+  default-language: GHC2021
   if os(windows)
     cpp-options: -DWINDOWS
     build-depends:
@@ -741,9 +807,22 @@ test-suite stack-test
         unix
     build-tool-depends:
         hsc2hs:hsc2hs
+  if impl(ghc >= 9.4.5) && os(windows)
+    build-depends:
+        network >=3.1.2.9
   if flag(developer-mode)
     cpp-options: -DSTACK_DEVELOPER_MODE_DEFAULT=True
   else
     cpp-options: -DSTACK_DEVELOPER_MODE_DEFAULT=False
+  if os(windows)
+    other-modules:
+        Stack.Ghci.FakePaths
+    hs-source-dirs:
+        src/test/windows/
+  else
+    other-modules:
+        Stack.Ghci.FakePaths
+    hs-source-dirs:
+        src/test/unix/
   build-tool-depends:
       hspec-discover:hspec-discover

@@ -1,25 +1,32 @@
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Stack.NixSpec where
+module Stack.NixSpec
+  ( sampleConfigNixEnabled
+  , sampleConfigNixDisabled
+  , setup
+  , spec
+  ) where
 
-import Data.Maybe (fromJust)
-import Options.Applicative
-import Path
-import Prelude (writeFile)
-import Stack.Config
-import Stack.Config.Nix
-import Stack.Constants
-import Stack.Options.GlobalParser (globalOptsFromMonoid)
-import Stack.Options.NixParser
-import Stack.Prelude
-import Stack.Runners
-import Stack.Types.Config
-import Stack.Types.Nix
-import System.Directory
-import System.Environment
-import Test.Hspec
+import           Data.Maybe ( fromJust )
+import           Options.Applicative
+                   ( defaultPrefs, execParserPure, getParseResult, info )
+import           Prelude ( writeFile )
+import           Stack.Config ( loadConfig )
+import           Stack.Config.Nix ( nixCompiler )
+import           Stack.Constants ( osIsWindows, stackDotYaml )
+import           Stack.Options.GlobalParser ( globalOptsFromMonoid )
+import           Stack.Options.NixParser ( nixOptsParser )
+import           Stack.Prelude
+import           Stack.Runners ( withRunnerGlobal )
+import           Stack.Types.Config ( Config (..) )
+import           Stack.Types.ConfigMonoid ( ConfigMonoid (..) )
+import           Stack.Types.GlobalOpts ( GlobalOpts (..) )
+import           Stack.Types.GlobalOptsMonoid ( GlobalOptsMonoid (..) )
+import           Stack.Types.Nix ( NixOpts (..) )
+import           System.Directory ( getCurrentDirectory, setCurrentDirectory )
+import           System.Environment ( unsetEnv )
+import           Test.Hspec ( Spec, around_, beforeAll, describe, it, shouldBe )
 
 sampleConfigNixEnabled :: String
 sampleConfigNixEnabled =

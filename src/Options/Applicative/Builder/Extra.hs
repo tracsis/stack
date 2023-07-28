@@ -1,6 +1,5 @@
 {-# LANGUAGE NoImplicitPrelude   #-}
 {-# LANGUAGE RecordWildCards     #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Extra functions for optparse-applicative.
 
@@ -152,23 +151,22 @@ enableDisableFlagsNoDefault ::
   -> Parser a
 enableDisableFlagsNoDefault enabledValue disabledValue name helpSuffix mods =
   last <$> some
-    (   (   flag'
-              enabledValue
-              (  hidden
-              <> internal
-              <> long name
-              <> help helpSuffix
-              <> mods
-              )
-        <|> flag'
-              disabledValue
-              (  hidden
-              <> internal
-              <> long ("no-" ++ name)
-              <> help helpSuffix
-              <> mods
-              )
-        )
+    (   flag'
+          enabledValue
+          (  hidden
+          <> internal
+          <> long name
+          <> help helpSuffix
+          <> mods
+          )
+    <|> flag'
+          disabledValue
+          (  hidden
+          <> internal
+          <> long ("no-" ++ name)
+          <> help helpSuffix
+          <> mods
+          )
     <|> flag'
           disabledValue
           (  long ("[no-]" ++ name)
@@ -209,7 +207,7 @@ extraHelpOption hide progName fakeName helpName =
     , takeBaseName progName
     , " --"
     , helpName
-    , "' for details"
+    , "' for details."
     ]
 
 -- | Display extra help if extra help option passed in arguments.
@@ -346,30 +344,33 @@ pathCompleterWith PathCompleterOpts {..} = mkCompleter $ \inputRaw -> do
       | input == "" && pcoAbsolute -> pure ["/"]
       | otherwise -> pure []
     Just searchDir -> do
-      entries <- getDirectoryContents searchDir `catch` \(_ :: IOException) -> pure []
+      entries <-
+        getDirectoryContents searchDir `catch` \(_ :: IOException) -> pure []
       fmap catMaybes $ forM entries $ \entry ->
         -- Skip . and .. unless user is typing . or ..
-        if entry `elem` ["..", "."] && searchPrefix `notElem` ["..", "."] then pure Nothing else
-          if searchPrefix `isPrefixOf` entry
-            then do
-              let path = searchDir </> entry
-              case (pcoFileFilter path, pcoDirFilter path) of
-                (True, True) -> pure $ Just (inputSearchDir </> entry)
-                (fileAllowed, dirAllowed) -> do
-                  isDir <- doesDirectoryExist path
-                  if (if isDir then dirAllowed else fileAllowed)
-                    then pure $ Just (inputSearchDir </> entry)
-                    else pure Nothing
-            else pure Nothing
+        if entry `elem` ["..", "."] && searchPrefix `notElem` ["..", "."]
+          then pure Nothing
+          else
+            if searchPrefix `isPrefixOf` entry
+              then do
+                let path = searchDir </> entry
+                case (pcoFileFilter path, pcoDirFilter path) of
+                  (True, True) -> pure $ Just (inputSearchDir </> entry)
+                  (fileAllowed, dirAllowed) -> do
+                    isDir <- doesDirectoryExist path
+                    if (if isDir then dirAllowed else fileAllowed)
+                      then pure $ Just (inputSearchDir </> entry)
+                      else pure Nothing
+              else pure Nothing
 
 unescapeBashArg :: String -> String
 unescapeBashArg ('\'' : rest) = rest
 unescapeBashArg ('\"' : rest) = go rest
  where
-  pattern = "$`\"\\\n" :: String
+  special = "$`\"\\\n" :: String
   go [] = []
   go ('\\' : x : xs)
-    | x `elem` pattern = x : xs
+    | x `elem` special = x : xs
     | otherwise = '\\' : x : go xs
   go (x : xs) = x : go xs
 unescapeBashArg input = go input

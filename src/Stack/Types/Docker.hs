@@ -1,7 +1,4 @@
 {-# LANGUAGE NoImplicitPrelude  #-}
-{-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE DeriveGeneric      #-}
-{-# LANGUAGE FlexibleInstances  #-}
 {-# LANGUAGE OverloadedStrings  #-}
 {-# LANGUAGE RecordWildCards    #-}
 
@@ -53,6 +50,7 @@ import           Distribution.Version ( anyVersion )
 import           Generics.Deriving.Monoid ( mappenddefault, memptydefault )
 import           Pantry.Internal.AesonExtended
 import           Path
+import           Stack.Constants ( stackProgName )
 import           Stack.Prelude hiding ( Display (..) )
 import           Stack.Types.Version
 import           Text.Read ( Read (..) )
@@ -273,7 +271,7 @@ data DockerOpts = DockerOpts
   , dockerRequireDockerVersion :: !VersionRange
     -- ^ Require a version of Docker within this range.
   }
-  deriving (Show)
+  deriving Show
 
 -- | An uninterpreted representation of docker options.
 -- Configurations may be "cascaded" using mappend (left-biased).
@@ -365,7 +363,7 @@ data DockerStackExe
   | DockerStackExeHost  -- ^ Host's `stack` (linux-x86_64 only)
   | DockerStackExeImage  -- ^ Docker image's `stack` (versions must match)
   | DockerStackExePath (Path Abs File) -- ^ Executable at given path
-  deriving (Show)
+  deriving Show
 
 instance FromJSON DockerStackExe where
   parseJSON a = do
@@ -413,7 +411,7 @@ instance FromJSON Mount where
 data DockerMonoidRepoOrImage
   = DockerMonoidRepo String
   | DockerMonoidImage String
-  deriving (Show)
+  deriving Show
 
 -- | Newtype for non-orphan FromJSON instance.
 newtype VersionRangeJSON =

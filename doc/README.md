@@ -33,10 +33,10 @@ Windows.
     Stack so that if Stack needs a version of GHC, GHCup takes over obtaining
     and installing that version.
 
-=== "Unix-like"
+=== "Linux"
 
-    For most Unix-like operating systems, the easiest way to install Stack
-    directly is to command:
+    For most Linux distributions, the easiest way to install Stack
+    directly (rather than use GHCup) is to command:
 
     ~~~text
     curl -sSL https://get.haskellstack.org/ | sh
@@ -57,10 +57,78 @@ Windows.
         installation instructions in the
         [install and upgrade guide](install_and_upgrade.md).
 
+=== "macOS"
+
+    From late 2020, Apple began a transition from Mac computers with Intel
+    processors (Intel-based Mac) to
+    [Mac computers with Apple silicon](https://support.apple.com/en-gb/HT211814).
+
+    === "Intel-based"
+
+        For most Intel-based Mac computers, the easiest way to install Stack
+        directly (rather than use GHCup) is to command:
+
+        ~~~text
+        curl -sSL https://get.haskellstack.org/ | sh
+        ~~~
+
+        or:
+
+        ~~~text
+        wget -qO- https://get.haskellstack.org/ | sh
+        ~~~
+
+        !!! note
+
+            The script at [get.haskellstack.org](https://get.haskellstack.org/)
+            will ask for root access using `sudo`. It needs such access in order
+            to use your platform's package manager to install dependencies and
+            to install to `/usr/local/bin`. If you prefer more control, follow
+            the manual installation instructions in the
+            [install and upgrade guide](install_and_upgrade.md).
+
+    === "Apple silicon"
+
+        Mac computers with Apple silicon have an M1, M1 Pro, M1 Max, M1 Ultra or
+        M2 chip. These chips use an architecture known as ARM64 or AArch64.
+
+        For Mac computers with Apple silicon, the easiest way to install Stack
+        directly (rather than use GHCup) is to obtain the 'unofficial'
+        `osx-aarch64` binary distribution released by the GHCup developers and
+        copy it to a location on the PATH. `*.tar.gz` archive files containing
+        those binary distributions are available at the directories here:
+        [:material-cloud-download-outline:](https://downloads.haskell.org/ghcup/unofficial-bindists/stack/).
+
+        It is still possible to use the commands:
+
+        ~~~text
+        curl -sSL https://get.haskellstack.org/ | sh
+        ~~~
+
+        or:
+
+        ~~~text
+        wget -qO- https://get.haskellstack.org/ | sh
+        ~~~
+
+        However, those commands will download and install the version of Stack
+        for Intel-based Mac computers. Mac computers with Apple silicon will
+        use Apple's
+        [Rosetta 2 application](https://support.apple.com/en-gb/HT211861) to
+        use that version of Stack.
+
+        Apple's Terminal application will not detect automatically that Rosetta
+        has not yet been installed. Rosetta can be manually installed by
+        commanding:
+
+        ~~~text
+        softwareupdate --install-rosetta
+        ~~~
+
 === "Windows"
 
-    On 64-bit Windows, the easiest way to install Stack directly is to download
-    and install the
+    On 64-bit Windows, the easiest way to install Stack directly (rather than
+    use GHCup) is to download and install the
     [Windows installer](https://get.haskellstack.org/stable/windows-x86_64-installer.exe).
 
     !!! note
@@ -70,8 +138,8 @@ Windows.
 
 === "Other/direct downloads"
 
-    For other operating systems and direct downloads, see the
-    [install and upgrade guide](install_and_upgrade.md).
+    For other operating systems and direct downloads (rather than use GHCup),
+    see the [install and upgrade guide](install_and_upgrade.md).
 
 ## How to upgrade Stack
 
@@ -267,7 +335,7 @@ The following assumes that you already have installed a version of Stack and the
 1.  Clone the `stack` repository from GitHub with the command:
 
     ~~~text
-    git clone https://github.com/commercialhaskell/stack.git`
+    git clone https://github.com/commercialhaskell/stack.git
     ~~~
 
 2.  Change the current working directory to the cloned `stack` directory with the

@@ -18,6 +18,7 @@ The following terms are used in Stack's documentation.
 |FreeBSD            |A Unix-like operating system.                             |
 |GCC                |The [GNU Compiler Collection](https://gcc.gnu.org/) or its executable `gcc`.|
 |GHC                |The [Glasgow Haskell Compiler](https://www.haskell.org/ghc/).|
+|GHC boot package   |A package that comes with GHC, is included in GHC's global package database, and is not included in a Stackage snapshot. See the output of command `stack exec -- ghc-pkg list --global`.|
 |GHCi               |GHC's [interactive environment](https://downloads.haskell.org/~ghc/latest/docs/html/users_guide/ghci.html).|
 |GHCJS              |A Haskell to JavaScript [compiler](https://github.com/ghcjs/ghcjs).|
 |GHCup              |An [installer](https://www.haskell.org/ghcup/) for Haskell.
@@ -47,6 +48,7 @@ The following terms are used in Stack's documentation.
 |`stack.yaml`       |A project-level configuration file used by Stack, which may also contain non-project-specific options.|
 |Stackage           |A [distribution](https://www.stackage.org/) of compatible Haskell packages.|
 |Stack root         |A directory in which Stack stores important files. See `stack path --stack-root`. On Windows, or if Stack is configured to use the XDG Base Directory Specification, Stack also stores important files outside of the Stack root.|
+|Stack work directory|A directory within a local project or package directory in which Stack stores files created during the build process. Named `.stack-work`, by default.|
 |Unix-like operating systems|Linux, FreeBSD and macOS.                         |
 |VS Code            |[Visual Studio Code](https://code.visualstudio.com/), a source code editor.|
 |Windows            |A group of operating systems developed by Microsoft.      |

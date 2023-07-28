@@ -1,6 +1,5 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE DataKinds         #-}
-{-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Utilities for running stack commands.
@@ -23,18 +22,32 @@ import           RIO.Process ( mkDefaultProcessContext )
 import           RIO.Time ( addUTCTime, getCurrentTime )
 import           Stack.Build.Target ( NeedTargets (..) )
 import           Stack.Config
+                   ( getInContainer, getInNixShell, loadConfig, withBuildConfig
+                   , withNewLogFunc
+                   )
 import           Stack.Constants
+                   ( defaultTerminalWidth, maxTerminalWidth, minTerminalWidth )
 import           Stack.DefaultColorWhen ( defaultColorWhen )
 import qualified Stack.Docker as Docker
 import qualified Stack.Nix as Nix
 import           Stack.Prelude
-import           Stack.Setup
-import           Stack.Storage.User ( upgradeChecksSince, logUpgradeCheck )
-import           Stack.Types.Config
+import           Stack.Setup ( setupEnv )
+import           Stack.Storage.User ( logUpgradeCheck, upgradeChecksSince )
+import           Stack.Types.BuildOpts
+                   ( BuildOptsCLI, defaultBuildOptsCLI )
+import           Stack.Types.ColorWhen ( ColorWhen (..) )
+import           Stack.Types.Config ( Config (..) )
+import           Stack.Types.ConfigMonoid ( ConfigMonoid (..) )
 import           Stack.Types.Docker ( dockerEnable )
+import           Stack.Types.EnvConfig ( EnvConfig )
+import           Stack.Types.GlobalOpts ( GlobalOpts (..) )
 import           Stack.Types.Nix ( nixEnable )
-import           Stack.Types.Version ( stackMinorVersion, minorVersion )
-import           System.Console.ANSI ( hSupportsANSIWithoutEmulation )
+import           Stack.Types.Runner
+                   ( Runner (..), globalOptsL, reExecL, stackYamlLocL )
+import           Stack.Types.StackYamlLoc ( StackYamlLoc (..) )
+import           Stack.Types.Version
+                   ( minorVersion, stackMinorVersion, stackVersion )
+import           System.Console.ANSI ( hSupportsANSI )
 import           System.Terminal ( getTerminalWidth )
 
 -- | Type representing exceptions thrown by functions exported by the
@@ -74,9 +87,7 @@ withGlobalProject inner = do
 -- * No targets are requested
 --
 -- * Default command line build options are assumed
-withDefaultEnvConfig
-    :: RIO EnvConfig a
-    -> RIO Config a
+withDefaultEnvConfig :: RIO EnvConfig a -> RIO Config a
 withDefaultEnvConfig = withEnvConfig AllowNoTargets defaultBuildOptsCLI
 
 -- | Upgrade a 'Config' environment to an 'EnvConfig' environment by
@@ -84,13 +95,13 @@ withDefaultEnvConfig = withEnvConfig AllowNoTargets defaultBuildOptsCLI
 -- 'withBuildConfig') and then setting up a build environment
 -- toolchain. This is intended to be run inside a call to
 -- 'withConfig'.
-withEnvConfig
-    :: NeedTargets
-    -> BuildOptsCLI
-    -> RIO EnvConfig a
-    -- ^ Action that uses the build config.  If Docker is enabled for builds,
-    -- this will be run in a Docker container.
-    -> RIO Config a
+withEnvConfig ::
+     NeedTargets
+  -> BuildOptsCLI
+  -> RIO EnvConfig a
+  -- ^ Action that uses the build config.  If Docker is enabled for builds,
+  -- this will be run in a Docker container.
+  -> RIO Config a
 withEnvConfig needTargets boptsCLI inner =
   withBuildConfig $ do
     envConfig <- setupEnv needTargets boptsCLI Nothing
@@ -98,35 +109,34 @@ withEnvConfig needTargets boptsCLI inner =
     runRIO envConfig inner
 
 -- | If the settings justify it, should we reexec inside Docker or Nix?
-data ShouldReexec = YesReexec | NoReexec
+data ShouldReexec
+  = YesReexec
+  | NoReexec
 
 -- | Load the configuration. Convenience function used
 -- throughout this module.
-withConfig
-  :: ShouldReexec
-  -> RIO Config a
-  -> RIO Runner a
+withConfig :: ShouldReexec -> RIO Config a -> RIO Runner a
 withConfig shouldReexec inner =
-    loadConfig $ \config -> do
-      -- If we have been relaunched in a Docker container, perform in-container initialization
-      -- (switch UID, etc.).  We do this after first loading the configuration since it must
-      -- happen ASAP but needs a configuration.
-      view (globalOptsL.to globalDockerEntrypoint) >>=
-        traverse_ (Docker.entrypoint config)
-      runRIO config $ do
-        -- Catching all exceptions here, since we don't want this
-        -- check to ever cause Stack to stop working
-        shouldUpgradeCheck `catchAny` \e ->
-          logError $
-            "Error: [S-7353]\n" <>
-            "Error when running shouldUpgradeCheck: " <>
-            displayShow e
-        case shouldReexec of
-          YesReexec -> reexec inner
-          NoReexec -> inner
+  loadConfig $ \config -> do
+    -- If we have been relaunched in a Docker container, perform in-container
+    -- initialization (switch UID, etc.).  We do this after first loading the
+    -- configuration since it must happen ASAP but needs a configuration.
+    view (globalOptsL.to globalDockerEntrypoint) >>=
+      traverse_ (Docker.entrypoint config)
+    runRIO config $ do
+      -- Catching all exceptions here, since we don't want this
+      -- check to ever cause Stack to stop working
+      shouldUpgradeCheck `catchAny` \e ->
+        logError $
+          "Error: [S-7353]\n" <>
+          "Error when running shouldUpgradeCheck: " <>
+          displayShow e
+      case shouldReexec of
+        YesReexec -> reexec inner
+        NoReexec -> inner
 
--- | Perform a Docker or Nix reexec, if warranted. Otherwise run the
--- inner action.
+-- | Perform a Docker or Nix reexec, if warranted. Otherwise run the inner
+-- action.
 reexec :: RIO Config a -> RIO Config a
 reexec inner = do
   nixEnable' <- asks $ nixEnable . configNix
@@ -165,8 +175,7 @@ withRunnerGlobal go inner = do
   useColor <- case colorWhen of
     ColorNever -> pure False
     ColorAlways -> pure True
-    ColorAuto -> fromMaybe True <$>
-                          hSupportsANSIWithoutEmulation stderr
+    ColorAuto -> hSupportsANSI stderr
   termWidth <- clipWidth <$> maybe (fromMaybe defaultTerminalWidth
                                     <$> getTerminalWidth)
                                    pure (globalTermWidth go)
@@ -179,10 +188,11 @@ withRunnerGlobal go inner = do
     , runnerTermWidth = termWidth
     , runnerProcessContext = menv
     } inner
-  where clipWidth w
-          | w < minTerminalWidth = minTerminalWidth
-          | w > maxTerminalWidth = maxTerminalWidth
-          | otherwise = w
+ where
+  clipWidth w
+    | w < minTerminalWidth = minTerminalWidth
+    | w > maxTerminalWidth = maxTerminalWidth
+    | otherwise = w
 
 -- | Check if we should recommend upgrading Stack and, if so, recommend it.
 shouldUpgradeCheck :: RIO Config ()
@@ -198,19 +208,26 @@ shouldUpgradeCheck = do
         -- Compare the minor version so we avoid patch-level, Hackage-only releases.
         -- See: https://github.com/commercialhaskell/stack/pull/4729#pullrequestreview-227176315
         Just (PackageIdentifierRevision _ version _) | minorVersion version > stackMinorVersion -> do
-          logWarn "<<<<<<<<<<<<<<<<<<"
-          logWarn $
-            "You are currently using Stack version " <>
-            fromString (versionString stackVersion) <>
-            ", but version " <>
-            fromString (versionString version) <>
-            " is available"
-          logWarn "You can try to upgrade by running 'stack upgrade'"
-          logWarn $
-            "Tired of seeing this? Add 'recommend-stack-upgrade: false' to " <>
-            fromString (toFilePath (configUserConfigPath config))
-          logWarn ">>>>>>>>>>>>>>>>>>"
-          logWarn ""
-          logWarn ""
+          prettyWarn $
+               fillSep
+                 [ flow "You are currently using Stack version"
+                 , fromString (versionString stackVersion)
+                 , flow "but version"
+                 , fromString (versionString version)
+                 , flow "is available."
+                 ]
+            <> blankLine
+            <> fillSep
+                 [ "You can try to upgrade by running"
+                 , style Shell (flow "stack upgrade")
+                 ]
+            <> blankLine
+            <> fillSep
+                 [ flow "Tired of seeing this? Add"
+                 , style Shell (flow "recommend-stack-upgrade: false")
+                 , "to"
+                 , pretty (configUserConfigPath config) <> "."
+                 ]
+            <> blankLine
         _ -> pure ()
       logUpgradeCheck now

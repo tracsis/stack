@@ -1,12 +1,13 @@
 ---
 name: Question
-about: Ask a question about Stack usage
+about: Ask a question about how to use Stack
 ---
 
-Do you have a question regarding Stack's usage that isn't covered by the online
+Do you have a question about how to use Stack that is not covered by the online
 [documentation](http://haskellstack.org)? In that case please ask your question
-on [Stack Overflow](http://stackoverflow.com) and use
-[the haskell-stack tag](http://stackoverflow.com/questions/tagged/haskell-stack).
+at the [Haskell Community](https://discourse.haskell.org/) forum or on
+[Stack Overflow](http://stackoverflow.com) (use the
+[haskell-stack](http://stackoverflow.com/questions/tagged/haskell-stack) tag).
 This way your question will be more easily discoverable by other people with the
 same question.
 
@@ -15,7 +16,7 @@ the [stack-templates](https://github.com/commercialhaskell/stack-templates)
 repository instead.
 
 If you still want to ask the question here instead, please make sure that you
-are using the latest release (currently Stack 2.9.1). See the
+are using the latest release (currently Stack 2.9.3). See the
 [upgrade instructions](http://docs.haskellstack.org/en/stable/install_and_upgrade/#upgrade)
 to upgrade.
 
@@ -23,7 +24,7 @@ to upgrade.
 
 ~~~text
 stack --version
-Version 2.9.1, Git revision 409d56031b4240221d656db09b2ba476fe6bb5b1 x86_64 hpack-0.35.0
+Version 2.9.3, Git revision 6cf638947a863f49857f9cfbf72a38a48b183e7e x86_64 hpack-0.35.1
 ~~~
 
 ### Method of installation

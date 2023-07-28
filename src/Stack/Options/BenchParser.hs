@@ -10,7 +10,7 @@ import           Options.Applicative
 import           Options.Applicative.Builder.Extra ( optionalFirst )
 import           Stack.Prelude
 import           Stack.Options.Utils ( hideMods )
-import           Stack.Types.Config ( BenchmarkOptsMonoid (..) )
+import           Stack.Types.BuildOpts ( BenchmarkOptsMonoid (..) )
 
 -- | Parser for bench arguments.
 -- FIXME hiding options
@@ -21,7 +21,7 @@ benchOptsParser hide0 = BenchmarkOptsMonoid
         <> long "ba"
         <> metavar "BENCH_ARGS"
         <> help "Forward BENCH_ARGS to the benchmark suite. Supports templates \
-                \from `cabal bench`"
+                \from 'cabal bench'."
         <> hide
         ))
   <*> optionalFirst (flag' True

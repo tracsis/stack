@@ -1,6 +1,7 @@
 {-# LANGUAGE CApiFFI                  #-}
-{-# LANGUAGE ForeignFunctionInterface #-}
 
+-- | The module of this name differs as between Windows and non-Windows builds.
+-- This is the non-Windows version.
 module System.Terminal
 ( fixCodePage
 , getTerminalWidth
@@ -9,7 +10,7 @@ module System.Terminal
 
 import           Foreign
 import           Foreign.C.Types
-import           RIO (MonadIO, Handle, hIsTerminalDevice)
+import           RIO ( Handle, MonadIO, hIsTerminalDevice )
 
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -32,13 +33,13 @@ foreign import capi "sys/ioctl.h ioctl"
 
 getTerminalWidth :: IO (Maybe Int)
 getTerminalWidth =
-    alloca $ \p -> do
-        errno <- ioctl (#const STDOUT_FILENO) (#const TIOCGWINSZ) p
-        if errno < 0
-        then return Nothing
-        else do
-            WindowWidth w <- peek p
-            return . Just . fromIntegral $ w
+  alloca $ \p -> do
+    errno <- ioctl (#const STDOUT_FILENO) (#const TIOCGWINSZ) p
+    if errno < 0
+    then return Nothing
+    else do
+      WindowWidth w <- peek p
+      return . Just . fromIntegral $ w
 
 fixCodePage :: x -> y -> a -> a
 fixCodePage _ _ = id

@@ -4,9 +4,11 @@
 -- | Types used by @Stack.Storage@ modules.
 module Stack.Types.Storage
   ( StoragePrettyException (..)
+  , ProjectStorage (..)
+  , UserStorage (..)
   ) where
 
-import           Data.Text
+import           Pantry.Internal ( Storage )
 import           Stack.Prelude
 
 -- | Type representing \'pretty\' exceptions thrown by functions exported by
@@ -19,18 +21,22 @@ instance Pretty StoragePrettyException where
   pretty (StorageMigrationFailure desc fp ex) =
     "[S-8835]"
     <> line
-    <>     flow "Stack could not migrate the the database"
-       <+> style File (fromString $ show desc)
-       <+> flow "located at"
-       <+> style Dir (pretty fp)
+    <> fillSep
+         [ flow "Stack could not migrate the the database"
+         , style File (fromString $ show desc)
+         , flow "located at"
+         , pretty fp
+         ]
     <> "."
     <> blankLine
     <> flow "While migrating the database, Stack encountered the error:"
     <> blankLine
     <> string exMsg
     <> blankLine
-    <>     flow "Please report this as an issue at"
-       <+> style Url "https://github.com/commercialhaskell/stack/issues"
+    <> fillSep
+         [ flow "Please report this as an issue at"
+         , style Url "https://github.com/commercialhaskell/stack/issues"
+         ]
     <> "."
     <> blankLine
     -- See https://github.com/commercialhaskell/stack/issues/5851
@@ -50,3 +56,13 @@ instance Pretty StoragePrettyException where
       "\\\\.\\NUL: hDuplicateTo: illegal operation (handles are incompatible)"
 
 instance Exception StoragePrettyException
+
+-- | A bit of type safety to ensure we're talking to the right database.
+newtype UserStorage = UserStorage
+  { unUserStorage :: Storage
+  }
+
+-- | A bit of type safety to ensure we're talking to the right database.
+newtype ProjectStorage = ProjectStorage
+  { unProjectStorage :: Storage
+  }

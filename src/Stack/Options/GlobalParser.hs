@@ -1,44 +1,42 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE RecordWildCards   #-}
 
+-- | Functions to parse Stack's \'global\' command line arguments.
 module Stack.Options.GlobalParser
   ( globalOptsFromMonoid
   , globalOptsParser
-  , initOptsParser
   ) where
 
 import           Options.Applicative
-                   ( Parser, auto, completer, help, hidden, internal, long
-                   , metavar, option, strOption, switch, value
+                   ( Parser, ReadM, auto, completer, help, hidden, internal
+                   , long, metavar, option, strOption, value
                    )
 import           Options.Applicative.Builder.Extra
-                   ( dirCompleter, fileExtCompleter, firstBoolFlagsFalse
+                   ( fileExtCompleter, firstBoolFlagsFalse
                    , firstBoolFlagsNoDefault, firstBoolFlagsTrue, optionalFirst
-                   , textArgument
                    )
+import           Options.Applicative.Types ( readerAsk )
 import           Path.IO ( getCurrentDir, resolveDir', resolveFile' )
 import qualified Stack.Docker as Docker
-import           Stack.Init ( InitOpts (..) )
 import           Stack.Prelude
 import           Stack.Options.ConfigParser ( configOptsParser )
 import           Stack.Options.LogLevelParser ( logLevelOptsParser )
 import           Stack.Options.ResolverParser
                    ( abstractResolverOptsParser, compilerOptsParser )
 import           Stack.Options.Utils ( GlobalOptsContext (..), hideMods )
-import           Stack.Types.Config
-                   ( GlobalOpts (..), GlobalOptsMonoid (..)
-                   , LockFileBehavior (..), StackYamlLoc (..), defaultLogLevel
-                   , readLockFileBehavior, readStyles
-                   )
+import           Stack.Types.GlobalOpts ( GlobalOpts (..) )
+import           Stack.Types.GlobalOptsMonoid ( GlobalOptsMonoid (..) )
+import           Stack.Types.LockFileBehavior
+                   ( LockFileBehavior (..), readLockFileBehavior )
+import           Stack.Types.StackYamlLoc ( StackYamlLoc (..) )
 import           Stack.Types.Docker ( dockerEntrypointArgName )
 
 -- | Parser for global command-line options.
 globalOptsParser ::
      FilePath
   -> GlobalOptsContext
-  -> Maybe LogLevel
   -> Parser GlobalOptsMonoid
-globalOptsParser currentDir kind defLogLevel = GlobalOptsMonoid
+globalOptsParser currentDir kind = GlobalOptsMonoid
   <$> optionalFirst (strOption
         (  long Docker.reExecArgName
         <> hidden
@@ -49,14 +47,15 @@ globalOptsParser currentDir kind defLogLevel = GlobalOptsMonoid
         <> hidden
         <> internal
         ))
-  <*> (First <$> logLevelOptsParser hide0 defLogLevel)
+  <*> (First <$> logLevelOptsParser hide0)
   <*> firstBoolFlagsTrue
         "time-in-log"
-        "inclusion of timings in logs, for the purposes of using diff with logs"
+        "inclusion of timings in logs, for the purposes of using diff with \
+        \logs."
         hide
   <*> firstBoolFlagsFalse
         "rsl-in-log"
-        "inclusion of raw snapshot layer (rsl) in logs"
+        "inclusion of raw snapshot layer (rsl) in logs."
         hide
   <*> configOptsParser currentDir kind
   <*> optionalFirst (abstractResolverOptsParser hide0)
@@ -65,7 +64,8 @@ globalOptsParser currentDir kind defLogLevel = GlobalOptsMonoid
       -- resolver root is only set via the script command
   <*> firstBoolFlagsNoDefault
         "terminal"
-        "overriding terminal detection in the case of running in a false terminal"
+        "overriding terminal detection in the case of running in a false \
+        \terminal."
         hide
   <*> option readStyles
         (  long "stack-colors"
@@ -85,23 +85,21 @@ globalOptsParser currentDir kind defLogLevel = GlobalOptsMonoid
         (  long "terminal-width"
         <> metavar "INT"
         <> help "Specify the width of the terminal, used for pretty-print \
-                \messages"
+                \messages."
         <> hide
         ))
   <*> optionalFirst (strOption
         (  long "stack-yaml"
         <> metavar "STACK-YAML"
         <> completer (fileExtCompleter [".yaml"])
-        <> help
-             (  "Override project stack.yaml file "
-             <> "(overrides any STACK_YAML environment variable)"
-             )
+        <> help "Override project stack.yaml file (overrides any STACK_YAML \
+                \environment variable)."
         <> hide
         ))
   <*> optionalFirst (option readLockFileBehavior
         (  long "lock-file"
-        <> help "Specify how to interact with lock files. Default: read/write. \
-                \If resolver is overridden: read-only"
+        <> help "Specify how to interact with lock files. (default: if \
+                \resolver is overridden: read-only; otherwise: read/write)"
         <> hide
         ))
  where
@@ -143,34 +141,12 @@ globalOptsFromMonoid defaultTerminal GlobalOptsMonoid{..} = do
               case getFirst globalMonoidResolver of
                 Nothing -> LFBReadWrite
                 _ -> LFBReadOnly
-         in fromFirst defLFB globalMonoidLockFileBehavior
+        in  fromFirst defLFB globalMonoidLockFileBehavior
     }
 
-initOptsParser :: Parser InitOpts
-initOptsParser = InitOpts
-  <$> searchDirs
-  <*> omitPackages
-  <*> overwrite
-  <*> fmap not ignoreSubDirs
- where
-  searchDirs = many (textArgument
-    (  metavar "DIR(S)"
-    <> completer dirCompleter
-    <> help "Directory, or directories, to include in the search for .cabal \
-            \files, when initialising. The default is the current directory."
-    ))
-  ignoreSubDirs = switch
-    (  long "ignore-subdirs"
-    <> help "Do not search for .cabal files in subdirectories, when \
-            \initialising."
-    )
-  overwrite = switch
-    (  long "force"
-    <> help "Force an initialisation that overwrites any existing stack.yaml \
-            \file."
-    )
-  omitPackages = switch
-    (  long "omit-packages"
-    <> help "Exclude conflicting or incompatible user packages, when \
-            \initialising."
-    )
+-- | Default logging level should be something useful but not crazy.
+defaultLogLevel :: LogLevel
+defaultLogLevel = LevelInfo
+
+readStyles :: ReadM StylesUpdate
+readStyles = parseStylesUpdateFromString <$> readerAsk
