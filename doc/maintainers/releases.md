@@ -7,15 +7,6 @@
     Just release from the `master` branch (but keep the `stable` branch
     tracking the latest stable release plus updates to documentation).
 
-!!! todo "To do - Remove the `-static` version"
-
-    At some point (a couple of major releases after Stack 2.3.1), remove the
-    `-static` version from
-    https://github.com/commercialhaskell/stackage-content/blob/master/stack/releases.yaml.
-    People still using that will get an error, and we'll add a release note to
-    switch over to https://get.haskellstack.org/stable/linux-x86_64.tar.gz
-    instead (and note that www.stackage.org/stack is deprecated).
-
 ## Version scheme
 
 A Stack package or executable may have a version with three or four components:
@@ -67,13 +58,18 @@ Examples:
 ## Pre-release checks
 
 1.  Check for any P0 and P1 issues that should be dealt with before release.
+
 2.  Check for un-merged pull requests that should be merged before release.
+
 3.  Ensure the `release` and `stable` branches are merged to the `master`
     branch.
+
 4.  Check the copyright dates, and update if needed.
+
 5.  Ensure CI matrices in docs (travis-complex, appveyor, azure) have current
     stackage snapshots and GHC versions (e.g.
     https://github.com/commercialhaskell/stack/pull/4565/files)
+
 6.  Update the `stack-*.yaml` that uses a `nightly` snapshot to the latest
     nightly (go over the extra-deps too) and ensure the project builds and tests
     pass. For example, command:
@@ -82,7 +78,18 @@ Examples:
     stack build --stack-yaml=… --haddock --test --bench --no-run-benchmarks
     ~~~
 
-7.  Ensure the integration tests pass on Linux, macOS and Windows.
+7.  The Windows installer is built using an
+    [NSIS compiler](https://nsis.sourceforge.io/Main_Page). Check that the NSIS
+    compiler that will be used is capable of handling
+    [large strings](https://nsis.sourceforge.io/Special_Builds).
+
+8.  Ensure the integration tests pass on Linux, macOS and Windows.
+
+9.  Some people prefer, or need, to build Stack with Cabal (the tool). Check
+    that `cabal.project` is up to date (the specified `with-compiler:`). Check
+    that `cabal.config` is up to date and is not missing dependencies relevant
+    on Windows and non-Windows operating systems, following the instructions in
+    `cabal.project`.
 
 ## Release preparation
 
@@ -107,19 +114,19 @@ branch.
 
 ### C: Return to the `master` branch
 
-* `package.yaml`: bump version to the next unstable version (bump the second
-  component to the next even number, ensure the third component is `0`; e.g.
-  from `1.9.0` to `1.10.0`).
+1.  `package.yaml`: bump version to the next unstable version (bump the second
+    component to the next even number, ensure the third component is `0`; e.g.
+    from `1.9.0` to `1.10.0`).
 
     !!! attention
 
         Be sure to update also `stack.cabal` (for example by using
         `stack build --dry-run`).
 
-* `Changelog.md`:
-    * Change the title of the existing **Unreleased changes** section to what
-      will be the next final (non-RC) release (e.g. `v2.1.1`).
-    * Add new "Unreleased changes" section:
+2.  `Changelog.md`:
+    *   Change the title of the existing **Unreleased changes** section to what
+        will be the next final (non-RC) release (e.g. `v2.1.1`).
+    *   Add new "Unreleased changes" section:
 
         ~~~markdown
         ## Unreleased changes
@@ -136,6 +143,9 @@ branch.
 
         Bug fixes:
         ~~~
+
+3.  `cabal.config`: Ensure the `stack` constraint is set to the same version as
+    in the `package.yaml`.
 
 ### D: In the release candidate branch
 
@@ -176,51 +186,56 @@ Check for any platform entries that need to be added to (or removed from):
 
 ### E: For the first release candidate
 
-1. Re-do the pre-release checks (see the section above).
-2. `package.yaml`: bump to first odd patchlevel version (e.g. `X.Y.0.1`).
+1.  Re-do the pre-release checks (see the section above).
+2.  `package.yaml`: bump to first odd patchlevel version (e.g. `X.Y.0.1`).
 
     !!! attention
 
         Be sure to update also `stack.cabal` (for example by using
         `stack build --dry-run`).
 
-3. `ChangeLog.md`: Rename the “Unreleased changes” section to the same version
-   as `package.yaml`, and mark it clearly as a release candidate (e.g.
-   `vX.Y.0.1 (release candidate)`). Remove any empty sections.
-4. Follow the steps in the *Release process* section below that apply to a
-   release candidate.
+3.  `ChangeLog.md`: Rename the “Unreleased changes” section to the same version
+    as `package.yaml`, and mark it clearly as a release candidate (e.g.
+    `vX.Y.0.1 (release candidate)`). Remove any empty sections.
+4.  Ensure the `stack` constraint in `cabal.config` is set to `==X.Y.0.1`.
+5.  Follow the steps in the *Release process* section below that apply to a
+    release candidate.
 
 ### F: For any subsequent release candidates
 
-1. Re-do the pre-release checks (see the section above).
-2. `package.yaml`: bump to next odd patchlevel version (e.g. `X.Y.0.3`).
+1.  Re-do the pre-release checks (see the section above).
+2.  `package.yaml`: bump to next odd patchlevel version (e.g. `X.Y.0.3`).
 
     !!! attention
 
         Be sure to update also `stack.cabal` (for example by using
         `stack build --dry-run`).
 
-3. `ChangeLog.md`: Rename the "Unreleased changes" section to the new version,
-   clearly marked as a release candidate (e.g. `vX.Y.0.3 (release candidate)`).
-   Remove any empty sections.
-4. Follow the steps in the *Release process* section below that apply to a
-   release candidate.
+3.  `ChangeLog.md`: Rename the "Unreleased changes" section to the new version,
+    clearly marked as a release candidate (e.g. `vX.Y.0.3 (release candidate)`).
+    Remove any empty sections.
+4.  Ensure the `stack` constraint in `cabal.config` is set to the same version
+    as in `package.yaml`.
+5.  Follow the steps in the *Release process* section below that apply to a
+    release candidate.
 
 ### G: For the final release
 
-1. Re-do the pre-release checks (see the section above).
-2. `package.yaml`: bump version to odd last component and no patchlevel
-   (e.g. from `X.Y.0.2` to `X.Y.1`).
+1.  Re-do the pre-release checks (see the section above).
+2.  `package.yaml`: bump version to odd last component and no patchlevel
+    (e.g. from `X.Y.0.2` to `X.Y.1`).
 
     !!! attention
 
         Be sure to update also `stack.cabal` (for example by using
         `stack build --dry-run`).
 
-3. `ChangeLog.md`: consolidate all the release candidate changes into a single
-   section for the final release version.
-4. Follow all of the steps in the *Release process* section below that apply to
-   a final release.
+3.  `ChangeLog.md`: consolidate all the release candidate changes into a single
+    section for the final release version.
+4.  Ensure the `stack` constraint in `cabal.config` is set to the same version
+    as in `package.yaml` (e.g. to `==X.Y.1`).
+5.  Follow all of the steps in the *Release process* section below that apply to
+    a final release.
 
 ## Release process
 
@@ -265,7 +280,68 @@ final release.
 
     Publish the GitHub release.
 
-    ### D: Update versions and `ChangeLog.md` for 'unreleased'
+    ### D: Consider adding other platforms to the GitHub release
+
+    The
+    [Integration Tests workflow](https://github.com/commercialhaskell/stack/actions?query=workflow%3A%22Integration+tests%22)
+    is limited to the platforms supported by the GitHub-hosted runners
+    (currently, only x86_64) and any self-hosted runners (currently, only
+    Linux/AArch64). However, it is possible to edit the GitHub release to
+    include binary distributions for other platforms (for example,
+    macOS/AArch64). The prerequisites are:
+
+    * a computer with that platform (operating system, machine architecture);
+    * a sufficiently-recent existing version of Stack for that platform (for
+      example, GHCup has published versions of Stack for macOS/AArch64);
+    * a tool to print SHA checksums, such as `shasum` on Linux and macOS; and
+    * the GNU Privacy Guard tool (`gpg`), which has had imported the private key
+      used to sign Stack executables (see further below).
+
+    The steps are similar to those in the workflow:
+
+    1.  Change to the root directory of the Stack project.
+
+    2.  `stack etc/scripts/release.hs check`, to check before building.
+
+    3.  `stack etc/scripts/release.hs build`, to build. The output 'assets'
+        (`stack-<version>-<os>-<architecture> ...`) will be in
+        the `_release` directory in the root directory of the Stack project.
+
+    4.  For each of the output assets, create a corresponding SHA 256 file with
+        a `.sha256` extension. For example (where `<asset>` is the name of the
+        file):
+
+        ~~~text
+        shasum -a 256 <asset> > <asset>.sha256
+        ~~~
+
+    5.  For each of the output assets, create a corresponding ASCII-armored
+        signature file with an `.asc` extension using `gpg`. For example (where
+        `<asset>` is the name of the file):
+
+        ~~~text
+        gpg --digest-algo=sha512 --detach-sig --armor -u 0x575159689BEFB442 <asset>
+        ~~~
+
+    6.  Edit the GitHub release to include the output assets and their
+        corresponding `.sha256` and `.asc` files.
+
+    The private key used to sign Stack executables can be exported from a
+    version of `gpg` to which it has previously been imported with:
+
+    ~~~text
+    gpg --armor --export-secret-key 0x575159689BEFB442
+    ~~~
+
+    The private key, so obtained, can be imported into `gpg` by:
+
+    1.  Commanding `gpg --import`.
+
+    2.  Pasting the private key.
+
+    3.  Entering Ctrl+D and Enter.
+
+    ### E: Update versions and `ChangeLog.md` for 'unreleased'
 
     In the `rc/vX.Y` branch:
 
@@ -296,7 +372,7 @@ final release.
         Bug fixes:
         ~~~
 
-    ### E: Announce the release candidate
+    ### F: Announce the release candidate
 
     Announce the release candidate to the following mailing lists
 
@@ -393,7 +469,68 @@ final release.
 
     Publish the GitHub release.
 
-    ### D: Upload to Hackage and reset branches
+    ### D: Consider adding other platforms to the GitHub release
+
+    The
+    [Integration Tests workflow](https://github.com/commercialhaskell/stack/actions?query=workflow%3A%22Integration+tests%22)
+    is limited to the platforms supported by the GitHub-hosted runners
+    (currently, only x86_64) and any self-hosted runners (currently, only
+    Linux/AArch64). However, it is possible to edit the GitHub release to
+    include binary distributions for other platforms (for example,
+    macOS/AArch64). The prerequisites are:
+
+    * a computer with that platform (operating system, machine architecture);
+    * a sufficiently-recent existing version of Stack for that platform (for
+      example, GHCup has published versions of Stack for macOS/AArch64);
+    * a tool to print SHA checksums, such as `shasum` on Linux and macOS; and
+    * the GNU Privacy Guard tool (`gpg`), which has had imported the private key
+      used to sign Stack executables (see further below).
+
+    The steps are similar to those in the workflow:
+
+    1.  Change to the root directory of the Stack project.
+
+    2.  `stack etc/scripts/release.hs check`, to check before building.
+
+    3.  `stack etc/scripts/release.hs build`, to build. The output 'assets'
+        (`stack-<version>-<os>-<architecture> ...`) will be in
+        the `_release` directory in the root directory of the Stack project.
+
+    4.  For each of the output assets, create a corresponding SHA 256 file with
+        a `.sha256` extension. For example (where `<asset>` is the name of the
+        file):
+
+        ~~~text
+        shasum -a 256 <asset> > <asset>.sha256
+        ~~~
+
+    5.  For each of the output assets, create a corresponding ASCII-armored
+        signature file with an `.asc` extension using `gpg`. For example (where
+        `<asset>` is the name of the file):
+
+        ~~~text
+        gpg --digest-algo=sha512 --detach-sig --armor -u 0x575159689BEFB442 <asset>
+        ~~~
+
+    6.  Edit the GitHub release to include the output assets and their
+        corresponding `.sha256` and `.asc` files.
+
+    The private key used to sign Stack executables can be exported from a
+    version of `gpg` to which it has previously been imported with:
+
+    ~~~text
+    gpg --armor --export-secret-key 0x575159689BEFB442
+    ~~~
+
+    The private key, so obtained, can be imported into `gpg` by:
+
+    1.  Commanding `gpg --import`.
+
+    2.  Pasting the private key.
+
+    3.  Entering Ctrl+D and Enter.
+
+    ### E: Upload to Hackage and reset branches
 
     Upload the `stack` package to Hackage with the command:
 
@@ -433,14 +570,14 @@ final release.
     git push origin :rc/vX.Y
     ~~~
 
-    ### E: Activate the version on Read The Docs
+    ### F: Activate the version on Read The Docs
 
     Activate the version for new release tag, on
     [readthedocs.org](https://readthedocs.org/projects/stack/versions/).
 
     Ensure that the `stable` documentation has updated.
 
-    ### F: Update get.haskellstack.org redirects
+    ### G: Update get.haskellstack.org redirects
 
     Update the https://get.haskellstack.org redirects by updating the
     `_redirects` file in the root of the
@@ -469,7 +606,7 @@ final release.
 
     and make sure it redirects to the new version.
 
-    ### G: Update versions and `ChangeLog.md` for 'unreleased'
+    ### H: Update versions and `ChangeLog.md` for 'unreleased'
 
     In the `stable` branch:
 
@@ -500,12 +637,12 @@ final release.
         Bug fixes:
         ~~~
 
-    ### H: Update the repository's issue and pull request templates
+    ### I: Update the repository's issue and pull request templates
 
     The repository's issue and pull request templates are the `.github`
     directory. Update them to refer to the new release version (`X.Y.Z`).
 
-    ### I: Announce the release
+    ### J: Announce the release
 
     Announce the release to the following mailing lists
 
@@ -547,7 +684,7 @@ final release.
 
     * the release description from Github.
 
-    ### J: Update Docker images
+    ### K: Update Docker images
 
     Docker Hub includes Docker images under
     [`fpco/stack-build'](https://hub.docker.com/r/fpco/stack-build).

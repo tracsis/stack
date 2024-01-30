@@ -36,6 +36,7 @@ module Stack.Constants
   , minTerminalWidth
   , maxTerminalWidth
   , defaultTerminalWidth
+  , osIsMacOS
   , osIsWindows
   , relFileSetupHs
   , relFileSetupLhs
@@ -105,6 +106,7 @@ module Stack.Constants
   , relDirDotStackProgName
   , relDirUnderHome
   , relDirSrc
+  , relFileLibcMuslx86_64So1
   , relFileLibtinfoSo5
   , relFileLibtinfoSo6
   , relFileLibncurseswSo6
@@ -121,8 +123,16 @@ module Stack.Constants
   , relFileStackDotTmpDotExe
   , relFileStackDotTmp
   , ghcShowOptionsOutput
+  , ghcBootScript
+  , ghcConfigureScript
+  , ghcConfigureWindows
+  , ghcConfigureMacOS
+  , ghcConfigurePosix
+  , relDirHadrian
+  , relFileHadrianStackDotYaml
   , hadrianScriptsWindows
   , hadrianScriptsPosix
+  , libDirs
   , usrLibDirs
   , testGhcEnvRelFile
   , relFileBuildLock
@@ -143,10 +153,10 @@ import           Hpack.Config ( packageConfig )
 import qualified Language.Haskell.TH.Syntax as TH ( runIO, lift )
 import           Path ( (</>), mkRelDir, mkRelFile, parseAbsFile )
 import           Stack.Constants.StackProgName ( stackProgName )
-import           Stack.Constants.UsrLibDirs ( usrLibDirs )
+import           Stack.Constants.UsrLibDirs ( libDirs, usrLibDirs )
 import           Stack.Prelude
 import           Stack.Types.Compiler ( WhichCompiler (..) )
-import           System.Permissions ( osIsWindows )
+import           System.Permissions ( osIsMacOS, osIsWindows )
 import           System.Process ( readProcess )
 
 -- | Type representing exceptions thrown by functions exported by the
@@ -234,7 +244,7 @@ wiredInPackages = case mparsed of
     [ "ghc-prim"
       -- A magic package
     , "integer-gmp"
-      -- No longer magic > 1.0.3.0. With GHC 9.2.7 at least, there seems to be
+      -- No longer magic > 1.0.3.0. With GHC 9.4.7 at least, there seems to be
       -- no problem in using it.
     , "integer-simple"
       -- A magic package
@@ -246,16 +256,16 @@ wiredInPackages = case mparsed of
       -- A magic package
     , "dph-seq"
       -- Deprecated in favour of dph-prim-seq, which does not appear to be
-      -- magic. With GHC 9.2.7 at least, there seems to be no problem in using
+      -- magic. With GHC 9.4.7 at least, there seems to be no problem in using
       -- it.
     , "dph-par"
       --  Deprecated in favour of dph-prim-par, which does not appear to be
-      -- magic. With GHC 9.2.7 at least, there seems to be no problem in using
+      -- magic. With GHC 9.4.7 at least, there seems to be no problem in using
       -- it.
     , "ghc"
       -- A magic package
     , "interactive"
-      -- Could not identify information about this package name. With GHC 9.2.7
+      -- Could not identify information about this package name. With GHC 9.4.7
       -- at least, there seems to be no problem in using it.
     , "ghc-bignum"
       -- A magic package
@@ -547,6 +557,9 @@ relDirUnderHome = $(mkRelDir "_home")
 relDirSrc :: Path Rel Dir
 relDirSrc = $(mkRelDir "src")
 
+relFileLibcMuslx86_64So1 :: Path Rel File
+relFileLibcMuslx86_64So1 = $(mkRelFile "libc.musl-x86_64.so.1")
+
 relFileLibtinfoSo5 :: Path Rel File
 relFileLibtinfoSo5 = $(mkRelFile "libtinfo.so.5")
 
@@ -598,15 +611,48 @@ ghcShowOptionsOutput :: [String]
 ghcShowOptionsOutput =
   $(TH.runIO (readProcess "ghc" ["--show-options"] "") >>= TH.lift . lines)
 
+-- | Relative paths inside a GHC repo to the boot script.
+ghcBootScript :: Path Rel File
+ghcBootScript = $(mkRelFile "boot")
+
+-- | Relative paths inside a GHC repo to the configure script.
+ghcConfigureScript :: Path Rel File
+ghcConfigureScript = $(mkRelFile "configure")
+
+-- | Command applicable to GHC's configure script on Windows. See:
+-- https://gitlab.haskell.org/ghc/ghc/-/blob/master/hadrian/README.md
+ghcConfigureWindows :: [String]
+ghcConfigureWindows = ["sh", "configure", "--enable-tarballs-autodownload"]
+
+-- | Command applicable to GHC's configure script on macOS. See:
+-- https://gitlab.haskell.org/ghc/ghc/-/blob/master/hadrian/README.md
+ghcConfigureMacOS :: [String]
+ghcConfigureMacOS = ["./configure", "--with-intree-gmp"]
+
+-- | Command applicable to GHC's configure script on non-Windows, non-macOS.
+-- See: https://gitlab.haskell.org/ghc/ghc/-/blob/master/hadrian/README.md
+ghcConfigurePosix :: [String]
+ghcConfigurePosix = ["./configure"]
+
+relDirHadrian :: Path Rel Dir
+relDirHadrian = $(mkRelDir "hadrian")
+
+relFileHadrianStackDotYaml :: Path Rel File
+relFileHadrianStackDotYaml = relDirHadrian </> stackDotYaml
+
 -- | Relative paths inside a GHC repo to the Hadrian build batch script.
 -- The second path is maintained for compatibility with older GHC versions.
 hadrianScriptsWindows :: [Path Rel File]
-hadrianScriptsWindows = [$(mkRelFile "hadrian/build-stack.bat"), $(mkRelFile "hadrian/build.stack.bat")]
+hadrianScriptsWindows =
+  [ $(mkRelFile "hadrian/build-stack.bat")
+  , $(mkRelFile "hadrian/build.stack.bat")
+  ]
 
 -- | Relative paths inside a GHC repo to the Hadrian build shell script
 -- The second path is maintained for compatibility with older GHC versions.
 hadrianScriptsPosix :: [Path Rel File]
-hadrianScriptsPosix = [$(mkRelFile "hadrian/build-stack"), $(mkRelFile "hadrian/build.stack.sh")]
+hadrianScriptsPosix =
+  [$(mkRelFile "hadrian/build-stack"), $(mkRelFile "hadrian/build.stack.sh")]
 
 -- | Relative file path for a temporary GHC environment file for tests
 testGhcEnvRelFile :: Path Rel File

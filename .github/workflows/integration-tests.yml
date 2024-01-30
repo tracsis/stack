@@ -16,9 +16,12 @@ on:
 env:
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-# As of 5 May 2023, ubuntu-latest, windows-latest and macos-latest come
-# with Stack 2.9.3 and GHC 9.6.1. windows-latest comes with NSIS 3.08, for which
-# the default value of the 'Unicode' installer attribute is 'true'.
+# As of 21 August 2023, ubuntu-latest, windows-latest and macos-latest come
+# with Stack 2.11.1 (2.9.3 on macos-latest) and GHC 9.6.2. windows-latest comes
+# with NSIS 3.08, for which the default value of the 'Unicode' installer
+# attribute is 'true'. However, that is not the 'large strings' build of NSIS
+# and creates installers that corrupt the PATH environment variable if the
+# default string length of 1024 characters is exceeded.
 
 jobs:
   integration-tests:
@@ -62,15 +65,32 @@ jobs:
 
         if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]
         then
-          # Retry installing nix due to nondeterministic error
+          # Set up Nix for Stack's tests that require it.
+          #
+          # Install Nix via the single-user installation...
+          #
+          # Retry installing Nix due to nondeterministic error:
           #   Fatal error: glibc detected an invalid stdio handle
           # See:
           #   https://github.com/nh2/static-haskell-nix/pull/27#issuecomment-502652181
           #   https://github.com/NixOS/nix/issues/2733
           (for i in {1..5}; do bash <(curl -sSL https://nixos.org/nix/install) --no-daemon && exit 0; done; exit 1)
+          # Enter the Nix environment...
           . ~/.nix-profile/etc/profile.d/nix.sh
-          nix-channel --add https://nixos.org/channels/nixos-22.05 nixpkgs
-          nix-channel --update # Get GHC 8.2.2
+          # Add a channel named 'nixpkgs' to the list of subscribed channels...
+          nix-channel --add https://nixos.org/channels/nixos-23.05 nixpkgs
+          # Download the Nix expressions for all subscribed channels...
+          #
+          # As at 2023-08-21, nixos-23.05 provides GHC 9.2.8.
+          nix-channel --update
+          # The NIX_PATH environment variable sets a list of directories used to
+          # look up the location of Nix expressions using paths enclosed in
+          # angle brackets (e.g. <nixpkgs>). nix.sh no longer sets the NIX_PATH.
+          # If NIX_PATH is not set, Nix will fall back to
+          # $HOME/.nix-defexpr/channels, but only in impure and unrestricted
+          # evaluation mode. See https://github.com/NixOS/nixpkgs/issues/149791.
+          # Set NIX_PATH...
+          export NIX_PATH=${NIX_PATH:+$NIX_PATH:}$HOME/.nix-defexpr/channels
         fi
 
         if [[ "${{ matrix.release-args }}" == "--alpine" ]]
@@ -84,6 +104,20 @@ jobs:
             - /lib
             - /usr/lib
         EOF
+        fi
+
+        # Updates NSIS 3.08 to a 'large strings' build of the same tool. See
+        # https://nsis.sourceforge.io/Special_Builds.
+        if [[ "${{ matrix.os }}" == "windows-latest" ]]
+        then
+          # wget is not available but the Stack-supplied MSYS2 will provide it
+          stack exec -- wget -O nsis-3.08-strlen_8192.zip https://downloads.sourceforge.net/nsis/NSIS%203/3.08/nsis-3.08-strlen_8192.zip
+          7z x -aoa -o"/c/Program Files (x86)/NSIS" nsis-3.08-strlen_8192.zip
+          # Clean up
+          rm nsis-3.08-strlen_8192.zip
+          makensis -VERSION && echo
+          # Should include defined symbol NSIS_MAX_STRLEN=8192
+          makensis -HDRINFO
         fi
 
         # In case GHCup hooks have been created, remove them
@@ -124,13 +158,13 @@ jobs:
       env:
         SELF_HOSTED_RUNNERS: ${{ secrets.SELF_HOSTED_RUNNERS || (github.repository_owner == 'commercialhaskell' && 'arm64') }}
       run: |
-        echo "::set-output name=runners::$SELF_HOSTED_RUNNERS"
+        echo "runners=$SELF_HOSTED_RUNNERS" >> $GITHUB_OUTPUT
         if echo "$SELF_HOSTED_RUNNERS" | grep -q 'arm64'; then
-          echo "::set-output name=arm64::['self-hosted', 'linux', 'ARM64']"
-          echo ::set-output name=test-arm64::true
+          echo "arm64=['self-hosted', 'linux', 'ARM64']" >> $GITHUB_OUTPUT
+          echo "test-arm64=true" >> $GITHUB_OUTPUT
         else
-          echo "::set-output name=arm64::'ubuntu-latest'"
-          echo ::set-output name=test-arm64::false
+          echo "arm64='ubuntu-latest'" >> $GITHUB_OUTPUT
+          echo "test-arm64=false" >> $GITHUB_OUTPUT
         fi
 
   linux-arm64:
@@ -143,20 +177,36 @@ jobs:
       shell: bash
       run: |
         echo '::notice title=ARM64 skipped::To build ARM64, a self-hosted runner needs to be configured and the SELF_HOSTED_RUNNERS secret must contain arm64'
-
     - name: Clone project
       if: needs.configuration.outputs.test-arm64 == 'true'
       uses: actions/checkout@v3
+    - name: Install deps
+      shell: bash
+      run: |
+        set -ex
 
+        # The release.hs script depends on digest, and digest requires
+        # pkg-config. TO DO: Perhaps the self-hosted runner's software should
+        # include pkg-config.
+        sudo apt-get update
+        sudo apt-get install -y pkg-config
+
+        # As of 19 August 2023, the self-hosted runner comes with Stack 2.11.1,
+        # but it is not on the PATH. Logging the version for information.
+        /usr/local/bin/stack --version
+
+        set +ex
     - name: Build bindist
       if: needs.configuration.outputs.test-arm64 == 'true'
       shell: bash
       run: |
-        set -ex
-        docker build . -f etc/dockerfiles/arm64.Dockerfile -t stack --build-arg USERID=$(id -u) --build-arg GROUPID=$(id -g)
-        rm -rf _release
-        mkdir -p _release
-        docker run --rm -v $(pwd):/src -w /src stack bash -c "/home/stack/release build"
+        # Stack's project-level configuration (stack.yaml) specifies the
+        # multi-architecture (including Linux/Aarch64) Docker image published by
+        # Oliver Benz (@benz0li, on GitHub). That image comes with Stack 2.11.1.
+        # (Note that the online documentation for '--docker-stack-exe image'
+        # specifies that the host Stack and image Stack must have the same
+        # version number.)
+        /usr/local/bin/stack etc/scripts/release.hs build --alpine --build-args --docker-stack-exe=image
 
     - name: Upload bindist
       if: needs.configuration.outputs.test-arm64 == 'true'

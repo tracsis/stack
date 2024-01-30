@@ -12,6 +12,12 @@ module Stack.Types.ConfigMonoid
   , configMonoidSystemGHCName
   ) where
 
+import           Data.Aeson.Types ( Object, Value )
+import           Data.Aeson.WarningParser
+                   ( WarningParser, WithJSONWarnings, (..:?), (..!=)
+                   , jsonSubWarnings, jsonSubWarningsT, jsonSubWarningsTT
+                   , withObjectWarnings
+                   )
 import           Casa.Client ( CasaRepoPrefix )
 import           Control.Monad.Writer ( tell )
 import           Data.Coerce ( coerce )
@@ -22,16 +28,12 @@ import           Data.Monoid.Map ( MonoidMap (..) )
 import qualified Data.Yaml as Yaml
 import           Distribution.Version ( anyVersion )
 import           Generics.Deriving.Monoid ( mappenddefault, memptydefault )
-import           Pantry.Internal.AesonExtended
-                   ( Object, Value, WarningParser, WithJSONWarnings, (..:?)
-                   , (..!=), jsonSubWarnings, jsonSubWarningsT
-                   , jsonSubWarningsTT, withObjectWarnings
-                   )
 import           Stack.Prelude
 import           Stack.Types.AllowNewerDeps ( AllowNewerDeps )
 import           Stack.Types.ApplyGhcOptions ( ApplyGhcOptions (..) )
 import           Stack.Types.ApplyProgOptions ( ApplyProgOptions (..) )
 import           Stack.Types.BuildOpts ( BuildOptsMonoid )
+import           Stack.Types.Casa ( CasaOptsMonoid )
 import           Stack.Types.CabalConfigKey ( CabalConfigKey )
 import           Stack.Types.ColorWhen ( ColorWhen )
 import           Stack.Types.Compiler ( CompilerRepository )
@@ -166,7 +168,10 @@ data ConfigMonoid = ConfigMonoid
     -- ^ See 'configHideSourcePaths'
   , configMonoidRecommendUpgrade   :: !FirstTrue
     -- ^ See 'configRecommendUpgrade'
+  , configMonoidCasaOpts :: !CasaOptsMonoid
+    -- ^ Casa configuration options.
   , configMonoidCasaRepoPrefix     :: !(First CasaRepoPrefix)
+    -- ^ Casa repository prefix (deprecated).
   , configMonoidSnapshotLocation :: !(First Text)
     -- ^ Custom location of LTS/Nightly snapshots
   , configMonoidNoRunCompile  :: !FirstFalse
@@ -333,7 +338,8 @@ parseConfigMonoidObject rootDir obj = do
     FirstTrue <$> obj ..:? configMonoidHideSourcePathsName
   configMonoidRecommendUpgrade <-
     FirstTrue <$> obj ..:? configMonoidRecommendUpgradeName
-
+  configMonoidCasaOpts <-
+    jsonSubWarnings (obj ..:? configMonoidCasaOptsName ..!= mempty)
   configMonoidCasaRepoPrefix <-
     First <$> obj ..:? configMonoidCasaRepoPrefixName
   configMonoidSnapshotLocation <-
@@ -508,6 +514,9 @@ configMonoidHideSourcePathsName = "hide-source-paths"
 
 configMonoidRecommendUpgradeName :: Text
 configMonoidRecommendUpgradeName = "recommend-stack-upgrade"
+
+configMonoidCasaOptsName :: Text
+configMonoidCasaOptsName = "casa"
 
 configMonoidCasaRepoPrefixName :: Text
 configMonoidCasaRepoPrefixName = "casa-repo-prefix"

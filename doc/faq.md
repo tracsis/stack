@@ -9,7 +9,7 @@ here is to be as helpful and concise as possible.
 ## What version of GHC is used when I run something like `stack ghci`?
 
 The version of GHC, as well as which packages can be installed, are specified by
-the _resolver_. This may be something like `lts-20.19`, which is from
+the _resolver_. This may be something like `lts-21.13`, which is from
 [Stackage](https://www.stackage.org/). The [user's guide](GUIDE.md) discusses
 the resolver in more detail.
 
@@ -76,11 +76,11 @@ You can make tweaks to a snapshot by modifying the `extra-deps` configuration
 value in your `stack.yaml` file, e.g.:
 
 ~~~yaml
-resolver: lts-20.19
+resolver: lts-21.13
 packages:
 - .
 extra-deps:
-- text-2.0.2
+- text-2.0.2@rev:1
 ~~~
 
 ## I need to use a package (or version of a package) that is not available on Hackage, what should I do?
@@ -91,7 +91,7 @@ Add it to the
 directory where your `stack.yaml` file lives, e.g.
 
 ~~~yaml
-resolver: lts-20.19
+resolver: lts-21.13
 packages:
 - .
 extra-deps:
@@ -237,12 +237,6 @@ with the various requirements (version, architecture) that your project needs.
 
 See issue [#420](https://github.com/commercialhaskell/stack/issues/420) for a
 detailed discussion of Stack's behavior when `system-ghc` is enabled.
-
-## How do I upgrade to GHC 7.10.2 with stack?
-
-If you already have a prior version of GHC use
-`stack --resolver ghc-7.10 setup --reinstall`.
-If you don't have any GHC installed, you can skip the `--reinstall`.
 
 ## How do I get extra build tools?
 
@@ -534,14 +528,6 @@ workarounds:
     [#1161](https://github.com/commercialhaskell/stack/issues/1161#issuecomment-186690904)).
 
 ## <a name="usr-bin-ar-permission-denied"></a>Why do I get a `/usr/bin/ar: permission denied` error?
-
-If you are on OS X 10.11 ("El Capitan") or later, GHC 7.8.4 is incompatible with
-System Integrity Protection (a.k.a. "rootless") (see issue
-[#563](https://github.com/commercialhaskell/stack/issues/563)). GHC 7.10.2
-includes a fix, so this only affects users of GHC 7.8.4. If you cannot upgrade
-to GHC 7.10.2, you can work around it by
-[disabling System Integrity Protection](http://osxdaily.com/2015/10/05/disable-rootless-system-integrity-protection-mac-os-x/).
-**WARNING: Disabling SIP will severely reduce the security of your system, so only do this if absolutely necessary!**
 
 ## Why is the `--` argument separator ignored in Windows PowerShell
 

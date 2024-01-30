@@ -5,15 +5,31 @@
 In connection with considering Stack's support of the
 [Haskell Error Index](https://errors.haskell.org/) initiative, this page seeks
 to take stock of the errors that Stack itself can raise, by reference to the
-`master` branch of the Stack repository. Last updated: 2023-05-12.
+`master` branch of the Stack repository. Last updated: 2023-09-16.
 
-*   `Main.main`: catches exceptions from action `commandLineHandler`.
+*   `GHC.GHC.Utils.GhcPkg.Main.Compat`
 
-    `ExitCode`
+    ~~~haskell
+    [S-6512] = CannotParse String String String
+    [S-3384] | CannotOpenDBForModification FilePath IOException
+    [S-1430] | SingleFileDBUnsupported FilePath
+    [S-5996] | ParsePackageInfoExceptions String
+    [S-3189] | CannotFindPackage PackageArg (Maybe FilePath)
 
-    `throwIO`
+    ~~~
 
-*   `Main.main`: catches exceptions from action `run`:
+*   `Stack.main`: catches exceptions from action `commandLineHandler`.
+
+    -   `ExitCode`
+    -   `throwIO`
+
+*   `Stack.StackException`
+
+    ~~~haskell
+    [S-2186] = InvalidReExecVersion String String
+    ~~~
+
+*   `Stack.main`: catches exceptions from action `run`:
 
     -   `ExitCode` (`exitWith`)
     -   `PrettyException` (`exitFailure`)
@@ -27,12 +43,6 @@ to take stock of the errors that Stack itself can raise, by reference to the
 
         ~~~haskell
         [S-2816] = InconsistentDependenciesBug
-        ~~~
-
-    -   `Main.MainException`
-
-        ~~~haskell
-        [S-2186] = InvalidReExecVersion String String
         ~~~
 
     -   `Options.Applicative.Builder.Extra.OptionsApplicativeExtraException`
@@ -123,6 +133,10 @@ to take stock of the errors that Stack itself can raise, by reference to the
         [S-2483] | ExecutableToRunNotFound
         ~~~
 
+    -   `Stack.GhcPkg`
+
+        `[S-6716]` used in `unregisterGhcPkgIds`
+
     -   `Stack.Ghci.GhciException`
 
         ~~~haskell
@@ -142,14 +156,14 @@ to take stock of the errors that Stack itself can raise, by reference to the
     -   `Stack.Hoogle.HoogleException`
 
         ~~~haskell
-        [S-3025] = HoogleDatabaseNotFound
-        [S-9669] | HoogleOnPathNotFoundBug
+        [S-9669] = HoogleOnPathNotFoundBug
         ~~~
 
     -   `Stack.Hoogle.HooglePrettyException`
 
         ~~~haskell
         [S-1329] = HoogleNotFound StyleDoc
+        [S-3025] | HoogleDatabaseNotFound
         ~~~
 
     -   `Stack.Init.InitException`
@@ -169,10 +183,10 @@ to take stock of the errors that Stack itself can raise, by reference to the
         [S-2422] | ResolverPartial RawSnapshotLocation String
         ~~~
 
-    -   `Stack.List.ListException`
+    -   `Stack.List.ListPrettyException`
 
         ~~~haskell
-        [S-4926] = CouldNotParsePackageSelectors [String]
+        [S-4926] = CouldNotParsePackageSelectors [StyleDoc]
         ~~~
 
     -   `Stack.Lock.LockPrettyException`
@@ -230,7 +244,7 @@ to take stock of the errors that Stack itself can raise, by reference to the
         [S-5107] | DockerWithinNixInvalid
         ~~~
 
-    -   `Stack.SDist.SDistException`
+    -   `Stack.SDist.SDistPrettyException`
 
         ~~~haskell
         [S-6439] = CheckException (NonEmpty PackageCheck)
@@ -287,6 +301,7 @@ to take stock of the errors that Stack itself can raise, by reference to the
         [S-5219] | GHCInfoMissingTargetPlatform
         [S-8299] | GHCInfoTargetPlatformInvalid String
         [S-2574] | CabalNotFound (Path Abs File)
+        [S-8488] | GhcBootScriptNotFound
         [S-1128] | HadrianScriptNotFound
         [S-1906] | URLInvalid String
         [S-1648] | UnknownArchiveExtension String

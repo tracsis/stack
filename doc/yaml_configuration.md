@@ -13,7 +13,9 @@ Stack's YAML configuration options break down into
 configured at the project-level or globally.
 
 The **project-level** configuration file (`stack.yaml`) contains
-project-specific options and may contain non-project-specific options.
+project-specific options and may contain non-project-specific options. However,
+non-project-specific options in the project-level configuration file in the
+`global-project` directory (see below) are ignored by Stack.
 
 Stack obtains project-level configuration from one of the following (in order of
 preference):
@@ -96,10 +98,10 @@ installation, and various settings like build flags. It is called a resolver
 since a snapshot states how dependencies are resolved. There are currently
 four resolver types:
 
-* LTS Haskell snapshots, e.g. `resolver: lts-20.19`
-* Stackage Nightly snapshots, e.g. `resolver: nightly-2023-05-05`
+* LTS Haskell snapshots, e.g. `resolver: lts-21.13`
+* Stackage Nightly snapshots, e.g. `resolver: nightly-2023-09-24`
 * No snapshot, just use packages shipped with the compiler. For GHC this looks
-  like `resolver: ghc-9.6.1`
+  like `resolver: ghc-9.6.2`
 * Custom snapshot, via a URL or relative file path. For further information, see
   the [Pantry](pantry.md) documentation.
 
@@ -301,8 +303,10 @@ TODO: Add a simple example of how to use custom preprocessors.
 
 ## Non-project-specific configuration
 
-Non-project configuration options are valid in a project-level configuration
-file (`stack.yaml`) or in global configuration files (`config.yaml`). The
+Non-project configuration options can be included in a project-level
+configuration file (`stack.yaml`) or in global configuration files
+(`config.yaml`). However, non-project-specific options in the project-level
+configuration file in the `global-project` directory are ignored by Stack. The
 options below are listed in alphabetic order.
 
 ### allow-different-user
@@ -426,16 +430,15 @@ build:
   prefetch: false
   keep-going: false
   keep-tmp-files: false
-
   # NOTE: global usage of haddock can cause build failures when documentation is
   # incorrectly formatted.  This could also affect scripts which use Stack.
   haddock: false
   haddock-arguments:
-    haddock-args: []      # Additional arguments passed to haddock, --haddock-arguments
+    haddock-args: [] # Additional arguments passed to haddock, --haddock-arguments
     # haddock-args:
     # - "--css=/home/user/my-css"
-  open-haddocks: false    # --open
-  haddock-deps: false     # if unspecified, defaults to true if haddock is set
+  open-haddocks: false # --open
+  haddock-deps: false # if unspecified, defaults to true if haddock is set
   haddock-internal: false
 
   # These are inadvisable to use in your global configuration, as they make the
@@ -460,8 +463,9 @@ build:
 
   # Since 1.8. Starting with 2.0, the default is true
   interleaved-output: true
-
-  # Since 1.10
+  # Since 2.13.1. Available options are none, count-only, capped and full.
+  progress-bar: capped
+  # Since 1.10.
   ddump-dir: ""
 ~~~
 
@@ -474,17 +478,39 @@ of the same name. For further information, see the
 [`stack build` command](build_command.md) documentation and the
 [users guide](GUIDE.md#the-build-command).
 
+### casa
+
+[:octicons-tag-24: 2.13.1](https://github.com/commercialhaskell/stack/releases/tag/v2.13.1)
+
+Default:
+
+~~~yaml
+casa:
+  enable: true # Use a Casa server?
+  repo-prefix: https://casa.fpcomplete.com # Unless casa-repo-prefix is set.
+  max-keys-per-request: 1280 # Maximum number of keys per request.
+~~~
+
+This option specifies whether or not Stack should use a Casa
+(content-addressable storage archive) server to cache Cabal files and all other
+files in packages; and, if so, the prefix for the URL used to pull information
+from the server and the maximum number of keys per request. For further
+information, see this blog post about
+[Casa and Stack](https://www.fpcomplete.com/blog/casa-and-stack/).
+
+`repo-prefix` replaces [`casa-repo-prefix`](#casa-repo-prefix) (which is
+deprecated) and has precedence if both keys are set.
+
 ### casa-repo-prefix
 
 [:octicons-tag-24: 2.3.1](https://github.com/commercialhaskell/stack/releases/tag/v2.3.1)
 
+Deprecated in favour of [`casa`](#casa), which takes precedence if present.
+
 Default: `https://casa.fpcomplete.com`
 
 This option specifies the prefix for the URL used to pull information from the
-Casa (content-addressable storage archive) server that is used by Stack to cache
-Cabal files and all other files in packages. For further information, see this
-blog post about
-[Casa and Stack](https://www.fpcomplete.com/blog/casa-and-stack/).
+Casa server.
 
 ### color
 
@@ -506,12 +532,12 @@ Command line equivalent (takes precedence): `--compiler` option
 
 Overrides the compiler version in the resolver. Note that the `compiler-check`
 flag also applies to the version numbers. This uses the same syntax as compiler
-resolvers like `ghc-9.6.1`. This can be used to override the
+resolvers like `ghc-9.6.2`. This can be used to override the
 compiler for a Stackage snapshot, like this:
 
 ~~~yaml
-resolver: lts-20.19
-compiler: ghc-9.6.1
+resolver: lts-21.13
+compiler: ghc-9.6.2
 compiler-check: match-exact
 ~~~
 
@@ -521,12 +547,13 @@ compiler-check: match-exact
 
 [:octicons-tag-24: 2.1.1](https://github.com/commercialhaskell/stack/releases/tag/v2.1.1)
 
-Stack supports building the GHC compiler from source. The version to build and
-to use is defined by a a Git commit ID and an Hadrian "flavour" (Hadrian is the
-build system of GHC) with the following syntax:
+Stack supports building the GHC compiler from source, using
+[Hadrian](https://gitlab.haskell.org/ghc/ghc/blob/master/hadrian/README.md) (the
+build system for GHC). The GHC version to build and to use is defined by a a Git
+commit ID and a Hadrian "flavour", with the following syntax:
 
 ~~~yaml
-compiler: ghc-git-COMMIT-FLAVOUR
+compiler: ghc-git-<commit_id>-<Hadrian_flavour>
 ~~~
 
 In the following example the commit ID is "5be7ad..." and the flavour is
@@ -536,8 +563,8 @@ In the following example the commit ID is "5be7ad..." and the flavour is
 compiler: ghc-git-5be7ad7861c8d39f60b7101fd8d8e816ff50353a-quick
 ~~~
 
-By default the code is retrieved from the main GHC repository. If you want to
-select another repository, set the "compiler-repository" option:
+By default, the code is retrieved from the main GHC repository. If you want to
+select another repository, use the `compiler-repository` option:
 
 ~~~yaml
 compiler-repository: git://my/ghc/repository
@@ -545,12 +572,100 @@ compiler-repository: git://my/ghc/repository
 # compiler-repository: https://gitlab.haskell.org/ghc/ghc.git
 ~~~
 
-Note that Stack doesn't check the compiler version when it uses a compiler built
-from source. Moreover it is assumed that the built compiler is recent enough as
-Stack doesn't enable any known workaround to make older compilers work.
+Stack does not check the compiler version when it uses a compiler built from
+source. It is assumed that the built compiler is recent enough as Stack doesn't
+enable any known workaround to make older compilers work.
 
-Building the compiler can take a very long time (more than one hour). Hint: for
-faster build times, use Hadrian flavours that disable documentation generation.
+Building the compiler can take a very long time (more than one hour). For faster
+build times, use Hadrian flavours that disable documentation generation.
+
+#### Bootstrap compiler
+
+Building GHC from source requires a working GHC (known as the bootstrap
+compiler). As we use a Stack based version of Hadrian (`hadrian/build-stack` in
+GHC sources), the bootstrap compiler is configured into `hadrian/stack.yaml` and
+fully managed by Stack.
+
+!!! note
+
+    For some commit IDs, the resolver specified in `hadrian/stack.yaml`
+    specifies a version of GHC that cannot be used to build GHC. This results in
+    GHC's `configure` script reporting messages similar to the following before
+    aborting:
+
+    ~~~text
+    checking version of ghc... 9.0.2
+    configure: error: GHC version 9.2 or later is required to compile GHC.
+    ~~~
+
+    The resolution is: (1) to specify an alternative resolver (one that
+    specifies a sufficiently recent version of GHC) on the command line, using
+    Stack's option `--resolver <resolver>`. Stack will use that resolver when
+    running GHC's `configure` script; and (2) to set the contents of the `STACK`
+    environment variable to be `stack --resolver <resolver>`. Hadrian's
+    `build-stack` script wil refer to that environment variable for the Stack
+    command it uses.
+
+#### Hadrian prerequisites
+
+The Hadrian build system has certain
+[prerequisites](https://gitlab.haskell.org/ghc/ghc/-/wikis/building/preparation).
+It requires certain versions of the `happy` and `alex` executables on the PATH.
+Stack will build and install `happy` and `alex`, if not already on the PATH.
+
+=== "macOS"
+
+    Hadrian requires, or case use, certain tools or Python packages that do not
+    come with macOS by default and that need to be installed using `brew` or
+    `pip3` (Python). Hadrian's LaTeX documentation also requires the
+    [DejaVu fonts](https://dejavu-fonts.github.io/) to be installed.
+
+    ~~~zsh
+    brew install python@3.11
+    # GHC uses a Python script named `boot`.
+    brew install automake
+    # Tool for generating GNU Standards-compliant Makefiles.
+    brew install texinfo
+    # Official documentation format of the GNU project.
+    pip3 install -U sphinx
+    # Sphinx is the Python documentation generator.
+    brew install --cask mactex
+    # MacTeX: Full TeX Live distribution with GUI applications
+    ~~~
+
+=== "Windows"
+
+    Hadrian requires, or can use, certain MSYS2 or Python packages that do not
+    come with the Stack-supplied MSYS2 by default and need to be installed
+    using `pacman` (MSYS2) or `pip` (Python). Hadrian's LaTeX documentation also
+    requires the [DejaVu fonts](https://dejavu-fonts.github.io/) to be
+    installed.
+
+    ~~~pwsh
+    stack exec -- pacman --sync --refresh
+    # Synchronize MSYS2 package databases
+    stack exec -- pacman --sync mingw-w64-x86_64-python-pip
+    # The PyPA recommended tool (pip) for installing Python packages. Also
+    # installs Python as a dependency. GHC uses a Python script named `boot`.
+    # The package must be the one from the `mingw64` MSYS2 repository, as Python
+    # from the `msys` repository cannot interpret Windows file paths correctly.
+    stack exec -- pacman --sync mingw-w64-x86_64-autotools
+    # The GNU autotools build system, including `autoreconf`, `aclocal`
+    # and `make`. GHC uses a sh script named `configure` which is itself created
+    # from a file named `configure.ac`.
+    stack exec -- pacman --sync patch
+    # A utility to apply patch files to original sources.
+    stack exec -- pacman --sync texinfo
+    # Utilities to work with and produce manuals, ASCII text, and on-line
+    # documentation from a single source file, including `makeinfo`.
+    stack exec -- pacman --sync mingw-w64-x86_64-ca-certificates
+    # Common CA (certificate authority) certificates.
+    stack exec -- pip install -U sphinx
+    # Sphinx is the Python documentation generator.
+    ~~~
+
+    Hadrian may require certain LaTeX packages and may prompt for these to be
+    installed duing the build process.
 
 #### Global packages
 
@@ -582,13 +697,6 @@ extra-deps:
     - libraries/Cabal/Cabal
     - libraries/...
 ~~~
-
-#### Bootstrapping compiler
-
-Building GHC from source requires a working GHC (known as the bootstrap
-compiler). As we use a Stack based version of Hadrian (`hadrian/build-stack` in
-GHC sources), the bootstrap compiler is configured into `hadrian/stack.yaml` and
-fully managed by Stack.
 
 ### compiler-check
 
@@ -683,21 +791,31 @@ Command line equivalent (takes precedence): `--[no-]dump-logs` flag
 
 In the case of *non-interleaved* output and *more than one* target package,
 Stack sends the build output from GHC for each target package to a log file,
-unless an error occurs. For further information, see the
-[`stack build --[no-]interleaved-output` flag](build_command.md#the-stack-build---no-interleaved-output-flag)
+unless an error occurs that prevents that. For further information, see the
+[`stack build --[no-]interleaved-output` flag](build_command.md#-no-interleaved-output-flag)
 documentation.
 
 The value of the `dump-logs` key controls what, if any, log file content is sent
-('dumped') to the console at the end of the build. Possible values are:
+('dumped') to the standard error stream of the console at the end of the build.
+Possible values are:
 
 ~~~yaml
-dump-logs: none      # don't dump the content of any log files
-dump-logs: warning   # dump the content of log files that are warnings
-dump-logs: all       # dump all of the content of log files
+dump-logs: none    # don't dump the content of any log files
+dump-logs: warning # dump the content of any log files that include GHC warnings
+dump-logs: all     # dump the content of all log files
 ~~~
 
 At the command line, `--no-dump-logs` is equivalent to `dump-logs: none` and
 `--dump-logs` is equivalent to `dump-logs: all`.
+
+If GHC reports an error during the build and a log file is created, that build
+output will be included in the log file. Stack will also report errors during
+building to the standard error stream. That stream can be piped to a file. For
+example, for a file named `stderr.log`:
+
+~~~text
+stack --no-dump-logs --color always build --no-interleaved-output 2> stderr.log
+~~~
 
 ### extra-include-dirs
 
@@ -906,16 +1024,22 @@ Whether or not to automatically install GHC when necessary.
 
 ### jobs
 
-Default: the number of processors reported by your CPU.
+Default: the number of CPUs (cores) that the machine has.
 
-Command line equivalent (takes precedence): `-j`, `--jobs` option
+Command line equivalent (takes precedence):
+[`-j`, `--jobs` option](global_flags.md#-jobs-or-j-option)
 
-Specifies how many build tasks should be run in parallel. One usage for this
-might be to avoid running out of memory by setting it to 1, like this:
+Specifies the number of concurrent jobs (principally, Stack actions during
+building - see further below) to run.
 
-~~~yaml
-jobs: 1
-~~~
+When [building GHC from source](#building-ghc-from-source), specifies the
+`-j[<n>]` flag of GHC's Hadrian build system.
+
+In some circumstances, the default can cause some machines to run out of memory
+during building. If those circumstances arise, specify `jobs: 1`.
+
+This configuration option is distinct from GHC's own `-j[<n>]` flag, which
+relates to parallel compilation of modules within a package.
 
 ### local-bin-path
 
@@ -1119,13 +1243,14 @@ bounds.
 #### Basic use
 
 Values are `none` (unchanged), `upper` (add upper bounds), `lower` (add
-lower bounds), and both (and upper and lower bounds). The algorithm it follows
-is:
+lower bounds), and both (and upper and lower bounds). The algorithm Stack
+follows is:
 
-* If an upper or lower bound already exists on a dependency, it's left alone
-* When adding a lower bound, we look at the current version specified by
-  `stack.yaml`, and set it as the lower bound (e.g., `foo >= 1.2.3`)
-* When adding an upper bound, we require less than the next major version
+* If an upper or lower bound (other than `>= 0` - 'any version') already exists
+  on a dependency, it is left alone
+* When adding a lower bound, Stack looks at the current version specified by
+  `stack.yaml`, and sets it as the lower bound (e.g., `foo >= 1.2.3`)
+* When adding an upper bound, Stack sets it as less than the next major version
   (e.g., `foo < 1.3`)
 
 ~~~yaml
@@ -1153,12 +1278,10 @@ issues for Stackage maintenance.
 
 [:octicons-tag-24: 2.1.1](https://github.com/commercialhaskell/stack/releases/tag/v2.1.1)
 
+Default: `true`
+
 When Stack notices that a new version of Stack is available, should it notify
 the user?
-
-~~~yaml
-recommend-stack-upgrade: true
-~~~
 
 ### rebuild-ghc-options
 
@@ -1166,16 +1289,15 @@ recommend-stack-upgrade: true
 
 Default: `false`
 
-Should we rebuild a package when its GHC options change? Before Stack 0.1.6,
-this was a non-configurable `true`. However, in most cases, the flag is used to
-affect optimization levels and warning behavior, for which GHC itself doesn't
-actually recompile the modules anyway. Therefore, the new behavior is to not
-recompile on an options change, but this behavior can be changed back with the
-following:
+Should Stack rebuild a package when its GHC options change?
 
-~~~yaml
-rebuild-ghc-options: true
-~~~
+The default value reflects that, in most cases, GHC options are used to affect
+optimization levels and warning behavior, for which GHC does not recompile the
+modules.
+
+!!! note
+
+    Before Stack 0.1.6.0, Stack rebuilt a package when its GHC options changed.
 
 ### require-stack-version
 
@@ -1241,7 +1363,7 @@ setup-info:
 
 'Platforms' are pairs of an operating system and a machine architecture (for
 example, 32-bit i386 or 64-bit x86-64) (represented by the
-`Cabal.Distribution.Systems.Platform` type). Stack currently (version 2.11.1)
+`Cabal.Distribution.Systems.Platform` type). Stack currently (version 2.13.1)
 supports the following pairs in the format of the `setup-info` key:
 
 |Operating system|I386 arch|X86_64 arch|Other machine architectures                                 |

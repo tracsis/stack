@@ -1,0 +1,8 @@
+name: foo
+version: 0
+dependencies:
+- base
+
+executables:
+  ShowUnicode:
+    main: ShowUnicode.hs

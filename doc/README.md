@@ -93,13 +93,7 @@ Windows.
         M2 chip. These chips use an architecture known as ARM64 or AArch64.
 
         For Mac computers with Apple silicon, the easiest way to install Stack
-        directly (rather than use GHCup) is to obtain the 'unofficial'
-        `osx-aarch64` binary distribution released by the GHCup developers and
-        copy it to a location on the PATH. `*.tar.gz` archive files containing
-        those binary distributions are available at the directories here:
-        [:material-cloud-download-outline:](https://downloads.haskell.org/ghcup/unofficial-bindists/stack/).
-
-        It is still possible to use the commands:
+        directly (rather than use GHCup) is to command:
 
         ~~~text
         curl -sSL https://get.haskellstack.org/ | sh
@@ -111,25 +105,27 @@ Windows.
         wget -qO- https://get.haskellstack.org/ | sh
         ~~~
 
-        However, those commands will download and install the version of Stack
-        for Intel-based Mac computers. Mac computers with Apple silicon will
-        use Apple's
-        [Rosetta 2 application](https://support.apple.com/en-gb/HT211861) to
-        use that version of Stack.
+        !!! note
 
-        Apple's Terminal application will not detect automatically that Rosetta
-        has not yet been installed. Rosetta can be manually installed by
-        commanding:
-
-        ~~~text
-        softwareupdate --install-rosetta
-        ~~~
+            The script at [get.haskellstack.org](https://get.haskellstack.org/)
+            will ask for root access using `sudo`. It needs such access in order
+            to use your platform's package manager to install dependencies and
+            to install to `/usr/local/bin`. If you prefer more control, follow
+            the manual installation instructions in the
+            [install and upgrade guide](install_and_upgrade.md).
 
 === "Windows"
 
     On 64-bit Windows, the easiest way to install Stack directly (rather than
     use GHCup) is to download and install the
     [Windows installer](https://get.haskellstack.org/stable/windows-x86_64-installer.exe).
+
+    !!! warning
+
+        The Windows installer for Stack 2.9.1, 2.9.3 and 2.11.1 (current) (only)
+        will replace the user `PATH` environment variable (rather than append to
+        it) if a 1024 character limit is exceeded. If the content of your
+        existing user `PATH` is long, preserve it before running the installer.
 
     !!! note
 
