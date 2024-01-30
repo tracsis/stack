@@ -29,6 +29,9 @@ import           Conduit
 import           Control.Applicative ( empty )
 import           Crypto.Hash ( SHA1 (..), SHA256 (..) )
 import qualified Data.Aeson.KeyMap as KeyMap
+import           Data.Aeson.Types ( Value (..) )
+import           Data.Aeson.WarningParser
+                   ( WithJSONWarnings (..), logJSONWarnings )
 import qualified Data.Attoparsec.Text as P
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Lazy as LBS
@@ -40,6 +43,7 @@ import           Data.Conduit.Process.Typed ( createSource )
 import           Data.Conduit.Zlib ( ungzip )
 import           Data.List.Split ( splitOn )
 import qualified Data.Map as Map
+import           Data.Maybe ( fromJust )
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
@@ -61,16 +65,19 @@ import           Network.HTTP.StackClient
                    , verifiedDownloadWithProgress, withResponse
                    )
 import           Network.HTTP.Simple ( getResponseHeader )
-import           Pantry.Internal.AesonExtended
-                   ( Value (..), WithJSONWarnings (..), logJSONWarnings )
 import           Path
-                   ( (</>), addExtension, dirname, filename, parent, parseAbsDir
-                   , parseAbsFile, parseRelDir, parseRelFile, toFilePath
+                   ( (</>), addExtension, filename, fromAbsDir, parent
+                   , parseAbsDir, parseAbsFile, parseRelDir, parseRelFile
+                   , toFilePath
                    )
 import           Path.CheckInstall ( warnInstallSearchPathIssues )
 import           Path.Extended ( fileExtension )
 import           Path.Extra ( toFilePathNoTrailingSep )
-import           Path.IO hiding ( findExecutable, withSystemTempDir )
+import           Path.IO
+                   ( canonicalizePath, doesFileExist, ensureDir, executable
+                   , getPermissions, ignoringAbsence, listDir, removeDirRecur
+                   , renameDir, renameFile, resolveFile', withTempDir
+                   )
 import           RIO.List
                    ( headMaybe, intercalate, intersperse, isPrefixOf
                    , maximumByMaybe, sort, sortOn, stripPrefix )
@@ -78,18 +85,21 @@ import           RIO.Process
                    ( EnvVars, HasProcessContext (..), ProcessContext
                    , augmentPath, augmentPathMap, doesExecutableExist, envVarsL
                    , exeSearchPathL, getStdout, mkProcessContext, modifyEnvVars
-                   , proc, readProcess_, readProcessStdout, readProcessStdout_
-                   , runProcess, runProcess_, setStdout, waitExitCode
-                   , withModifyEnvVars, withProcessWait, withWorkingDir
-                   , workingDirL
+                   , proc, readProcess_, readProcessStdout, runProcess
+                   , runProcess_, setStdout, waitExitCode, withModifyEnvVars
+                   , withProcessWait, withWorkingDir, workingDirL
                    )
 import           Stack.Build.Haddock ( shouldHaddockDeps )
 import           Stack.Build.Source ( hashSourceMapData, loadSourceMap )
 import           Stack.Build.Target ( NeedTargets (..), parseTargets )
+import           Stack.Config.ConfigureScript ( ensureConfigureScript )
 import           Stack.Constants
-                   ( cabalPackageName, hadrianScriptsPosix
-                   , hadrianScriptsWindows, relDirBin, relDirUsr, relFile7zdll
-                   , relFile7zexe, relFileConfigure, relFileLibgmpSo10
+                   ( cabalPackageName, ghcBootScript,ghcConfigureMacOS
+                   , ghcConfigurePosix, ghcConfigureWindows, hadrianScriptsPosix
+                   , hadrianScriptsWindows, libDirs, osIsMacOS, osIsWindows
+                   , relDirBin, relDirUsr, relFile7zdll, relFile7zexe
+                   , relFileConfigure, relFileHadrianStackDotYaml
+                   , relFileLibcMuslx86_64So1, relFileLibgmpSo10
                    , relFileLibgmpSo3, relFileLibncurseswSo6, relFileLibtinfoSo5
                    , relFileLibtinfoSo6, relFileMainHs, relFileStack
                    , relFileStackDotExe, relFileStackDotTmp
@@ -138,6 +148,7 @@ import           Stack.Types.EnvConfig
                    )
 import           Stack.Types.EnvSettings ( EnvSettings (..), minimalEnvSettings )
 import           Stack.Types.ExtraDirs ( ExtraDirs (..) )
+import           Stack.Types.FileDigestCache ( newFileDigestCache )
 import           Stack.Types.GHCDownloadInfo ( GHCDownloadInfo (..) )
 import           Stack.Types.GHCVariant
                    ( GHCVariant (..), HasGHCVariant (..), ghcVariantName
@@ -156,9 +167,9 @@ import           Stack.Types.VersionedDownloadInfo
 import qualified System.Directory as D
 import           System.Environment ( getExecutablePath, lookupEnv )
 import           System.IO.Error ( isPermissionError )
-import           System.FilePath ( searchPathSeparator )
+import           System.FilePath ( searchPathSeparator, takeDrive )
 import qualified System.FilePath as FP
-import           System.Permissions ( osIsWindows, setFileExecutable )
+import           System.Permissions ( setFileExecutable )
 import           System.Uname ( getRelease )
 
 -- | Type representing exceptions thrown by functions exported by the
@@ -209,6 +220,7 @@ data SetupPrettyException
   | GHCInfoMissingTargetPlatform
   | GHCInfoTargetPlatformInvalid !String
   | CabalNotFound !(Path Abs File)
+  | GhcBootScriptNotFound
   | HadrianScriptNotFound
   | URLInvalid !String
   | UnknownArchiveExtension !String
@@ -432,6 +444,10 @@ instance Pretty SetupPrettyException where
          [ flow "Cabal library not found in global package database for"
          , pretty compiler <> "."
          ]
+  pretty GhcBootScriptNotFound =
+    "[S-8488]"
+    <> line
+    <> flow "No GHC boot script found."
   pretty HadrianScriptNotFound =
     "[S-1128]"
     <> line
@@ -653,9 +669,12 @@ setupEnv needTargets boptsCLI mResolveMissingGHC = do
     sourceMapHash <- hashSourceMapData boptsCLI sourceMap
     pure (sourceMap, sourceMapHash)
 
+  fileDigestCache <- newFileDigestCache
+
   let envConfig0 = EnvConfig
         { envConfigBuildConfig = bc
         , envConfigBuildOptsCLI = boptsCLI
+        , envConfigFileDigestCache = fileDigestCache
         , envConfigSourceMap = sourceMap
         , envConfigSourceMapHash = sourceMapHash
         , envConfigCompilerPaths = compilerPaths
@@ -767,6 +786,7 @@ setupEnv needTargets boptsCLI mResolveMissingGHC = do
             }
         }
     , envConfigBuildOptsCLI = boptsCLI
+    , envConfigFileDigestCache = fileDigestCache
     , envConfigSourceMap = sourceMap
     , envConfigSourceMapHash = sourceMapHash
     , envConfigCompilerPaths = compilerPaths
@@ -833,6 +853,71 @@ runWithGHC pc cp inner = do
           set processContextL pc env
   runRIO envg inner
 
+-- | A modified environment which we know has MSYS2 on the PATH.
+newtype WithMSYS env = WithMSYS env
+
+insideMSYSL :: Lens' (WithMSYS env) env
+insideMSYSL = lens (\(WithMSYS x) -> x) (\(WithMSYS _) -> WithMSYS)
+
+instance HasLogFunc env => HasLogFunc (WithMSYS env) where
+  logFuncL = insideMSYSL.logFuncL
+
+instance HasRunner env => HasRunner (WithMSYS env) where
+  runnerL = insideMSYSL.runnerL
+
+instance HasProcessContext env => HasProcessContext (WithMSYS env) where
+  processContextL = insideMSYSL.processContextL
+
+instance HasStylesUpdate env => HasStylesUpdate (WithMSYS env) where
+  stylesUpdateL = insideMSYSL.stylesUpdateL
+
+instance HasTerm env => HasTerm (WithMSYS env) where
+  useColorL = insideMSYSL.useColorL
+  termWidthL = insideMSYSL.termWidthL
+
+instance HasPantryConfig env => HasPantryConfig (WithMSYS env) where
+  pantryConfigL = insideMSYSL.pantryConfigL
+
+instance HasConfig env => HasPlatform (WithMSYS env) where
+  platformL = configL.platformL
+  {-# INLINE platformL #-}
+  platformVariantL = configL.platformVariantL
+  {-# INLINE platformVariantL #-}
+
+instance HasConfig env => HasGHCVariant (WithMSYS env) where
+  ghcVariantL = configL.ghcVariantL
+  {-# INLINE ghcVariantL #-}
+
+instance HasConfig env => HasConfig (WithMSYS env) where
+  configL = insideMSYSL.configL
+
+instance HasBuildConfig env => HasBuildConfig (WithMSYS env) where
+  buildConfigL = insideMSYSL.buildConfigL
+
+-- | Set up a modified environment which includes the modified PATH that MSYS2
+-- can be found on.
+runWithMSYS ::
+     HasConfig env
+  => Maybe ExtraDirs
+  -> RIO (WithMSYS env) a
+  -> RIO env a
+runWithMSYS mmsysPaths inner = do
+  env <- ask
+  pc0 <- view processContextL
+  pc <- case mmsysPaths of
+    Nothing -> pure pc0
+    Just msysPaths -> do
+      envars <- either throwM pure $
+        augmentPathMap
+          (map toFilePath $ edBins msysPaths)
+          (view envVarsL pc0)
+      mkProcessContext envars
+  let envMsys
+        = WithMSYS $
+          set envOverrideSettingsL (\_ -> pure pc) $
+          set processContextL pc env
+  runRIO envMsys inner
+
 -- | special helper for GHCJS which needs an updated source map
 -- only project dependencies should get included otherwise source map hash will
 -- get changed and EnvConfig will become inconsistent
@@ -894,16 +979,16 @@ ensureCompilerAndMsys ::
 ensureCompilerAndMsys sopts = do
   getSetupInfo' <- memoizeRef getSetupInfo
   mmsys2Tool <- ensureMsys sopts getSetupInfo'
-  msysPaths <- maybe (pure Nothing) (fmap Just . extraDirs) mmsys2Tool
-
+  mmsysPaths <- maybe (pure Nothing) (fmap Just . extraDirs) mmsys2Tool
   actual <- either throwIO pure $ wantedToActual $ soptsWantedCompiler sopts
   didWarn <- warnUnsupportedCompiler $ getGhcVersion actual
-
-  (cp, ghcPaths) <- ensureCompiler sopts getSetupInfo'
+  -- Modify the initial environment to include the MSYS2 path, if MSYS2 is being
+  -- used
+  (cp, ghcPaths) <- runWithMSYS mmsysPaths $ ensureCompiler sopts getSetupInfo'
 
   warnUnsupportedCompilerCabal cp didWarn
 
-  let paths = maybe ghcPaths (ghcPaths <>) msysPaths
+  let paths = maybe ghcPaths (ghcPaths <>) mmsysPaths
   pure (cp, paths)
 
 -- | See <https://github.com/commercialhaskell/stack/issues/4246>
@@ -921,9 +1006,9 @@ warnUnsupportedCompiler ghcVersion =
           , style Url "https://github.com/commercialhaskell/stack/issues/648" <> "."
           ]
         pure True
-    | ghcVersion >= mkVersion [9, 5] -> do
+    | ghcVersion >= mkVersion [9, 7] -> do
         prettyWarnL
-          [ flow "Stack has not been tested with GHC versions above 9.6, and \
+          [ flow "Stack has not been tested with GHC versions 9.8 and above, and \
                  \using"
           , fromString (versionString ghcVersion) <> ","
           , flow "this may fail."
@@ -945,19 +1030,19 @@ warnUnsupportedCompilerCabal cp didWarn = do
   let cabalVersion = cpCabalVersion cp
 
   if
-    | cabalVersion < mkVersion [1, 19, 2] -> do
+    | cabalVersion < mkVersion [1, 24, 0] -> do
         prettyWarnL
-          [ flow "Stack no longer supports Cabal versions below 1.19.2, but \
+          [ flow "Stack no longer supports Cabal versions below 1.24.0.0, but \
                  \version"
           , fromString (versionString cabalVersion)
           , flow "was found. This invocation will most likely fail. To fix \
                  \this, either use an older version of Stack or a newer \
-                 \resolver. Acceptable resolvers: lts-3.0/nightly-2015-05-05 \
+                 \resolver. Acceptable resolvers: lts-7.0/nightly-2016-05-26 \
                  \or later."
           ]
-    | cabalVersion >= mkVersion [3, 9] ->
+    | cabalVersion >= mkVersion [3, 11] ->
         prettyWarnL
-          [ flow "Stack has not been tested with Cabal versions above 3.10, \
+          [ flow "Stack has not been tested with Cabal versions 3.12 and above, \
                  \but version"
           , fromString (versionString cabalVersion)
           , flow "was found, this may fail."
@@ -1067,12 +1152,12 @@ installGhcBindist sopts getSetupInfo' installed = do
             (soptsStackYaml sopts)
             suggestion
 
--- | Ensure compiler is installed, without worrying about msys
+-- | Ensure compiler is installed.
 ensureCompiler ::
      forall env. (HasConfig env, HasBuildConfig env, HasGHCVariant env)
   => SetupOpts
   -> Memoized SetupInfo
-  -> RIO env (CompilerPaths, ExtraDirs)
+  -> RIO (WithMSYS env) (CompilerPaths, ExtraDirs)
 ensureCompiler sopts getSetupInfo' = do
   let wanted = soptsWantedCompiler sopts
   wc <- either throwIO (pure . whichCompiler) $ wantedToActual wanted
@@ -1094,7 +1179,7 @@ ensureCompiler sopts getSetupInfo' = do
       isWanted =
         isWantedCompiler (soptsCompilerCheck sopts) (soptsWantedCompiler sopts)
 
-  let checkCompiler :: Path Abs File -> RIO env (Maybe CompilerPaths)
+  let checkCompiler :: Path Abs File -> RIO (WithMSYS env) (Maybe CompilerPaths)
       checkCompiler compiler = do
         eres <- tryAny $
           pathsFromCompiler wc CompilerBuildStandard False compiler >>= canUseCompiler
@@ -1193,7 +1278,7 @@ ensureSandboxedCompiler ::
      HasBuildConfig env
   => SetupOpts
   -> Memoized SetupInfo
-  -> RIO env (CompilerPaths, ExtraDirs)
+  -> RIO (WithMSYS env) (CompilerPaths, ExtraDirs)
 ensureSandboxedCompiler sopts getSetupInfo' = do
   let wanted = soptsWantedCompiler sopts
   -- List installed tools
@@ -1413,45 +1498,81 @@ buildGhcFromSource ::
   -> [Tool]
   -> CompilerRepository
   -> Text
+     -- ^ Commit ID.
   -> Text
-  -> RIO env (Tool, CompilerBuild)
+     -- ^ Hadrain flavour.
+  -> RIO (WithMSYS env) (Tool, CompilerBuild)
 buildGhcFromSource getSetupInfo' installed (CompilerRepository url) commitId flavour = do
   config <- view configL
   let compilerTool = ToolGhcGit commitId flavour
-
   -- detect when the correct GHC is already installed
   if compilerTool `elem` installed
-    then pure (compilerTool,CompilerBuildStandard)
+    then pure (compilerTool, CompilerBuildStandard)
     else
       -- clone the repository and execute the given commands
       withRepo (SimpleRepo url commitId RepoGit) $ do
         -- withRepo is guaranteed to set workingDirL, so let's get it
         mcwd <- traverse parseAbsDir =<< view workingDirL
         cwd <- maybe (throwIO WorkingDirectoryInvalidBug) pure mcwd
-        threads <- view $ configL.to configJobs
-        let hadrianArgs = fmap T.unpack
-              [ "-c"                    -- run ./boot and ./configure
-              , "-j" <> tshow threads   -- parallel build
-              , "--flavour=" <> flavour -- selected flavour
-              , "binary-dist"
-              ]
+        let threads = configJobs config
+            relFileHadrianStackDotYaml' = toFilePath relFileHadrianStackDotYaml
+            ghcBootScriptPath = cwd </> ghcBootScript
+            boot = if osIsWindows
+              then proc "python3" ["boot"] runProcess_
+              else
+                proc (toFilePath ghcBootScriptPath) [] runProcess_
+            stack args = proc "stack" args'' runProcess_
+             where
+              args'' = "--stack-yaml=" <> relFileHadrianStackDotYaml' : args'
+              -- If a resolver is specified on the command line, Stack will
+              -- apply it. This allows the resolver specified in Hadrian's
+              -- stack.yaml file to be overridden.
+              args' = maybe args addResolver (configResolver config)
+              addResolver resolver = "--resolver=" <> show resolver : args
+            happy = stack ["install", "happy"]
+            alex = stack ["install", "alex"]
+            -- Executed in the Stack environment, because GHC is required.
+            configure = stack ("exec" : "--" : ghcConfigure)
+            ghcConfigure
+              | osIsWindows = ghcConfigureWindows
+              | osIsMacOS = ghcConfigureMacOS
+              | otherwise   = ghcConfigurePosix
             hadrianScripts
               | osIsWindows = hadrianScriptsWindows
               | otherwise   = hadrianScriptsPosix
-
+            hadrianArgs = fmap T.unpack
+              [ "-j" <> tshow threads   -- parallel build
+              , "--flavour=" <> flavour -- selected flavour
+              , "binary-dist"
+              ]
         foundHadrianPaths <-
           filterM doesFileExist $ (cwd </>) <$> hadrianScripts
         hadrianPath <- maybe (prettyThrowIO HadrianScriptNotFound) pure $
           listToMaybe foundHadrianPaths
-
+        exists <- doesFileExist ghcBootScriptPath
+        unless exists $ prettyThrowIO GhcBootScriptNotFound
+        ensureConfigureScript cwd
+        logInfo "Running GHC boot script..."
+        boot
+        doesExecutableExist "happy" >>= \case
+          True -> logInfo "happy executable installed on the PATH."
+          False -> do
+            logInfo "Installing happy executable..."
+            happy
+        doesExecutableExist "alex" >>= \case
+          True -> logInfo "alex executable installed on the PATH."
+          False -> do
+            logInfo "Installing alex executable..."
+            alex
+        logInfo "Running GHC configure script..."
+        configure
         logSticky $
              "Building GHC from source with `"
           <> display flavour
           <> "` flavour. It can take a long time (more than one hour)..."
-
-        -- We need to provide an absolute path to the script since
-        -- the process package only sets working directory _after_
-        -- discovering the executable
+        -- We need to provide an absolute path to the script since the process
+        -- package only sets working directory _after_ discovering the
+        -- executable.
         proc (toFilePath hadrianPath) hadrianArgs runProcess_
 
         -- find the bindist and install it
@@ -1548,36 +1669,41 @@ getGhcBuilds = do
               | osIsWindows =
                   -- Cannot parse /usr/lib on Windows
                   pure False
-              | otherwise = do
+              | otherwise = hasMatches lib usrLibDirs
               -- This is a workaround for the fact that libtinfo.so.x doesn't
               -- appear in the 'ldconfig -p' output on Arch or Slackware even
               -- when it exists. There doesn't seem to be an easy way to get the
               -- true list of directories to scan for shared libs, but this
               -- works for our particular cases.
-                  matches <- filterM (doesFileExist .(</> lib)) usrLibDirs
-                  case matches of
-                    [] ->
-                         logDebug
-                           (  "Did not find shared library "
-                           <> libD
-                           )
-                      >> pure False
-                    (path:_) ->
-                         logDebug
-                           (  "Found shared library "
-                           <> libD
-                           <> " in "
-                           <> fromString (Path.toFilePath path)
-                           )
-                      >> pure True
              where
+              libD = fromString (toFilePath lib)
               libT = T.pack (toFilePath lib)
+            hasMatches lib dirs = do
+              matches <- filterM (doesFileExist .(</> lib)) dirs
+              case matches of
+                [] ->
+                     logDebug
+                       (  "Did not find shared library "
+                       <> libD
+                       )
+                  >> pure False
+                (path:_) ->
+                     logDebug
+                       (  "Found shared library "
+                       <> libD
+                       <> " in "
+                       <> fromString (Path.toFilePath path)
+                       )
+                  >> pure True
+             where
               libD = fromString (toFilePath lib)
             getLibc6Version = do
               elddOut <-
-                proc "ldd" ["--version"] $ tryAny . readProcessStdout_
+                -- On Alpine Linux, 'ldd --version' will send output to stderr,
+                -- which we wish to smother.
+                proc "ldd" ["--version"] $ tryAny . readProcess_
               pure $ case elddOut of
-                Right lddOut ->
+                Right (lddOut, _) ->
                   let lddOut' =
                         decodeUtf8Lenient (LBS.toStrict lddOut)
                   in  case P.parse lddVersion lddOut' of
@@ -1599,6 +1725,7 @@ getGhcBuilds = do
               lddMinorVersion <- P.decimal
               P.skip (not . isDigit)
               pure $ mkVersion [ lddMajorVersion, lddMinorVersion ]
+        hasMusl <- hasMatches relFileLibcMuslx86_64So1 libDirs
         mLibc6Version <- getLibc6Version
         case mLibc6Version of
           Just libc6Version -> logDebug $
@@ -1613,17 +1740,21 @@ getGhcBuilds = do
         hasncurses6 <- checkLib relFileLibncurseswSo6
         hasgmp5 <- checkLib relFileLibgmpSo10
         hasgmp4 <- checkLib relFileLibgmpSo3
-        let libComponents = concat
-              [ if hastinfo6 && hasgmp5
-                  then
-                    if hasLibc6_2_32
-                      then [["tinfo6"]]
-                      else [["tinfo6-libc6-pre232"]]
-                  else [[]]
-              , [[] | hastinfo5 && hasgmp5]
-              , [["ncurses6"] | hasncurses6 && hasgmp5 ]
-              , [["gmp4"] | hasgmp4 ]
-              ]
+        let libComponents = if hasMusl
+              then
+                [ ["musl"] ]
+              else
+                concat
+                  [ if hastinfo6 && hasgmp5
+                      then
+                        if hasLibc6_2_32
+                          then [["tinfo6"]]
+                          else [["tinfo6-libc6-pre232"]]
+                      else [[]]
+                  , [ [] | hastinfo5 && hasgmp5 ]
+                  , [ ["ncurses6"] | hasncurses6 && hasgmp5 ]
+                  , [ ["gmp4"] | hasgmp4 ]
+                  ]
         useBuilds $ map
           (\c -> case c of
             [] -> CompilerBuildStandard
@@ -1676,7 +1807,8 @@ sysRelease =
 ensureDockerStackExe :: HasConfig env => Platform -> RIO env (Path Abs File)
 ensureDockerStackExe containerPlatform = do
   config <- view configL
-  containerPlatformDir <- runReaderT platformOnlyRelDir (containerPlatform,PlatformVariantNone)
+  containerPlatformDir <-
+    runReaderT platformOnlyRelDir (containerPlatform,PlatformVariantNone)
   let programsPath = configLocalProgramsBase config </> containerPlatformDir
       tool = Tool (PackageIdentifier (mkPackageName "stack") stackVersion)
   stackExeDir <- installDir programsPath tool
@@ -1700,7 +1832,7 @@ ensureDockerStackExe containerPlatform = do
 
 -- | Get all executables on the path that might match the wanted compiler
 sourceSystemCompilers ::
-     (HasProcessContext env, HasLogFunc env)
+     (HasLogFunc env, HasProcessContext env)
   => WantedCompiler
   -> ConduitT i (Path Abs File) (RIO env) ()
 sourceSystemCompilers wanted = do
@@ -1742,10 +1874,11 @@ getSetupInfo = do
       logJSONWarnings urlOrFile warnings
     pure si
 
-getInstalledTool :: [Tool]            -- ^ already installed
-                 -> PackageName       -- ^ package to find
-                 -> (Version -> Bool) -- ^ which versions are acceptable
-                 -> Maybe Tool
+getInstalledTool ::
+     [Tool]            -- ^ already installed
+  -> PackageName       -- ^ package to find
+  -> (Version -> Bool) -- ^ which versions are acceptable
+  -> Maybe Tool
 getInstalledTool installed name goodVersion = Tool <$>
   maximumByMaybe (comparing pkgVersion) (filterTools name goodVersion installed)
 
@@ -1774,30 +1907,36 @@ downloadAndInstallTool programsDir downloadInfo tool installer = do
   liftIO $ ignoringAbsence (removeDirRecur tempDir)
   pure tool
 
-downloadAndInstallCompiler :: (HasBuildConfig env, HasGHCVariant env)
-                           => CompilerBuild
-                           -> SetupInfo
-                           -> WantedCompiler
-                           -> VersionCheck
-                           -> Maybe String
-                           -> RIO env Tool
+-- Exceptions thrown by this function are caught by
+-- 'downloadAndInstallPossibleCompilers'.
+downloadAndInstallCompiler ::
+     (HasBuildConfig env, HasGHCVariant env)
+  => CompilerBuild
+  -> SetupInfo
+  -> WantedCompiler
+  -> VersionCheck
+  -> Maybe String
+  -> RIO env Tool
 downloadAndInstallCompiler ghcBuild si wanted@(WCGhc version) versionCheck mbindistURL = do
   ghcVariant <- view ghcVariantL
   (selectedVersion, downloadInfo) <- case mbindistURL of
     Just bindistURL -> do
       case ghcVariant of
         GHCCustom _ -> pure ()
-        _ -> prettyThrowM RequireCustomGHCVariant
-      pure (version, GHCDownloadInfo mempty mempty DownloadInfo
-               { downloadInfoUrl = T.pack bindistURL
-               , downloadInfoContentLength = Nothing
-               , downloadInfoSha1 = Nothing
-               , downloadInfoSha256 = Nothing
-               })
+        _ -> throwM RequireCustomGHCVariant
+      pure
+        ( version
+        , GHCDownloadInfo mempty mempty DownloadInfo
+            { downloadInfoUrl = T.pack bindistURL
+            , downloadInfoContentLength = Nothing
+            , downloadInfoSha1 = Nothing
+            , downloadInfoSha256 = Nothing
+            }
+        )
     _ -> do
       ghcKey <- getGhcKey ghcBuild
       case Map.lookup ghcKey $ siGHCs si of
-        Nothing -> prettyThrowM $ UnknownOSKey ghcKey
+        Nothing -> throwM $ UnknownOSKey ghcKey
         Just pairs_ ->
           getWantedCompilerInfo ghcKey versionCheck wanted ACGhc pairs_
   config <- view configL
@@ -1812,8 +1951,8 @@ downloadAndInstallCompiler ghcBuild si wanted@(WCGhc version) versionCheck mbind
            GHCStandard -> []
            v -> ["(" <> fromString (ghcVariantName v) <> ")"]
       <> case ghcBuild of
-          CompilerBuildStandard -> []
-          b -> ["(" <> fromString (compilerBuildName b) <> ")"]
+           CompilerBuildStandard -> []
+           b -> ["(" <> fromString (compilerBuildName b) <> ")"]
       <> [ flow "to an isolated location. This will not interfere with any \
                 \system-level installation."
          ]
@@ -1829,19 +1968,22 @@ downloadAndInstallCompiler ghcBuild si wanted@(WCGhc version) versionCheck mbind
 downloadAndInstallCompiler _ _ WCGhcjs{} _ _ = throwIO GhcjsNotSupported
 
 downloadAndInstallCompiler _ _ WCGhcGit{} _ _ =
-  prettyThrowIO DownloadAndInstallCompilerError
+  throwIO DownloadAndInstallCompilerError
 
-getWantedCompilerInfo :: (Ord k, MonadThrow m)
-                      => Text
-                      -> VersionCheck
-                      -> WantedCompiler
-                      -> (k -> ActualCompiler)
-                      -> Map k a
-                      -> m (k, a)
+-- Exceptions thrown by this function are caught by
+-- 'downloadAndInstallPossibleCompilers'.
+getWantedCompilerInfo ::
+     (Ord k, MonadThrow m)
+  => Text
+  -> VersionCheck
+  -> WantedCompiler
+  -> (k -> ActualCompiler)
+  -> Map k a
+  -> m (k, a)
 getWantedCompilerInfo key versionCheck wanted toCV pairs_ =
   case mpair of
     Just pair -> pure pair
-    Nothing -> prettyThrowM $
+    Nothing -> throwM $
       UnknownCompilerVersion
         (Set.singleton key)
         wanted
@@ -1856,13 +1998,13 @@ getWantedCompilerInfo key versionCheck wanted toCV pairs_ =
 
 -- | Download and install the first available compiler build.
 downloadAndInstallPossibleCompilers ::
-       (HasGHCVariant env, HasBuildConfig env)
-    => [CompilerBuild]
-    -> SetupInfo
-    -> WantedCompiler
-    -> VersionCheck
-    -> Maybe String
-    -> RIO env (Tool, CompilerBuild)
+     (HasGHCVariant env, HasBuildConfig env)
+  => [CompilerBuild]
+  -> SetupInfo
+  -> WantedCompiler
+  -> VersionCheck
+  -> Maybe String
+  -> RIO env (Tool, CompilerBuild)
 downloadAndInstallPossibleCompilers possibleCompilers si wanted versionCheck mbindistURL =
   go possibleCompilers Nothing
  where
@@ -1911,9 +2053,7 @@ getGhcKey ghcBuild = do
     <> T.pack (ghcVariantSuffix ghcVariant)
     <> T.pack (compilerBuildSuffix ghcBuild)
 
-getOSKey :: (MonadThrow m)
-         => Platform
-         -> m Text
+getOSKey :: (MonadThrow m) => Platform -> m Text
 getOSKey platform =
   case platform of
     Platform I386                  Cabal.Linux   -> pure "linux32"
@@ -1963,8 +2103,8 @@ downloadOrUseLocal downloadLabel downloadInfo destination =
           } = downloadInfo
     when (isJust contentLength) $
       prettyWarnS
-         "`content-length` is not checked and should not be specified when \
-         \`url` is a file path."
+        "`content-length` is not checked and should not be specified when \
+        \`url` is a file path."
     when (isJust sha1) $
       prettyWarnS
         "`sha1` is not checked and should not be specified when `url` is a \
@@ -2012,14 +2152,15 @@ data ArchiveType
   | TarGz
   | SevenZ
 
-installGHCPosix :: HasConfig env
-                => GHCDownloadInfo
-                -> SetupInfo
-                -> Path Abs File
-                -> ArchiveType
-                -> Path Abs Dir
-                -> Path Abs Dir
-                -> RIO env ()
+installGHCPosix ::
+     HasConfig env
+  => GHCDownloadInfo
+  -> SetupInfo
+  -> Path Abs File
+  -> ArchiveType
+  -> Path Abs Dir
+  -> Path Abs Dir
+  -> RIO env ()
 installGHCPosix downloadInfo _ archiveFile archiveType tempDir destDir = do
   platform <- view platformL
   menv0 <- view processContextL
@@ -2130,13 +2271,14 @@ instance Alternative (CheckDependency env) where
       Left _ -> y
       Right x' -> pure $ Right x'
 
-installGHCWindows :: HasBuildConfig env
-                  => SetupInfo
-                  -> Path Abs File
-                  -> ArchiveType
-                  -> Path Abs Dir
-                  -> Path Abs Dir
-                  -> RIO env ()
+installGHCWindows ::
+     HasBuildConfig env
+  => SetupInfo
+  -> Path Abs File
+  -> ArchiveType
+  -> Path Abs Dir
+  -> Path Abs Dir
+  -> RIO env ()
 installGHCWindows si archiveFile archiveType _tempDir destDir = do
   withUnpackedTarball7z "GHC" si archiveFile archiveType destDir
   prettyInfoL
@@ -2144,13 +2286,14 @@ installGHCWindows si archiveFile archiveType _tempDir destDir = do
     , pretty destDir <> "."
     ]
 
-installMsys2Windows :: HasBuildConfig env
-                  => SetupInfo
-                  -> Path Abs File
-                  -> ArchiveType
-                  -> Path Abs Dir
-                  -> Path Abs Dir
-                  -> RIO env ()
+installMsys2Windows ::
+     HasBuildConfig env
+  => SetupInfo
+  -> Path Abs File
+  -> ArchiveType
+  -> Path Abs Dir
+  -> Path Abs Dir
+  -> RIO env ()
 installMsys2Windows si archiveFile archiveType _tempDir destDir = do
   exists <- liftIO $ D.doesDirectoryExist $ toFilePath destDir
   when exists $
@@ -2159,10 +2302,9 @@ installMsys2Windows si archiveFile archiveType _tempDir destDir = do
 
   withUnpackedTarball7z "MSYS2" si archiveFile archiveType destDir
 
-
   -- I couldn't find this officially documented anywhere, but you need to run
-  -- the MSYS shell once in order to initialize some pacman stuff. Once that
-  -- run happens, you can just run commands as usual.
+  -- the MSYS shell once in order to initialize some pacman stuff. Once that run
+  -- happens, you can just run commands as usual.
   menv0 <- view processContextL
   newEnv0 <- modifyEnvVars menv0 $ Map.insert "MSYSTEM" "MSYS"
   newEnv <- either throwM pure $ augmentPathMap
@@ -2179,15 +2321,16 @@ installMsys2Windows si archiveFile archiveType _tempDir destDir = do
   -- Install git. We could install other useful things in the future too.
   -- runCmd (Cmd (Just destDir) "pacman" menv ["-Sy", "--noconfirm", "git"]) Nothing
 
--- | Unpack a compressed tarball using 7zip.  Expects a single directory in
--- the unpacked results, which is renamed to the destination directory.
-withUnpackedTarball7z :: HasBuildConfig env
-                      => String -- ^ Name of tool, used in error messages
-                      -> SetupInfo
-                      -> Path Abs File -- ^ Path to archive file
-                      -> ArchiveType
-                      -> Path Abs Dir -- ^ Destination directory.
-                      -> RIO env ()
+-- | Unpack a compressed tarball using 7zip. Expects a single directory in the
+-- unpacked results, which is renamed to the destination directory.
+withUnpackedTarball7z ::
+     HasBuildConfig env
+  => String -- ^ Name of tool, used in error messages
+  -> SetupInfo
+  -> Path Abs File -- ^ Path to archive file
+  -> ArchiveType
+  -> Path Abs Dir -- ^ Destination directory.
+  -> RIO env ()
 withUnpackedTarball7z name si archiveFile archiveType destDir = do
   suffix <-
     case archiveType of
@@ -2200,15 +2343,26 @@ withUnpackedTarball7z name si archiveFile archiveType destDir = do
       Nothing -> prettyThrowIO $ TarballFileInvalid name archiveFile
       Just x -> parseRelFile $ T.unpack x
   run7z <- setup7z si
-  let tmpName = toFilePathNoTrailingSep (dirname destDir) ++ "-tmp"
+  -- We use a short name for the temporary directory to reduce the risk of a
+  -- filepath length of more than 260 characters, which can be problematic for
+  -- 7-Zip even if Long Filepaths are enabled on Windows.
+  let tmpName = "stack-tmp"
+      destDrive = fromJust $ parseAbsDir $ takeDrive $ fromAbsDir destDir
   ensureDir (parent destDir)
   withRunInIO $ \run ->
-    withTempDir (parent destDir) tmpName $ \tmpDir ->
+  -- We use a temporary directory in the same drive as that of 'destDir' to
+  -- reduce the risk of a filepath length of more than 260 characters, which can
+  -- be problematic for 7-Zip even if Long Filepaths are enabled on Windows. We
+  -- do not use the system temporary directory as it may be on a different
+  -- drive.
+    withTempDir destDrive tmpName $ \tmpDir ->
       run $ do
         liftIO $ ignoringAbsence (removeDirRecur destDir)
         run7z tmpDir archiveFile
         run7z tmpDir (tmpDir </> tarFile)
         absSrcDir <- expectSingleUnpackedDir archiveFile tmpDir
+        -- On Windows, 'renameDir' does not work across drives. However, we have
+        -- ensured that 'tmpDir' has the same drive as 'destDir'.
         renameDir absSrcDir destDir
 
 expectSingleUnpackedDir ::
@@ -2216,8 +2370,8 @@ expectSingleUnpackedDir ::
   => Path Abs File
   -> Path Abs Dir
   -> m (Path Abs Dir)
-expectSingleUnpackedDir archiveFile destDir = do
-  contents <- listDir destDir
+expectSingleUnpackedDir archiveFile unpackDir = do
+  contents <- listDir unpackDir
   case contents of
     ([dir], _ ) -> pure dir
     _ -> prettyThrowIO $ UnknownArchiveStructure archiveFile
@@ -2225,9 +2379,10 @@ expectSingleUnpackedDir archiveFile destDir = do
 -- | Download 7z as necessary, and get a function for unpacking things.
 --
 -- Returned function takes an unpack directory and archive.
-setup7z :: (HasBuildConfig env, MonadIO m)
-        => SetupInfo
-        -> RIO env (Path Abs Dir -> Path Abs File -> m ())
+setup7z ::
+     (HasBuildConfig env, MonadIO m)
+  => SetupInfo
+  -> RIO env (Path Abs Dir -> Path Abs File -> m ())
 setup7z si = do
   dir <- view $ configL.to configLocalPrograms
   ensureDir dir
@@ -2278,11 +2433,12 @@ setup7z si = do
           liftIO $ prettyThrowM (ProblemWhileDecompressing archive)
     _ -> prettyThrowM SetupInfoMissingSevenz
 
-chattyDownload :: HasTerm env
-               => Text          -- ^ label
-               -> DownloadInfo  -- ^ URL, content-length, sha1, and sha256
-               -> Path Abs File -- ^ destination
-               -> RIO env ()
+chattyDownload ::
+     HasTerm env
+  => Text          -- ^ label
+  -> DownloadInfo  -- ^ URL, content-length, sha1, and sha256
+  -> Path Abs File -- ^ destination
+  -> RIO env ()
 chattyDownload label downloadInfo path = do
   let url = downloadInfoUrl downloadInfo
   req <- parseUrlThrow $ T.unpack url
@@ -2324,8 +2480,10 @@ chattyDownload label downloadInfo path = do
   mtotalSize = downloadInfoContentLength downloadInfo
 
 -- | Perform a basic sanity check of GHC
-sanityCheck :: (HasProcessContext env, HasLogFunc env)
-            => Path Abs File -> RIO env ()
+sanityCheck ::
+     (HasLogFunc env, HasProcessContext env)
+  => Path Abs File
+  -> RIO env ()
 sanityCheck ghc = withSystemTempDir "stack-sanity-check" $ \dir -> do
   let fp = toFilePath $ dir </> relFileMainHs
   liftIO $ S.writeFile fp $ T.encodeUtf8 $ T.pack $ unlines
@@ -2336,6 +2494,12 @@ sanityCheck ghc = withSystemTempDir "stack-sanity-check" $ \dir -> do
   eres <- withWorkingDir (toFilePath dir) $ proc (toFilePath ghc)
     [ fp
     , "-no-user-package-db"
+    -- Required to stop GHC looking for a package environment in default
+    -- locations.
+    , "-hide-all-packages"
+    -- Required because GHC flag -hide-all-packages is passed.
+    , "-package base"
+    , "-package Cabal" -- required for "import Distribution.Simple"
     ] $ try . readProcess_
   case eres of
     Left e -> prettyThrowIO $ GHCSanityCheckCompileFailed e ghc
@@ -2355,7 +2519,8 @@ removeHaskellEnvVars =
   -- https://github.com/commercialhaskell/stack/issues/3444
   Map.delete "GHCRTS"
 
--- | Get map of environment variables to set to change the GHC's encoding to UTF-8
+-- | Get map of environment variables to set to change the GHC's encoding to
+-- UTF-8.
 getUtf8EnvVars ::
      (HasPlatform env, HasProcessContext env, HasTerm env)
   => ActualCompiler
@@ -2505,7 +2670,7 @@ data HaskellStackOrg = HaskellStackOrg
   deriving Show
 
 downloadStackReleaseInfo ::
-     (HasPlatform env, HasLogFunc env)
+     (HasLogFunc env, HasPlatform env)
   => Maybe String -- GitHub org
   -> Maybe String -- GitHub repo
   -> Maybe String -- ^ optional version
@@ -2615,8 +2780,9 @@ downloadStackReleaseInfoGitHub morg mrepo mver = liftIO $ do
     then pure $ SRIGitHub $ getResponseBody res
     else prettyThrowIO $ StackReleaseInfoNotFound url
 
-preferredPlatforms :: (MonadReader env m, HasPlatform env, MonadThrow m)
-                   => m [(Bool, String)]
+preferredPlatforms ::
+     (MonadReader env m, HasPlatform env, MonadThrow m)
+  => m [(Bool, String)]
 preferredPlatforms = do
   Platform arch' os' <- view platformL
   (isWindows, os) <-
@@ -2631,11 +2797,14 @@ preferredPlatforms = do
       I386 -> pure "i386"
       X86_64 -> pure "x86_64"
       Arm -> pure "arm"
+      AArch64 -> pure "aarch64"
       _ -> prettyThrowM $ BinaryUpgradeOnArchUnsupported arch'
   let hasgmp4 = False -- FIXME import relevant code from Stack.Setup?
                       -- checkLib $(mkRelFile "libgmp.so.3")
       suffixes
+          -- 'gmp4' ceased to be relevant after Stack 1.9.3 (December 2018).
         | hasgmp4 = ["-static", "-gmp4", ""]
+          -- 'static' will cease to be relevant after Stack 2.11.1 (May 2023).
         | otherwise = ["-static", ""]
   pure $ map (\suffix -> (isWindows, concat [os, "-", arch, suffix])) suffixes
 

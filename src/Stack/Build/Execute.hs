@@ -17,6 +17,7 @@ module Stack.Build.Execute
   , KeepOutputOpen (..)
   ) where
 
+import           Control.Concurrent.Companion ( Companion, withCompanion )
 import           Control.Concurrent.Execute
                    ( Action (..), ActionContext (..), ActionId (..)
                    , ActionType (..)
@@ -43,7 +44,7 @@ import           Data.Conduit.Process.Typed ( createSource )
 import qualified Data.Conduit.Text as CT
 import qualified Data.List as L
 import           Data.List.NonEmpty ( nonEmpty )
-import qualified Data.List.NonEmpty as NonEmpty ( toList )
+import qualified Data.List.NonEmpty as NonEmpty
 import           Data.List.Split ( chunksOf )
 import qualified Data.Map.Merge.Strict as Map
 import qualified Data.Map.Strict as Map
@@ -55,7 +56,6 @@ import           Data.Time
                    ( ZonedTime, getZonedTime, formatTime, defaultTimeLocale )
 import qualified Data.ByteString.Char8 as S8
 import qualified Distribution.PackageDescription as C
-import           Distribution.Pretty ( prettyShow )
 import qualified Distribution.Simple.Build.Macros as C
 import           Distribution.System ( OS (Windows), Platform (Platform) )
 import qualified Distribution.Text as C
@@ -66,7 +66,6 @@ import           Distribution.Types.UnqualComponentName
                    ( mkUnqualComponentName )
 import           Distribution.Verbosity ( showForCabal )
 import           Distribution.Version ( mkVersion )
-import           Pantry.Internal.Companion ( Companion, withCompanion )
 import           Path
                    ( PathException, (</>), addExtension, filename
                    , isProperPrefixOf, parent, parseRelDir, parseRelFile
@@ -85,10 +84,9 @@ import           Path.IO
 import           RIO.Process
                    ( HasProcessContext, byteStringInput, doesExecutableExist
                    , eceExitCode, findExecutable, getStderr, getStdout, inherit
-                   , modifyEnvVars, proc, readProcess_, runProcess_, setStderr
-                   , setStdin, setStdout, showProcessArgDebug, useHandleOpen
-                   , waitExitCode, withModifyEnvVars, withProcessWait
-                   , withWorkingDir
+                   , modifyEnvVars, proc, runProcess_, setStderr, setStdin
+                   , setStdout, showProcessArgDebug, useHandleOpen, waitExitCode
+                   , withProcessWait, withWorkingDir
                    )
 import           Stack.Build.Cache
                    ( TestStatus (..), deleteCaches, getTestStatus
@@ -107,13 +105,13 @@ import           Stack.Build.Installed (  )
 import           Stack.Build.Source ( addUnlistedToBuildCache )
 import           Stack.Build.Target (  )
 import           Stack.Config ( checkOwnership )
+import           Stack.Config.ConfigureScript ( ensureConfigureScript )
 import           Stack.Constants
                    ( bindirSuffix, cabalPackageName, compilerOptionsCabalFlag
-                   , osIsWindows, relDirBuild, relDirDist, relDirSetup
-                   , relDirSetupExeCache, relDirSetupExeSrc, relFileBuildLock
-                   , relFileConfigure, relFileSetupHs, relFileSetupLhs
-                   , relFileSetupLower, relFileSetupMacrosH, setupGhciShimCode
-                   , stackProgName, testGhcEnvRelFile
+                   , relDirBuild, relDirDist, relDirSetup, relDirSetupExeCache
+                   , relDirSetupExeSrc, relFileBuildLock, relFileSetupHs
+                   , relFileSetupLhs, relFileSetupLower, relFileSetupMacrosH
+                   , setupGhciShimCode, stackProgName, testGhcEnvRelFile
                    )
 import           Stack.Constants.Config
                    ( distDirFromDir, distRelativeDir, hpcDirFromDir
@@ -123,8 +121,7 @@ import           Stack.Coverage
                    ( deleteHpcReports, generateHpcMarkupIndex, generateHpcReport
                    , generateHpcUnifiedReport, updateTixFile
                    )
-import           Stack.DefaultColorWhen ( defaultColorWhen )
-import           Stack.GhcPkg ( ghcPkgPathEnvVar, unregisterGhcPkgIds )
+import           Stack.GhcPkg ( ghcPkg, unregisterGhcPkgIds )
 import           Stack.Package ( buildLogPath )
 import           Stack.PackageDump ( conduitDumpPackage, ghcPkgDescribe )
 import           Stack.Prelude
@@ -140,7 +137,8 @@ import           Stack.Types.BuildConfig
                    ( BuildConfig (..), HasBuildConfig (..), projectRootL )
 import           Stack.Types.BuildOpts
                    ( BenchmarkOpts (..), BuildOpts (..), BuildOptsCLI (..)
-                   , CabalVerbosity (..), HaddockOpts (..), TestOpts (..)
+                   , CabalVerbosity (..), HaddockOpts (..)
+                   , ProgressBarFormat (..), TestOpts (..)
                    )
 import           Stack.Types.Compiler
                    ( ActualCompiler (..), WhichCompiler (..)
@@ -580,7 +578,7 @@ withExecuteEnv bopts boptsCli baseConfigOpts locals globalPackages snapshotPacka
          fillSep
            ( ( fillSep
                  ( flow "Dumping log file"
-                 : [ flow msgSuffix | L.null msgSuffix ]
+                 : [ flow msgSuffix | not (L.null msgSuffix) ]
                  )
              <> ":"
              )
@@ -785,6 +783,7 @@ executePlan' installedMap0 targets plan ee@ExecuteEnv {..} = do
   let keepGoing =
         fromMaybe (not (Map.null (planFinals plan))) (boptsKeepGoing eeBuildOpts)
   terminal <- view terminalL
+  terminalWidth <- view termWidthL
   errs <- liftIO $ runActions threads keepGoing actions $
     \doneVar actionsVar -> do
       let total = length actions
@@ -803,10 +802,20 @@ executePlan' installedMap0 targets plan ee@ExecuteEnv {..} = do
                         ": "
                       : L.intersperse ", "
                           (map (fromString . packageNameString) names)
-                when terminal $ run $
-                  logSticky $
-                    "Progress " <> display prev <> "/" <> display total <>
-                        nowBuilding packageNames
+                    progressFormat = boptsProgressBar eeBuildOpts
+                    progressLine prev' total' =
+                         "Progress "
+                      <> display prev' <> "/" <> display total'
+                      <> if progressFormat == CountOnlyBar
+                           then mempty
+                           else nowBuilding packageNames
+                    ellipsize n text =
+                      if T.length text <= n || progressFormat /= CappedBar
+                        then text
+                        else T.take (n - 1) text <> "…"
+                when (terminal && progressFormat /= NoBar) $
+                  run $ logSticky $ display $ ellipsize terminalWidth $
+                    utf8BuilderToText $ progressLine prev total
                 done <- atomically $ do
                   done <- readTVar doneVar
                   check $ done /= prev
@@ -866,7 +875,7 @@ unregisterPackages cv localDB ids = do
   let unregisterSinglePkg select (gid, (ident, reason)) = do
         logReason ident reason
         pkg <- getGhcPkgExe
-        unregisterGhcPkgIds pkg localDB $ select ident gid :| []
+        unregisterGhcPkgIds True pkg localDB $ select ident gid :| []
   case cv of
     -- GHC versions >= 8.2.1 support batch unregistering of packages. See
     -- https://gitlab.haskell.org/ghc/ghc/issues/12637
@@ -886,7 +895,7 @@ unregisterPackages cv localDB ids = do
       for_ (chunksOfNE batchSize ids) $ \batch -> do
         for_ batch $ \(_, (ident, reason)) -> logReason ident reason
         pkg <- getGhcPkgExe
-        unregisterGhcPkgIds pkg localDB $ fmap (Right . fst) batch
+        unregisterGhcPkgIds True pkg localDB $ fmap (Right . fst) batch
 
     -- GHC versions >= 7.9 support unregistering of packages via their GhcPkgId.
     ACGhc v | v >= mkVersion [7, 9] ->
@@ -1089,7 +1098,11 @@ ensureConfig newConfigCache pkgDir ExecuteEnv {..} announce cabal cabalfp task =
           || mOldProjectRoot /= Just newProjectRoot
   let ConfigureOpts dirs nodirs = configCacheOpts newConfigCache
 
-  when (taskBuildTypeConfig task) ensureConfigureScript
+  when (taskBuildTypeConfig task) $
+    -- When build-type is Configure, we need to have a configure script in the
+    -- local directory. If it doesn't exist, build it with autoreconf -i. See:
+    -- https://github.com/commercialhaskell/stack/issues/3534
+    ensureConfigureScript pkgDir
 
   when needConfig $ withMVar eeConfigureLock $ \_ -> do
     deleteCaches pkgDir
@@ -1126,89 +1139,7 @@ ensureConfig newConfigCache pkgDir ExecuteEnv {..} announce cabal cabalfp task =
     -- reasonable too.
     getNewSetupConfigMod >>= writeSetupConfigMod pkgDir
     writePackageProjectRoot pkgDir newProjectRoot
-
   pure needConfig
- where
-  -- When build-type is Configure, we need to have a configure script in the
-  -- local directory. If it doesn't exist, build it with autoreconf -i. See:
-  -- https://github.com/commercialhaskell/stack/issues/3534
-  ensureConfigureScript = do
-    let fp = pkgDir </> relFileConfigure
-    exists <- doesFileExist fp
-    unless exists $ do
-      prettyInfoL
-        [ flow "Trying to generate configure with autoreconf in"
-        , pretty pkgDir <> "."
-        ]
-      let autoreconf = if osIsWindows
-                         then readProcessNull "sh" ["autoreconf", "-i"]
-                         else readProcessNull "autoreconf" ["-i"]
-          -- On Windows 10, an upstream issue with the `sh autoreconf -i`
-          -- command means that command clears, but does not then restore, the
-          -- ENABLE_VIRTUAL_TERMINAL_PROCESSING flag for native terminals. The
-          -- following hack re-enables the lost ANSI-capability.
-          fixupOnWindows = when osIsWindows (void $ liftIO defaultColorWhen)
-      withWorkingDir (toFilePath pkgDir) $ autoreconf `catchAny` \ex -> do
-        fixupOnWindows
-        prettyWarn $
-             fillSep
-               [ flow "Stack failed to run"
-               , style Shell "autoreconf" <> "."
-               ]
-          <> blankLine
-          <> flow "Stack encountered the following error:"
-          <> blankLine
-          <> string (displayException ex)
-        when osIsWindows $ do
-          prettyInfo $
-               fillSep
-                 [ flow "Check that executable"
-                 , style File "perl"
-                 , flow "is on the path in Stack's MSYS2"
-                 , style Dir "\\usr\\bin"
-                 , flow "folder, and working, and that script file"
-                 , style File "autoreconf"
-                 , flow "is on the path in that location. To check that"
-                 , style File "perl"
-                 , "or"
-                 , style File "autoreconf"
-                 , flow "are on the path in the required location, run commands:"
-                 ]
-            <> blankLine
-            <> indent 4 (style Shell $ flow "stack exec where -- perl")
-            <> line
-            <> indent 4 (style Shell $ flow "stack exec where -- autoreconf")
-            <> blankLine
-            <> fillSep
-                 [ "If"
-                 , style File "perl"
-                 , "or"
-                 , style File "autoreconf"
-                 , flow "is not on the path in the required location, add them \
-                        \with command (note that the relevant package name is"
-                 , style File "autoconf"
-                 , "not"
-                 , style File "autoreconf" <> "):"
-                 ]
-            <> blankLine
-            <> indent 4
-                 (style Shell $ flow "stack exec pacman -- --sync --refresh autoconf")
-            <> blankLine
-            <> fillSep
-                 [ flow "Some versions of"
-                 , style File "perl"
-                 , flow "from MSYS2 are broken. See"
-                 , style Url "https://github.com/msys2/MSYS2-packages/issues/1611"
-                 , "and"
-                 , style Url "https://github.com/commercialhaskell/stack/pull/4781" <> "."
-                 , "To test if"
-                 , style File "perl"
-                 , flow "in the required location is working, try command:"
-                 ]
-            <> blankLine
-            <> indent 4 (style Shell $ flow "stack exec perl -- --version")
-            <> blankLine
-      fixupOnWindows
 
 -- | Make a padded prefix for log messages
 packageNamePrefix :: ExecuteEnv -> PackageName -> String
@@ -1788,7 +1719,6 @@ singleBuild ac@ActionContext {..} ee@ExecuteEnv {..} task@Task {..} installedMap
       _ -> pure Nothing
 
   copyPreCompiled (PrecompiledCache mlib sublibs exes) = do
-    wc <- view $ actualCompilerVersionL.whichCompilerL
     announceTask ee task "using precompiled package"
 
     -- We need to copy .conf files for the main library and all sublibraries
@@ -1803,39 +1733,32 @@ singleBuild ac@ActionContext {..} ee@ExecuteEnv {..} task@Task {..} installedMap
       toMungedPackageId sublib =
         let sublibName = LSubLibName $ mkUnqualComponentName $ T.unpack sublib
         in  MungedPackageId (MungedPackageName pname sublibName) pversion
+      toPackageId :: MungedPackageId -> PackageIdentifier
+      toPackageId (MungedPackageId n v) =
+        PackageIdentifier (encodeCompatPackageName n) v
+      allToUnregister :: [Either PackageIdentifier GhcPkgId]
       allToUnregister = mcons
-        (prettyShow taskProvides <$ mlib)
-        (map (prettyShow . toMungedPackageId) subLibNames)
+        (Left taskProvides <$ mlib)
+        (map (Left . toPackageId . toMungedPackageId) subLibNames)
       allToRegister = mcons mlib sublibs
 
     unless (null allToRegister) $
       withMVar eeInstallLock $ \() -> do
-        -- We want to ignore the global and user databases.
-        -- Unfortunately, ghc-pkg doesn't take such arguments on the
-        -- command line. Instead, we'll set GHC_PACKAGE_PATH. See:
-        -- https://github.com/commercialhaskell/stack/issues/1146
-
-        let modifyEnv = Map.insert
-              (ghcPkgPathEnvVar wc)
-              (T.pack $ toFilePathNoTrailingSep $ bcoSnapDB eeBaseConfigOpts)
-
-        withModifyEnvVars modifyEnv $ do
-          GhcPkgExe ghcPkgExe <- getGhcPkgExe
-
-          -- first unregister everything that needs to be unregistered
-          forM_ allToUnregister $ \packageName -> catchAny
-            ( readProcessNull
-                (toFilePath ghcPkgExe)
-                [ "unregister", "--force", packageName]
+        -- We want to ignore the global and user package databases. ghc-pkg
+        -- allows us to specify --no-user-package-db and --package-db=<db> on
+        -- the command line.
+        let pkgDb = bcoSnapDB eeBaseConfigOpts
+        ghcPkgExe <- getGhcPkgExe
+        -- First unregister, silently, everything that needs to be unregistered.
+        unless (null allToUnregister) $
+          catchAny
+            ( unregisterGhcPkgIds False ghcPkgExe pkgDb $
+                NonEmpty.fromList allToUnregister
             )
             (const (pure ()))
-
-          -- now, register the cached conf files
-          forM_ allToRegister $ \libpath ->
-            proc
-              (toFilePath ghcPkgExe)
-              [ "register", "--force", toFilePath libpath]
-              readProcess_
+        -- Now, register the cached conf files.
+        forM_ allToRegister $ \libpath ->
+          ghcPkg ghcPkgExe [pkgDb] ["register", "--force", toFilePath libpath]
 
     liftIO $ forM_ exes $ \exe -> do
       ensureDir bindir
@@ -2715,21 +2638,22 @@ primaryComponentOptions ::
   -> LocalPackage
   -> [String]
 primaryComponentOptions executableBuildStatuses lp =
-    -- TODO: get this information from target parsing instead,
-    -- which will allow users to turn off library building if
-    -- desired
-    (case packageLibraries package of
-      NoLibraries -> []
-      HasLibraries names ->
-          map T.unpack
-        $ T.append "lib:" (T.pack (packageNameString (packageName package)))
-        : map (T.append "flib:") (Set.toList names)) ++
-    map
-      (T.unpack . T.append "lib:")
-      (Set.toList $ packageInternalLibraries package) ++
-    map
-      (T.unpack . T.append "exe:")
-      (Set.toList $ exesToBuild executableBuildStatuses lp)
+  -- TODO: get this information from target parsing instead, which will allow
+  -- users to turn off library building if desired
+     ( case packageLibraries package of
+         NoLibraries -> []
+         HasLibraries names -> map
+           T.unpack
+           ( T.append "lib:" (T.pack (packageNameString (packageName package)))
+           : map (T.append "flib:") (Set.toList names)
+           )
+     )
+  ++ map
+       (T.unpack . T.append "lib:")
+       (Set.toList $ packageInternalLibraries package)
+  ++ map
+       (T.unpack . T.append "exe:")
+       (Set.toList $ exesToBuild executableBuildStatuses lp)
  where
   package = lpPackage lp
 

@@ -14,7 +14,6 @@ module Stack.Build.Source
   , hashSourceMapData
   ) where
 
-import           Conduit ( ZipSink (..), withSourceFile )
 import           Data.ByteString.Builder ( toLazyByteString )
 import qualified Data.List as L
 import qualified Data.Map as Map
@@ -48,6 +47,7 @@ import           Stack.Types.EnvConfig
                    ( EnvConfig (..), HasEnvConfig (..), HasSourceMap (..)
                    , actualCompilerVersionL
                    )
+import           Stack.Types.FileDigestCache ( readFileDigest )
 import           Stack.Types.NamedComponent
                    ( NamedComponent (..), isCInternalLib )
 import           Stack.Types.Package
@@ -436,26 +436,27 @@ loadLocalPackage pp = do
 
 -- | Compare the current filesystem state to the cached information, and
 -- determine (1) if the files are dirty, and (2) the new cache values.
-checkBuildCache :: forall m. (MonadIO m)
-                => Map FilePath FileCacheInfo -- ^ old cache
-                -> [Path Abs File] -- ^ files in package
-                -> m (Set FilePath, Map FilePath FileCacheInfo)
+checkBuildCache ::
+     HasEnvConfig env
+  => Map FilePath FileCacheInfo -- ^ old cache
+  -> [Path Abs File] -- ^ files in package
+  -> RIO env (Set FilePath, Map FilePath FileCacheInfo)
 checkBuildCache oldCache files = do
-  fileTimes <- fmap Map.fromList $ forM files $ \fp -> do
-    mdigest <- liftIO (getFileDigestMaybe (toFilePath fp))
+  fileDigests <- fmap Map.fromList $ forM files $ \fp -> do
+    mdigest <- getFileDigestMaybe (toFilePath fp)
     pure (toFilePath fp, mdigest)
   fmap (mconcat . Map.elems) $ sequence $
     Map.merge
       (Map.mapMissing (\fp mdigest -> go fp mdigest Nothing))
       (Map.mapMissing (\fp fci -> go fp Nothing (Just fci)))
       (Map.zipWithMatched (\fp mdigest fci -> go fp mdigest (Just fci)))
-      fileTimes
+      fileDigests
       oldCache
  where
   go :: FilePath
      -> Maybe SHA256
      -> Maybe FileCacheInfo
-     -> m (Set FilePath, Map FilePath FileCacheInfo)
+     -> RIO env (Set FilePath, Map FilePath FileCacheInfo)
   -- Filter out the cabal_macros file to avoid spurious recompilations
   go fp _ _ | takeFileName fp == "cabal_macros.h" = pure (Set.empty, Map.empty)
   -- Common case where it's in the cache and on the filesystem.
@@ -519,17 +520,12 @@ getPackageFilesForTargets pkg cabalFP nonLibComponents = do
   pure (componentsFiles, warnings)
 
 -- | Get file digest, if it exists
-getFileDigestMaybe :: MonadIO m => FilePath -> m (Maybe SHA256)
-getFileDigestMaybe fp =
-  liftIO $
-    catch
-      (fmap Just . withSourceFile fp $ getDigest)
-      (\e ->
-            if isDoesNotExistError e
-                then pure Nothing
-                else throwM e)
- where
-  getDigest src = runConduit $ src .| getZipSink (ZipSink SHA256.sinkHash)
+getFileDigestMaybe :: HasEnvConfig env => FilePath -> RIO env (Maybe SHA256)
+getFileDigestMaybe fp = do
+  cache <- view $ envConfigL.to envConfigFileDigestCache
+  catch
+    (Just <$> readFileDigest cache fp)
+    (\e -> if isDoesNotExistError e then pure Nothing else throwM e)
 
 -- | Get 'PackageConfig' for package given its name.
 getPackageConfig ::

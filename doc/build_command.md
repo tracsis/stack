@@ -85,12 +85,26 @@ supported syntaxes for targets are:
     of the test suite and benchmark components, respectively, are selected to be
     built.
 
-    Stackage snapshots do not include directly GHC boot packages (packages that
-    come with GHC and are included in GHC's global package database). For
-    example, if `Cabal` is not a local package or an extra dep, then
-    `stack build Cabal` will specify the latest version of that package in the
+    If *package* is a GHC boot package (packages that come with GHC and are
+    included in GHC's global package database), the behaviour can be complex.
+    If the boot package has not been 'replaced', then `stack build` will,
+    effectively, do nothing. However, if the boot package has been 'replaced'
+    then `stack build` will specify the latest version of that package in the
     package index, which may differ from the version provided by the version of
-    GHC specified by the snapshot.
+    GHC specified by the snapshot. A boot package will be treated as 'replaced'
+    if the package is included directly in the Stackage snapshot or it depends
+    on a package included directly in the snapshot. Stackage snapshots do not
+    include directly most boot packages but some snapshots may include directly
+    some boot packages. In particular, some snapshots include directly `Win32`
+    (which is a boot package on Windows) while others do not. For example, if
+    `Cabal` (a boot package) is not a local package or an extra dep, then
+    `stack build Cabal` with Stackage snapshot LTS Haskell 20.25 will:
+
+    * on Windows, try to build the latest version of `Cabal` in the package
+      index (because that snapshot includes `Win32` directly, and `Cabal`
+      depends on `Win32` and so is treated as 'replaced'); and
+    * on non-Windows, effectively, do nothing (because `Cabal` is not
+      'replaced').
 
 *   *package identifier*, e.g. `stack build foobar-1.2.3`, is usually used to
     include specific package versions from the package index.
@@ -144,8 +158,8 @@ supported syntaxes for targets are:
 
 `stack build` with no targets specified will build all local packages.
 
-Command `stack ide targets` to get a list of the available targets in your
-project.
+For further information about available targets, see the
+[`stack ide targets` command](ide_command.md).
 
 ## Controlling what gets built
 
@@ -184,7 +198,7 @@ The same Cabal flag name can be set (or unset) for multiple packages (at the
 command line only) with:
 
 ~~~text
-stack build --flag *:[-]<flag)name>
+stack build --flag *:[-]<flag_name>
 ~~~
 
 !!! note
@@ -314,6 +328,8 @@ Like the `--file-watch` flag, but based on polling the file system instead of
 using events to determine if a file has changed.
 
 ### `--watch-all` flag
+
+[:octicons-tag-24: 2.5.1](https://github.com/commercialhaskell/stack/releases/tag/v2.5.1)
 
 Pass the flag to rebuild your project every time any local file changes (from
 project packages or from local dependencies). See also the `--file-watch` flag.
@@ -539,17 +555,20 @@ package is targetted in a multi-package project (for example, using
 `stack build <package_name>`).
 
 * **One target package:** The build output for the target package is sent to the
-  console as it happens.
+  standard error stream of the console as it happens.
 
 * **More than one target package:** The build output from GHC (as opposed to
   from Stack) for each target package is sent to a log file for that package,
-  unless an error occurs. At the end of the build, the location of the directory
-  containing the log files is reported. To also output the contents of the log
-  files to the console at the end of the build, use Stack's `dump-logs` option.
-  For further information about that option, see the
+  unless an error occurs that prevents that. If color in output is in use, there
+  will be two files, one with extension `.log` without color codes and one with
+  extension `.log-color` with color codes. At the end of the build, the location
+  of the directory containing the log files is reported. To also output the
+  contents of the log files to the standard error output stream of the console
+  at the end of the build, use Stack's `dump-logs` option. For further
+  information about that option, see the
   [YAML configuration](yaml_configuration.md#dump-logs) documentation. The
-  default `dump-logs` mode is to output the contents of the log files that are
-  warnings.
+  default `dump-logs` mode is to output the contents of any log files that
+  include GHC warnings.
 
 ### `--[no]-open` flag
 
@@ -566,6 +585,20 @@ Default: Disabled
 Set the flag to enable fetching packages necessary for the build immediately.
 This can be useful with `stack build --dry-run`.
 
+### `--progress-bar` option
+
+[:octicons-tag-24: 2.13.1](https://github.com/commercialhaskell/stack/releases/tag/v2.13.1)
+
+Default: `capped`
+
+`stack build --progress-bar <format>` sets the format of the progress bar, where
+`<format>` is one of `none` (no bar), `count-only` (only the package count is
+displayed), `capped` (the bar showing package builds in progress is capped to a
+length equal to the terminal width), and `full` (the bar is uncapped). On
+terminals where 'backspace' has no effect if the cursor is in the first column,
+bars longer than the terminal width will not be 'sticky' at the bottom of the
+screen.
+
 ### `--tests-allow-stdin` flag
 
 [:octicons-tag-24: 2.9.3](https://github.com/commercialhaskell/stack/releases/tag/v2.9.3)
@@ -575,10 +608,10 @@ Default: Enabled
 Cabal defines a test suite interface
 ['exitcode-stdio-1.0'](https://hackage.haskell.org/package/Cabal-syntax-3.8.1.0/docs/Distribution-Types-TestSuiteInterface.html#v:TestSuiteExeV1.0)
 where the test suite takes the form of an executable and the executable takes
-nothing on the standard input channel (`stdin`). Pass this flag to override that
-specification and allow the executable to receive input on that channel. If you
+nothing on the standard input stream (`stdin`). Pass this flag to override that
+specification and allow the executable to receive input on that stream. If you
 pass `--no-tests-allow-stdin` and the executable seeks input on the standard
-input channel, an exception will be thown.
+input stream, an exception will be thown.
 
 ## Examples
 
