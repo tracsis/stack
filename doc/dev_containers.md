@@ -9,8 +9,8 @@ development environment.
 
 Stack provides the following Dev Containers:
 
-* a default Dev Container, intended for use with Stack's project‑level
-  configuration (`stack.yaml`); and
+* a default Dev Container, intended for use with Stack's default project‑level
+  configuration file (`stack.yaml`); and
 * alternative Dev Containers, intended for use with Stack's experimental
   project‑level configurations (in anticipation of building Stack with more
   recent versions of GHC).
@@ -36,9 +36,9 @@ provided in the default Dev Container only.
     The PATH is
     `$HOME/.cabal/bin:$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`.
     Consequently, executables installed with Cabal (the tool) (at
-    `$HOME/.cabal/bin`) or Stack or Pip (at `$HOME/.local/bin`) take precedence
-    over the same executable installed at `/usr/local/sbin`, `/usr/local/bin`,
-    etc.
+    `$HOME/.cabal/bin` or `$HOME/.local/bin`) or Stack or Pip (at
+    `$HOME/.local/bin`) take precedence over the same executable installed at
+    `/usr/local/sbin`, `/usr/local/bin`, etc.
 
 [VS Code](https://code.visualstudio.com) is used as IDE, with the following
 extensions pre‑installed:
@@ -55,24 +55,24 @@ extensions pre‑installed:
 
 ## Parent images
 
-Stack's Dev Containers are derived from Docker images that are used to build the
-*statically linked* Linux/x86_64 and Linux/AArch64 binary distributions of
+Stack's Dev Containers are derived from Docker images that are used to build
+the *statically linked* Linux/x86_64 and Linux/AArch64 binary distributions of
 Stack.
 
-These Docker images are multi-architecture (`linux/amd64`, `linux/arm64/v8`)
-*ghc‑musl* images. They are based on Alpine Linux (that is
+These Docker images are multi‑architecture (`linux/amd64`, `linux/arm64/v8`)
+<nobr>*GHC musl*</nobr> images. They are based on Alpine Linux (that is
 [musl libc](https://musl.libc.org) and [BusyBox](https://www.busybox.net)).
 
-The images contain *unofficial* binary distributions of GHC 9.4.7 and 9.6.2
-(that is, ones not released by the GHC developers). That is because:
+The images contain *unofficial* binary distributions of GHC (that is, ones not
+released by the GHC developers). That is because:
 
-1.  the official GHC 9.6.2 binary distributions for Alpine Linux/x86_64 have
-    known bugs; and
+1.  the official GHC binary distributions for Alpine Linux/x86_64 have known
+    bugs; and
 2.  there are no official binary distributions for Alpine Linux/AArch64.
 
-Stack's global configuration (`/etc/stack/config.yaml`) sets `system-ghc: true`
-and `install-ghc: false`. That ensures that only the GHC available in the Dev
-Containers is used.
+Stack's global configuration (`/etc/stack/config.yaml`) sets
+<nobr>`system-ghc: true`</nobr> and <nobr>`install-ghc: false`</nobr>. That
+ensures that only the GHC available in the Dev Containers is used.
 
 ## Usage
 
@@ -89,24 +89,6 @@ repository to develop online.
 
     For use with GitHub Codespaces, follow the instructions at
     [Creating a codespace for a repository](https://docs.github.com/en/codespaces/developing-in-codespaces/creating-a-codespace-for-a-repository#creating-a-codespace-for-a-repository).
-
-### Persistence
-
-Data in the following locations is persisted:
-
-1. The user's home directory (`/home/vscode` or, for the root user, `/root`).
-   Use with Docker/Podman in *rootless mode*.
-2. The Dev Container's workspace (`/workspaces`)
-
-This is accomplished via either a *volume* or *bind mount* (or *loop device*
-on Codespaces) and is preconfigured.
-
-!!! info
-
-    The VS Code Command Palette command
-    ['Codespaces: Full Rebuild Container'](https://docs.github.com/en/codespaces/developing-in-codespaces/rebuilding-the-container-in-a-codespace#rebuilding-a-container)
-    resets the home directory. This is never necessary unless you want exactly
-    that.
 
 ## Build Stack
 

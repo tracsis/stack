@@ -1,5 +1,6 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE NoImplicitPrelude     #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE OverloadedRecordDot   #-}
 
 -- | Functions to parse Stack's \'global\' command line arguments.
 module Stack.Options.GlobalParser
@@ -116,37 +117,38 @@ globalOptsFromMonoid ::
   => Bool
   -> GlobalOptsMonoid
   -> m GlobalOpts
-globalOptsFromMonoid defaultTerminal GlobalOptsMonoid{..} = do
-  resolver <- for (getFirst globalMonoidResolver) $ \ur -> do
+globalOptsFromMonoid defaultTerminal globalMonoid = do
+  resolver <- for (getFirst globalMonoid.resolver) $ \ur -> do
     root <-
-      case globalMonoidResolverRoot of
+      case globalMonoid.resolverRoot of
         First Nothing -> getCurrentDir
         First (Just dir) -> resolveDir' dir
     resolvePaths (Just root) ur
   stackYaml <-
-    case getFirst globalMonoidStackYaml of
+    case getFirst globalMonoid.stackYaml of
       Nothing -> pure SYLDefault
       Just fp -> SYLOverride <$> resolveFile' fp
-  pure GlobalOpts
-    { globalReExecVersion = getFirst globalMonoidReExecVersion
-    , globalDockerEntrypoint = getFirst globalMonoidDockerEntrypoint
-    , globalLogLevel = fromFirst defaultLogLevel globalMonoidLogLevel
-    , globalTimeInLog = fromFirstTrue globalMonoidTimeInLog
-    , globalRSLInLog = fromFirstFalse globalMonoidRSLInLog
-    , globalPlanInLog = fromFirstFalse globalMonoidPlanInLog
-    , globalConfigMonoid = globalMonoidConfigMonoid
-    , globalResolver = resolver
-    , globalCompiler = getFirst globalMonoidCompiler
-    , globalTerminal = fromFirst defaultTerminal globalMonoidTerminal
-    , globalStylesUpdate = globalMonoidStyles
-    , globalTermWidth = getFirst globalMonoidTermWidth
-    , globalStackYaml = stackYaml
-    , globalLockFileBehavior =
+  let lockFileBehavior =
         let defLFB =
-              case getFirst globalMonoidResolver of
+              case getFirst globalMonoid.resolver of
                 Nothing -> LFBReadWrite
                 _ -> LFBReadOnly
-        in  fromFirst defLFB globalMonoidLockFileBehavior
+        in  fromFirst defLFB globalMonoid.lockFileBehavior
+  pure GlobalOpts
+    { reExecVersion = getFirst globalMonoid.reExecVersion
+    , dockerEntrypoint = getFirst globalMonoid.dockerEntrypoint
+    , logLevel = fromFirst defaultLogLevel globalMonoid.logLevel
+    , timeInLog = fromFirstTrue globalMonoid.timeInLog
+    , rslInLog = fromFirstFalse globalMonoid.rslInLog
+    , planInLog = fromFirstFalse globalMonoid.planInLog
+    , configMonoid = globalMonoid.configMonoid
+    , resolver
+    , compiler = getFirst globalMonoid.compiler
+    , terminal = fromFirst defaultTerminal globalMonoid.terminal
+    , stylesUpdate = globalMonoid.styles
+    , termWidthOpt = getFirst globalMonoid.termWidthOpt
+    , stackYaml
+    , lockFileBehavior
     }
 
 -- | Default logging level should be something useful but not crazy.

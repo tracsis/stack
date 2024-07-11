@@ -1,6 +1,2 @@
-resolver: lts-21.13
-
-packages:
-- .
-
+snapshot: lts-22.21
 hackage-base-url: http://localhost:12415/

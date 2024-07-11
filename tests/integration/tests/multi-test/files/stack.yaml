@@ -1,7 +1,5 @@
-flags: {}
+snapshot: lts-22.21
 packages:
 - .
 - sub-package
 - cyclic
-extra-deps: []
-resolver: lts-21.13

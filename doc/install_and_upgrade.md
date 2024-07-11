@@ -4,7 +4,10 @@
 
 ## Install Stack
 
-Stack can be installed on most Linux distributions, macOS and Windows.
+Stack can be installed on most Linux distributions, macOS and Windows. It will
+require at least about 5 GB of disk space, of which about 3 GB is for a single
+version of GHC and about 2 GB is for Stack's local copy of the Hackage package
+index.
 
 Stack is open to supporting more operating systems. To request support for an
 operating system, please submit an
@@ -115,50 +118,94 @@ GitHub repository.
             sudo apt-get install g++ gcc libc6-dev libffi-dev libgmp-dev make xz-utils zlib1g-dev git gnupg netbase
             ~~~
 
+    === "AArch64"
+
+        * Click
+          [:material-cloud-download-outline:](https://get.haskellstack.org/stable/linux-aarch64.tar.gz)
+          to download an archive file with the latest release.
+
+        * Extract the archive and place the `stack` executable somewhere on your
+          PATH (see the [Path](#path) section below).
+
+        * Ensure you have the required system dependencies installed. These
+          include GCC, GNU Make, xz, perl, libgmp, libffi, and zlib. We also
+          recommend Git and GPG.
+
+        The installation of system dependencies will depend on the package
+        manager for your Linux distribution. Notes are provided for Arch Linux,
+        CentOS, Debian, Fedora, Gentoo and Ubuntu.
+
+        === "Arch Linux"
+
+            ~~~text
+            sudo pacman -S make gcc ncurses git gnupg xz zlib gmp libffi zlib
+            ~~~
+
+        === "CentOS"
+
+            ~~~text
+            sudo yum install perl make automake gcc gmp-devel libffi zlib zlib-devel xz tar git gnupg
+            ~~~
+
+        === "Debian"
+
+            ~~~text
+            sudo apt-get install g++ gcc libc6-dev libffi-dev libgmp-dev make xz-utils zlib1g-dev git gnupg netbase
+            ~~~
+
+        === "Fedora"
+
+            ~~~text
+            sudo dnf install perl make automake gcc gmp-devel libffi zlib zlib-devel xz tar git gnupg
+            ~~~
+
+        === "Gentoo"
+
+            Ensure you have the `ncurses` package with `USE=tinfo`. Without it,
+            Stack will not be able to install GHC.
+
+        === "Ubuntu"
+
+            ~~~text
+            sudo apt-get install g++ gcc libc6-dev libffi-dev libgmp-dev make xz-utils zlib1g-dev git gnupg netbase
+            ~~~
+
     ### Linux packages
 
     Some Linux distributions have official or unofficial packages for Stack,
     including Arch Linux, Debian, Fedora, NixOS, openSUSE/SUSE Linux Enterprise,
-    and Ubuntu.
+    and Ubuntu. However, the Stack version available as a Linux package may lag
+    behind Stack's current version and, in some cases, the lag may be
+    significant.
 
     !!! info "Linux packages that lag behind Stack's current version"
 
-        The Stack version available as a Linux package may lag behind Stack's
-        current version. If so, using `stack upgrade --binary-only` is
-        recommended after installing it. For Stack versions before 1.3.0 which
-        do not support `--binary-only`, just `stack upgrade` may work too.
+        If Stack version available as a Linux package lags behind Stack's
+        current version, using `stack upgrade --binary-only` is recommended
+        after installing it.
 
     === "Arch Linux"
 
-        The Arch community package repository provides an official
-        [package](https://www.archlinux.org/packages/community/x86_64/stack/).
+        The Arch extra package repository provides an official x86_64
+        [package](https://www.archlinux.org/packages/extra/x86_64/stack/).
         You can install it with the command:
 
         ~~~text
         sudo pacman -S stack
         ~~~
 
-        This version may slightly lag behind, but it should be updated within
-        the day. The package is also always rebuilt and updated when one of its
-        dependencies gets an update.
+        The Arch User Repository (AUR) also provides:
 
-        The Arch User Repository (AUR) also provides a
-        [package](https://aur.archlinux.org/packages/haskell-stack-git).
-        However, its Stack version lags behind, so running
-        `stack upgrade --binary-only` is recommended after installing it. For
-        older Stack versions which do not support `--binary-only`, just
-        `stack upgrade` may work too.
+        *   a [`stack-bin` package](https://aur.archlinux.org/packages/stack-bin);
+            and
 
-        To use `stack setup` with versions of GHC before 7.10.3 or on a
-        32-bit system, you may need the AUR
-        [ncurses5-compat-libs](https://aur.archlinux.org/packages/ncurses5-compat-libs/)
-        package installed.
+        *   a [`stack-static` package](https://aur.archlinux.org/packages/stack-static)
 
     === "Debian"
 
         There are Debian
         [packages](https://packages.debian.org/search?keywords=haskell-stack&searchon=names&suite=all&section=all)
-        for Stretch and up. However, the distribution's Stack version lags
+        for Buster and up. However, the distribution's Stack version lags
         behind.
 
     === "Fedora"
@@ -231,8 +278,7 @@ GitHub repository.
 
         There are Ubuntu
         [packages](http://packages.ubuntu.com/search?keywords=haskell-stack&searchon=names&suite=all&section=all)
-        for Ubuntu 18.04 and up. However, the distribution's Stack version lags
-        behind.
+        for Ubuntu 20.04 and up.
 
     It is possible to set up auto-completion of Stack commands. For further
     information, see the [shell auto-completion](shell_autocompletion.md)
@@ -355,6 +401,24 @@ GitHub repository.
 
         * Now you can run Stack from the command line in a terminal.
 
+        ### LLVM
+
+        The documentation for each version of GHC identifies the versions of
+        LLVM that are supported. That is summarised in the table below for
+        recent versions of GHC:
+
+        |GHC version|LLVM versions|
+        |-----------|-------------|
+        |9.8.2      |11 to 15     |
+        |9.6.5      |11 to 15     |
+        |9.4.8      |10 to 14     |
+        |9.2.8      |9 to 12      |
+        |9.0.2      |9, 10 or 12  |
+        |8.10.7     |9 to 12      |
+        |8.8.4      |7            |
+        |8.6.5      |6            |
+        |8.4.4      |5            |
+
     ### Using Homebrew
 
     [Homebrew](https://brew.sh/) is a popular package manager for macOS. If you
@@ -426,12 +490,17 @@ GitHub repository.
     use GHCup) is to download and use the
     [Windows installer](https://get.haskellstack.org/stable/windows-x86_64-installer.exe).
 
+    !!! info "Stack root"
+
+        By default, the Windows installer will set the Stack root by setting the
+        `STACK_ROOT` environment variable to `C:\sr`.
+
     !!! warning "Long user PATH environment variable"
 
-        The Windows installer for Stack 2.9.1, 2.9.3 and 2.11.1 (current) (only)
-        will replace the user `PATH` environment variable (rather than append to
-        it) if a 1024 character limit is exceeded. If the content of your
-        existing user `PATH` is long, preserve it before running the installer.
+        The Windows installer for Stack 2.9.1, 2.9.3 and 2.11.1 (only) will
+        replace the user `PATH` environment variable (rather than append to it)
+        if a 1024 character limit is exceeded. If the content of your existing
+        user `PATH` is long, preserve it before running the installer.
 
     !!! note "Anti-virus software"
 

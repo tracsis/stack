@@ -12,6 +12,7 @@ module Stack.Constants
   , haskellDefaultPreprocessorExts
   , stackProgName
   , stackProgName'
+  , nixProgName
   , stackDotYaml
   , stackWorkEnvVar
   , stackRootEnvVar
@@ -51,6 +52,7 @@ module Stack.Constants
   , relDirGhciScript
   , relDirPantry
   , relDirPrograms
+  , relDirRoot
   , relDirUpperPrograms
   , relDirStackProgName
   , relDirStackWork
@@ -70,6 +72,7 @@ module Stack.Constants
   , relDirLoadedSnapshotCache
   , bindirSuffix
   , docDirSuffix
+  , htmlDirSuffix
   , relDirHpc
   , relDirLib
   , relDirShare
@@ -137,10 +140,12 @@ module Stack.Constants
   , testGhcEnvRelFile
   , relFileBuildLock
   , stackDeveloperModeDefault
+  , isStackUploadDisabled
   , globalFooter
   , gitHubBasicAuthType
   , gitHubTokenEnvVar
   , altGitHubTokenEnvVar
+  , hackageBaseUrl
   ) where
 
 import           Data.ByteString.Builder ( byteString )
@@ -172,6 +177,10 @@ instance Exception ConstantsException where
 -- | Name of the Stack program.
 stackProgName' :: Text
 stackProgName' = T.pack stackProgName
+
+-- | Name of the Nix package manager command
+nixProgName :: String
+nixProgName = "nix"
 
 -- | Extensions used for Haskell modules. Excludes preprocessor ones.
 haskellFileExts :: [Text]
@@ -244,8 +253,9 @@ wiredInPackages = case mparsed of
     [ "ghc-prim"
       -- A magic package
     , "integer-gmp"
-      -- No longer magic > 1.0.3.0. With GHC 9.4.7 at least, there seems to be
-      -- no problem in using it.
+      -- No longer magic > 1.0.3.0 (GHC >= 9.0) and deprecated in favour of
+      -- ghc-bignum. With GHC 9.6.5 at least, there seems to be no problem in
+      -- using it.
     , "integer-simple"
       -- A magic package
     , "base"
@@ -256,17 +266,20 @@ wiredInPackages = case mparsed of
       -- A magic package
     , "dph-seq"
       -- Deprecated in favour of dph-prim-seq, which does not appear to be
-      -- magic. With GHC 9.4.7 at least, there seems to be no problem in using
+      -- magic. With GHC 9.6.5 at least, there seems to be no problem in using
       -- it.
     , "dph-par"
       --  Deprecated in favour of dph-prim-par, which does not appear to be
-      -- magic. With GHC 9.4.7 at least, there seems to be no problem in using
+      -- magic. With GHC 9.6.5 at least, there seems to be no problem in using
       -- it.
     , "ghc"
       -- A magic package
     , "interactive"
-      -- Could not identify information about this package name. With GHC 9.4.7
-      -- at least, there seems to be no problem in using it.
+      -- Type and class declarations at the GHCi command prompt are treated as
+      -- if they were defined in modules all sharing a common package
+      -- interactive. See 'Note [The interactive package]' at
+      -- https://gitlab.haskell.org/ghc/ghc/-/blob/master/compiler/GHC/Runtime/Context.hs
+      -- With GHC 9.6.5 at least, there seems to be no problem in using it.
     , "ghc-bignum"
       -- A magic package
     ]
@@ -388,6 +401,9 @@ relDirPantry = $(mkRelDir "pantry")
 relDirPrograms :: Path Rel Dir
 relDirPrograms = $(mkRelDir "programs")
 
+relDirRoot :: Path Rel Dir
+relDirRoot = $(mkRelDir ".")
+
 relDirUpperPrograms :: Path Rel Dir
 relDirUpperPrograms = $(mkRelDir "Programs")
 
@@ -446,6 +462,10 @@ bindirSuffix = relDirBin
 -- | Suffix applied to an installation root to get the doc dir
 docDirSuffix :: Path Rel Dir
 docDirSuffix = $(mkRelDir "doc")
+
+-- | Suffix applied to a path to get the @html@ directory.
+htmlDirSuffix :: Path Rel Dir
+htmlDirSuffix = $(mkRelDir "html")
 
 relDirHpc :: Path Rel Dir
 relDirHpc = $(mkRelDir "hpc")
@@ -666,6 +686,10 @@ relFileBuildLock = $(mkRelFile "build-lock")
 stackDeveloperModeDefault :: Bool
 stackDeveloperModeDefault = STACK_DEVELOPER_MODE_DEFAULT
 
+-- | What should the default be for stack-developer-mode
+isStackUploadDisabled :: Bool
+isStackUploadDisabled = STACK_DISABLE_STACK_UPLOAD
+
 -- | The footer to the help for Stack's subcommands
 globalFooter :: String
 globalFooter =
@@ -684,3 +708,6 @@ gitHubTokenEnvVar = "GH_TOKEN"
 -- \'Basic\' authentication.
 altGitHubTokenEnvVar :: String
 altGitHubTokenEnvVar = "GITHUB_TOKEN"
+
+hackageBaseUrl :: Text
+hackageBaseUrl = "https://hackage.haskell.org/"

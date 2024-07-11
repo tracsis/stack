@@ -70,16 +70,23 @@ information about how Stack itself can configure `NIX_PATH`, see further
 
 ### Enable Nix integration
 
-To enable Nix integration, add the following section to your Stack YAML
-configuration file (`stack.yaml` or `config.yaml`):
+On NixOS, Nix integration is enabled by default; on other operating systems it
+is disabled. To enable Nix integration, add the following section to your Stack
+YAML configuration file (`stack.yaml` or `config.yaml`):
 
 ~~~yaml
 nix:
-  enable: true  # false by default
+  enable: true  # false by default, except on NixOS
 ~~~
 
 The equivalent command line flag (which will prevail) is `--[no-]nix`. Passing
 any `--nix-*` option on the command line will imply the `--nix` option.
+
+If Nix integration is not enabled, Stack will notify the user if a `nix`
+executable is on the PATH. If that notification is unwanted, it can be muted by
+setting Stack's configuration option
+[`notify-if-nix-on-path`](yaml_configuration.md#notify-if-nix-on-path) to
+`false`.
 
 With Nix integration enabled, `stack build` and `stack exec` will automatically
 launch themselves in a local build environment (using `nix-shell` behind the
@@ -121,7 +128,7 @@ above to use Nix flakes. The `flake.nix` file is:
 
         hPkgs =
           pkgs.haskell.packages."ghc8107"; # need to match Stackage LTS version
-                                           # from stack.yaml resolver
+                                           # from stack.yaml snapshot
 
         myDevTools = [
           hPkgs.ghc # GHC compiler in the desired version (will be available on PATH)
@@ -179,8 +186,8 @@ precisely the same package set.
 Nix integration will instruct Stack to build inside a local build environment.
 That environment will also download and use a
 [GHC Nix package](https://search.nixos.org/packages?query=haskell.compiler.ghc)
-matching the required version of the configured
-[Stack resolver](yaml_configuration.md#resolver-or-snapshot).
+matching the required version of the configured Stack
+[snapshot](yaml_configuration.md#snapshot).
 
 Enabling Nix integration means that packages will always be built using the
 local GHC from Nix inside your shell, rather than your globally installed system
@@ -303,8 +310,8 @@ The `buildStackProject` utility function is documented in the
 Stack expects the `shell.nix` file to define a function of with one argument
 called `ghc` (arguments are not positional), which you should give to
 function `buildStackProject`. This argument is a GHC Nix package in the
-version as defined in the resolver you set in Stack's project-level
-configuration file (`stack.yaml`).
+version as defined in the snapshot you set in Stack's project-level
+configuration file (`stack.yaml`, by default).
 
 ### Pure and impure Nix shells
 
@@ -366,34 +373,33 @@ branch, or edit the Nix descriptions of some packages.
 The Tweag example [repository][tweag-example] shows how you can pin a package
 set.
 
-## Configuration options
+## Non-project specific configuration
 
-Below is a summary of the Stack YAML configuration file settings, identifying
-default values:
+Below is a summary of the non-project specific configuration options and their
+default values. The options can be set in Stack's project-level configuration
+file (`stack.yaml`, by default) or its global configuration file
+(`config.yaml`).
 
 ~~~yaml
 nix:
 
-  # false by default. Must be present and set to `true` to enable Nix, except on
-  # NixOS where it is enabled by default (see #3938).  You can set it in
-  # your `$HOME/.stack/config.yaml` to enable Nix for all your projects without
-  # having to repeat it
+  # false by default, except on NixOS. Is Nix integration enabled?
   enable: true
 
-  # true by default. Tells Nix whether to run in a pure shell or not.
+  # true by default. Should Nix run in a pure shell?
   pure: true
 
-  # Empty by default. The list of packages you want to be
-  # available in the nix-shell at build time (with `stack
-  # build`) and run time (with `stack exec`).
+  # Empty by default. The list of packages you want to be available in the
+  # nix-shell at build time (with `stack build`) and run time (with
+  # `stack exec`).
   packages: []
 
   # Unset by default. You cannot set this option if `packages:`
   # is already present and not empty.
   shell-file: shell.nix
 
-  # A list of strings, empty by default. Additional options that
-  # will be passed verbatim to the `nix-shell` command.
+  # A list of strings, empty by default. Additional options that will be passed
+  # verbatim to the `nix-shell` command.
   nix-shell-options: []
 
   # A list of strings, empty by default, such as
@@ -405,6 +411,7 @@ nix:
   # collection roots. This way, calling nix-collect-garbage will not remove
   # those packages from the Nix store, saving you some time when running
   # stack build again with Nix support activated.
+  #
   # This creates a `nix-gc-symlinks` directory in the project `.stack-work`.
   # To revert that, just delete this `nix-gc-symlinks` directory.
   add-gc-roots: false
@@ -424,7 +431,7 @@ those libraries and, therefore, can't build most projects. However, GHC provided
 through Nix can be modified to find the external C libraries provided through
 Nix.
 
-[nix-language]: https://nixos.wiki/wiki/Overview_of_the_Nix_Language
+[nix-language]: https://wiki.nixos.org/wiki/Overview_of_the_Nix_Language
 [nix-manual-exprs]: http://nixos.org/manual/nix/stable/expressions/writing-nix-expressions.html
 [nix-search-packages]: https://search.nixos.org/packages
 [nixpkgs-manual-haskell]: https://haskell4nix.readthedocs.io/nixpkgs-users-guide.html?highlight=buildStackProject#how-to-build-a-haskell-project-using-stack

@@ -1,4 +1,5 @@
-{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE NoImplicitPrelude     #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 
 module Stack.Options.ConfigParser
   ( configOptsParser
@@ -23,7 +24,7 @@ import           Stack.Options.GhcBuildParser ( ghcBuildParser )
 import           Stack.Options.GhcVariantParser ( ghcVariantParser )
 import           Stack.Options.NixParser ( nixOptsParser )
 import           Stack.Options.Utils ( GlobalOptsContext (..), hideMods )
-import           Stack.Prelude
+import           Stack.Prelude hiding ( snapshotLocation )
 import           Stack.Types.ColorWhen ( readColorWhen )
 import           Stack.Types.ConfigMonoid ( ConfigMonoid (..) )
 import           Stack.Types.DumpLogs ( DumpLogs (..) )
@@ -33,35 +34,36 @@ import qualified System.FilePath as FilePath
 configOptsParser :: FilePath -> GlobalOptsContext -> Parser ConfigMonoid
 configOptsParser currentDir hide0 =
   ( \stackRoot workDir buildOpts dockerOpts nixOpts systemGHC installGHC arch
-     ghcVariant ghcBuild jobs includes libs preprocs overrideGccPath overrideHpack
-     skipGHCCheck skipMsys localBin setupInfoLocations modifyCodePage
-     allowDifferentUser dumpLogs colorWhen snapLoc noRunCompile -> mempty
-       { configMonoidStackRoot = stackRoot
-       , configMonoidWorkDir = workDir
-       , configMonoidBuildOpts = buildOpts
-       , configMonoidDockerOpts = dockerOpts
-       , configMonoidNixOpts = nixOpts
-       , configMonoidSystemGHC = systemGHC
-       , configMonoidInstallGHC = installGHC
-       , configMonoidSkipGHCCheck = skipGHCCheck
-       , configMonoidArch = arch
-       , configMonoidGHCVariant = ghcVariant
-       , configMonoidGHCBuild = ghcBuild
-       , configMonoidJobs = jobs
-       , configMonoidExtraIncludeDirs = includes
-       , configMonoidExtraLibDirs = libs
-       , configMonoidCustomPreprocessorExts = preprocs
-       , configMonoidOverrideGccPath = overrideGccPath
-       , configMonoidOverrideHpack = overrideHpack
-       , configMonoidSkipMsys = skipMsys
-       , configMonoidLocalBinPath = localBin
-       , configMonoidSetupInfoLocations = setupInfoLocations
-       , configMonoidModifyCodePage = modifyCodePage
-       , configMonoidAllowDifferentUser = allowDifferentUser
-       , configMonoidDumpLogs = dumpLogs
-       , configMonoidColorWhen = colorWhen
-       , configMonoidSnapshotLocation = snapLoc
-       , configMonoidNoRunCompile = noRunCompile
+     ghcVariant ghcBuild jobs extraIncludeDirs extraLibDirs
+     customPreprocessorExts overrideGccPath overrideHpack skipGHCCheck skipMsys
+     localBinPath setupInfoLocations modifyCodePage allowDifferentUser dumpLogs
+     colorWhen snapshotLocation noRunCompile -> mempty
+       { stackRoot
+       , workDir
+       , buildOpts
+       , dockerOpts
+       , nixOpts
+       , systemGHC
+       , installGHC
+       , skipGHCCheck
+       , arch
+       , ghcVariant
+       , ghcBuild
+       , jobs
+       , extraIncludeDirs
+       , extraLibDirs
+       , customPreprocessorExts
+       , overrideGccPath
+       , overrideHpack
+       , skipMsys
+       , localBinPath
+       , setupInfoLocations
+       , modifyCodePage
+       , allowDifferentUser
+       , dumpLogs
+       , colorWhen
+       , snapshotLocation
+       , noRunCompile
        }
   )
   <$> optionalFirst (absDirOption
@@ -77,7 +79,7 @@ configOptsParser currentDir hide0 =
         <> completer
              ( pathCompleterWith
                ( defaultPathCompleterOpts
-                   { pcoAbsolute = False, pcoFileFilter = const False }
+                   { absolute = False, fileFilter = const False }
                )
              )
         <> help "Relative path to Stack's work directory. Overrides any \
@@ -100,7 +102,7 @@ configOptsParser currentDir hide0 =
   <*> optionalFirst (strOption
         (  long "arch"
         <> metavar "ARCH"
-        <> help "System architecture, e.g. i386, x86_64."
+        <> help "System architecture, e.g. i386, x86_64, aarch64."
         <> hide
         ))
   <*> optionalFirst (ghcVariantParser (hide0 /= OuterGlobalOpts))

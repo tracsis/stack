@@ -1,5 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE NoFieldSelectors    #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings   #-}
 
 module Stack.Types.Project
   ( Project (..)
@@ -14,43 +16,47 @@ import           Stack.Types.Curator ( Curator )
 -- | A project is a collection of packages. We can have multiple stack.yaml
 -- files, but only one of them may contain project information.
 data Project = Project
-  { projectUserMsg :: !(Maybe String)
+  { userMsg :: !(Maybe String)
     -- ^ A warning message to display to the user when the auto generated
     -- config may have issues.
-  , projectPackages :: ![RelFilePath]
+  , packages :: ![RelFilePath]
     -- ^ Packages which are actually part of the project (as opposed
     -- to dependencies).
-  , projectDependencies :: ![RawPackageLocation]
+  , extraDeps :: ![RawPackageLocation]
     -- ^ Dependencies defined within the stack.yaml file, to be applied on top
     -- of the snapshot.
-  , projectFlags :: !(Map PackageName (Map FlagName Bool))
+  , flagsByPkg :: !(Map PackageName (Map FlagName Bool))
     -- ^ Flags to be applied on top of the snapshot flags.
-  , projectResolver :: !RawSnapshotLocation
+  , resolver :: !RawSnapshotLocation
     -- ^ How we resolve which @Snapshot@ to use
-  , projectCompiler :: !(Maybe WantedCompiler)
+  , compiler :: !(Maybe WantedCompiler)
     -- ^ Override the compiler in 'projectResolver'
-  , projectExtraPackageDBs :: ![FilePath]
-  , projectCurator :: !(Maybe Curator)
+  , extraPackageDBs :: ![FilePath]
+  , curator :: !(Maybe Curator)
     -- ^ Extra configuration intended exclusively for usage by the curator tool.
     -- In other words, this is /not/ part of the documented and exposed Stack
     -- API. SUBJECT TO CHANGE.
-  , projectDropPackages :: !(Set PackageName)
+  , dropPackages :: !(Set PackageName)
     -- ^ Packages to drop from the 'projectResolver'.
   }
   deriving Show
 
 instance ToJSON Project where
   -- Expanding the constructor fully to ensure we don't miss any fields.
-  toJSON (Project userMsg packages extraDeps flags resolver mcompiler extraPackageDBs mcurator drops) = object $ concat
-    [ maybe [] (\cv -> ["compiler" .= cv]) mcompiler
-    , maybe [] (\msg -> ["user-message" .= msg]) userMsg
-    , [ "extra-package-dbs" .= extraPackageDBs | not (null extraPackageDBs) ]
-    , [ "extra-deps" .= extraDeps | not (null extraDeps) ]
-    , [ "flags" .= fmap toCabalStringMap (toCabalStringMap flags)
-      | not (Map.null flags)
+  toJSON project = object $ concat
+    [ maybe [] (\cv -> ["compiler" .= cv]) project.compiler
+    , maybe [] (\msg -> ["user-message" .= msg]) project.userMsg
+    , [ "extra-package-dbs" .= project.extraPackageDBs
+      | not (null project.extraPackageDBs)
       ]
-    , ["packages" .= packages]
-    , ["resolver" .= resolver]
-    , maybe [] (\c -> ["curator" .= c]) mcurator
-    , [ "drop-packages" .= Set.map CabalString drops | not (Set.null drops) ]
+    , [ "extra-deps" .= project.extraDeps | not (null project.extraDeps) ]
+    , [ "flags" .= fmap toCabalStringMap (toCabalStringMap project.flagsByPkg)
+      | not (Map.null project.flagsByPkg)
+      ]
+    , ["packages" .= project.packages]
+    , ["resolver" .= project.resolver]
+    , maybe [] (\c -> ["curator" .= c]) project.curator
+    , [ "drop-packages" .= Set.map CabalString project.dropPackages
+      | not (Set.null project.dropPackages)
+      ]
     ]

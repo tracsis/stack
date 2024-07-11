@@ -1,6 +1,6 @@
 {-# LANGUAGE NoImplicitPrelude  #-}
+{-# LANGUAGE NoFieldSelectors   #-}
 {-# LANGUAGE OverloadedStrings  #-}
-{-# LANGUAGE RecordWildCards    #-}
 
 -- | Casa configuration types.
 
@@ -18,22 +18,23 @@ import           Stack.Prelude
 -- | An uninterpreted representation of Casa configuration options.
 -- Configurations may be "cascaded" using mappend (left-biased).
 data CasaOptsMonoid = CasaOptsMonoid
-  { casaMonoidEnable :: !FirstTrue
-  , casaMonoidRepoPrefix :: !(First CasaRepoPrefix)
-  , casaMonoidMaxKeysPerRequest :: !(First Int)
+  { enable :: !FirstTrue
+  , repoPrefix :: !(First CasaRepoPrefix)
+  , maxKeysPerRequest :: !(First Int)
   }
   deriving (Generic, Show)
 
 -- | Decode uninterpreted Casa configuration options from JSON/YAML.
 instance FromJSON (WithJSONWarnings CasaOptsMonoid) where
-  parseJSON = withObjectWarnings "CasaOptsMonoid"
-    ( \o -> do
-        casaMonoidEnable <- FirstTrue <$> o ..:? casaEnableName
-        casaMonoidRepoPrefix <- First <$> o ..:? casaRepoPrefixName
-        casaMonoidMaxKeysPerRequest <-
-          First <$> o ..:? casaMaxKeysPerRequestName
-        pure CasaOptsMonoid {..}
-    )
+  parseJSON = withObjectWarnings "CasaOptsMonoid" $ \o -> do
+    enable <- FirstTrue <$> o ..:? casaEnableName
+    repoPrefix <- First <$> o ..:? casaRepoPrefixName
+    maxKeysPerRequest <- First <$> o ..:? casaMaxKeysPerRequestName
+    pure CasaOptsMonoid
+      { enable
+      , repoPrefix
+      , maxKeysPerRequest
+      }
 
 -- | Left-biased combine Casa configuration options
 instance Semigroup CasaOptsMonoid where

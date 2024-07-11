@@ -1,4 +1,6 @@
 {-# LANGUAGE NoImplicitPrelude     #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE OverloadedRecordDot   #-}
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE TypeFamilies          #-}
 
@@ -15,7 +17,7 @@ import qualified Data.ByteString.Char8 as BC
 import qualified Data.Foldable as F
 import qualified Data.IntMap as IntMap
 import           Data.List.Extra ( groupSortOn )
-import qualified Data.List.NonEmpty as NonEmpty
+import           Data.List.NonEmpty.Extra ( minimumBy1 )
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as T
@@ -35,9 +37,10 @@ import           Path.IO
                    )
 import qualified RIO.FilePath as FP
 import           RIO.List ( (\\), intercalate, isSuffixOf, isPrefixOf )
-import           RIO.List.Partial ( minimumBy )
+import           RIO.NonEmpty ( nonEmpty )
+import qualified RIO.NonEmpty as NE
 import           Stack.BuildPlan
-                   ( BuildPlanCheck (..), checkSnapBuildPlan, deNeededBy
+                   ( BuildPlanCheck (..), DepError (..), checkSnapBuildPlan
                    , removeSrcPkgDefaultFlags, selectBestSnapshot
                    )
 import           Stack.Config ( getSnapshots, makeConcreteResolver )
@@ -104,7 +107,7 @@ instance Pretty InitPrettyException where
                  , "as"
                  , style
                      File
-                     (fromString (packageNameString name) <> ".cabal")
+                     (fromPackageName name <> ".cabal")
                  ]
              )
              rels
@@ -137,7 +140,7 @@ instance Pretty InitPrettyException where
     <> flow "None of the following snapshots provides a compiler matching \
             \your package(s):"
     <> line
-    <> bulletedList (map (fromString . show) (NonEmpty.toList names))
+    <> bulletedList (map (fromString . show) (NE.toList names))
     <> blankLine
     <> resolveOptions
   pretty (ResolverMismatch resolver errDesc) =
@@ -178,8 +181,8 @@ resolveOptions =
            ]
        , fillSep
            [ "Using"
-           , style Shell "--resolver"
-           , "to specify a matching snapshot/resolver."
+           , style Shell "--snapshot"
+           , "to specify a matching snapshot."
            ]
        ]
 
@@ -203,7 +206,7 @@ initCmd initOpts = do
   pwd <- getCurrentDir
   go <- view globalOptsL
   withGlobalProject $
-    withConfig YesReexec (initProject pwd initOpts (globalResolver go))
+    withConfig YesReexec (initProject pwd initOpts go.resolver)
 
 -- | Generate a @stack.yaml@ file.
 initProject ::
@@ -216,10 +219,10 @@ initProject currDir initOpts mresolver = do
   let dest = currDir </> stackDotYaml
   reldest <- toFilePath <$> makeRelativeToCurrentDir dest
   exists <- doesFileExist dest
-  when (not (forceOverwrite initOpts) && exists) $
+  when (not initOpts.forceOverwrite && exists) $
     prettyThrowIO $ ConfigFileAlreadyExists reldest
-  dirs <- mapM (resolveDir' . T.unpack) (searchDirs initOpts)
-  let find  = findCabalDirs (includeSubDirs initOpts)
+  dirs <- mapM (resolveDir' . T.unpack) initOpts.searchDirs
+  let find  = findCabalDirs initOpts.includeSubDirs
       dirs' = if null dirs then [currDir] else dirs
   prettyInfo $
        fillSep
@@ -278,16 +281,16 @@ initProject currDir initOpts mresolver = do
     PLImmutable . cplComplete <$>
       completePackageLocation
         (RPLIHackage (PackageIdentifierRevision n v CFILatest) Nothing)
-  let p = Project
-        { projectUserMsg = if userMsg == "" then Nothing else Just userMsg
-        , projectPackages = resolvedRelative <$> Map.elems rbundle
-        , projectDependencies = map toRawPL deps
-        , projectFlags = removeSrcPkgDefaultFlags gpds flags
-        , projectResolver = snapshotLoc
-        , projectCompiler = Nothing
-        , projectExtraPackageDBs = []
-        , projectCurator = Nothing
-        , projectDropPackages = mempty
+  let project = Project
+        { userMsg = if userMsg == "" then Nothing else Just userMsg
+        , packages = resolvedRelative <$> Map.elems rbundle
+        , extraDeps = map toRawPL deps
+        , flagsByPkg = removeSrcPkgDefaultFlags gpds flags
+        , resolver = snapshotLoc
+        , compiler = Nothing
+        , extraPackageDBs = []
+        , curator = Nothing
+        , dropPackages = mempty
         }
       makeRel = fmap toFilePath . makeRelativeToCurrentDir
   prettyInfoL
@@ -333,7 +336,7 @@ initProject currDir initOpts mresolver = do
         else "Writing configuration to"
     , style File (fromString reldest) <> "."
     ]
-  writeBinaryFileAtomic dest $ renderStackYaml p
+  writeBinaryFileAtomic dest $ renderStackYaml project
     (Map.elems $ fmap (makeRelDir . parent . fst) ignored)
     (map (makeRelDir . parent) dupPkgs)
   prettyInfoS
@@ -380,7 +383,7 @@ renderStackYaml p ignoredPackages dupPackages =
   commentedPackages =
     let ignoredComment = commentHelp
           [ "The following packages have been ignored due to incompatibility with the"
-          , "resolver compiler, dependency conflicts with other packages"
+          , "snapshot compiler, dependency conflicts with other packages"
           , "or unsatisfied dependencies."
           ]
         dupComment = commentHelp
@@ -421,9 +424,9 @@ renderStackYaml p ignoredPackages dupPackages =
     , "A snapshot resolver dictates the compiler version and the set of packages"
     , "to be used for project dependencies. For example:"
     , ""
-    , "resolver: lts-21.13"
-    , "resolver: nightly-2023-09-24"
-    , "resolver: ghc-9.6.2"
+    , "resolver: lts-22.21"
+    , "resolver: nightly-2024-05-06"
+    , "resolver: ghc-9.6.5"
     , ""
     , "The location of a snapshot can be provided as a file or url. Stack assumes"
     , "a snapshot provided as a file might change, whereas a url resource does not."
@@ -511,7 +514,7 @@ getDefaultResolver initOpts mresolver pkgDirs = do
     snaps <- fmap getRecommendedSnapshots getSnapshots'
     (c, l, r) <- selectBestSnapshot (Map.elems pkgDirs) snaps
     case r of
-      BuildPlanCheckFail {} | not (omitPackages initOpts)
+      BuildPlanCheckFail {} | not initOpts.omitPackages
               -> prettyThrowM $ NoMatchingSnapshot snaps
       _ -> pure (c, l)
 
@@ -557,8 +560,7 @@ getWorkingResolverPlan initOpts pkgDirs0 snapCandidate snapLoc = do
                 prettyWarn
                   (  flow "Ignoring the following packages:"
                   <> line
-                  <> bulletedList
-                       (map (fromString . packageNameString) ignored)
+                  <> bulletedList (map fromPackageName ignored)
                   )
               else
                 prettyWarnL
@@ -589,7 +591,7 @@ checkBundleResolver initOpts snapshotLoc snapCandidate pkgDirs = do
   case result of
     BuildPlanCheckOk f -> pure $ Right (f, Map.empty)
     BuildPlanCheckPartial _f e -> do -- FIXME:qrilka unused f
-      if omitPackages initOpts
+      if initOpts.omitPackages
         then do
           warnPartial result
           prettyWarnS "Omitting packages with unsatisfied dependencies"
@@ -597,7 +599,7 @@ checkBundleResolver initOpts snapshotLoc snapCandidate pkgDirs = do
         else
           prettyThrowM $ ResolverPartial snapshotLoc (show result)
     BuildPlanCheckFail _ e _
-      | omitPackages initOpts -> do
+      | initOpts.omitPackages -> do
           prettyWarn $
                fillSep
                  [ "Resolver compiler mismatch:"
@@ -618,18 +620,18 @@ checkBundleResolver initOpts snapshotLoc snapCandidate pkgDirs = do
       <> line
       <> indent 4 (string $ show res)
 
-  failedUserPkgs e = Map.keys $ Map.unions (Map.elems (fmap deNeededBy e))
+  failedUserPkgs e = Map.keys $ Map.unions (Map.elems (fmap (.neededBy) e))
 
 getRecommendedSnapshots :: Snapshots -> NonEmpty SnapName
 getRecommendedSnapshots snapshots =
   -- in order - Latest LTS, Latest Nightly, all LTS most recent first
-  case NonEmpty.nonEmpty supportedLtss of
+  case nonEmpty supportedLtss of
     Just (mostRecent :| older) -> mostRecent :| (nightly : older)
     Nothing -> nightly :| []
  where
-  ltss = map (uncurry LTS) (IntMap.toDescList $ snapshotsLts snapshots)
+  ltss = map (uncurry LTS) (IntMap.toDescList snapshots.lts )
   supportedLtss = filter (>= minSupportedLts) ltss
-  nightly = Nightly (snapshotsNightly snapshots)
+  nightly = Nightly snapshots.nightly
 
 -- |Yields the minimum LTS supported by Stack.
 minSupportedLts :: SnapName
@@ -693,31 +695,30 @@ cabalPackagesCheck cabaldirs = do
     -- Pantry's 'loadCabalFilePath' throws 'MismatchedCabalName' (error
     -- [S-910]) if the Cabal file name does not match the package it
     -- defines.
-    (gpdio, _name, cabalfp) <- loadCabalFilePath (Just stackProgName') dir
+    (gpdio, _name, cabalFP) <- loadCabalFilePath (Just stackProgName') dir
     eres <- liftIO $ try (gpdio YesPrintWarnings)
     case eres :: Either PantryException C.GenericPackageDescription of
-      Right gpd -> pure $ Right (cabalfp, gpd)
+      Right gpd -> pure $ Right (cabalFP, gpd)
       Left (MismatchedCabalName fp name) -> pure $ Left (fp, name)
       Left e -> throwIO e
   let (nameMismatchPkgs, packages) = partitionEithers ePackages
   when (nameMismatchPkgs /= []) $
     prettyThrowIO $ PackageNameInvalid nameMismatchPkgs
-  let dupGroups = filter ((> 1) . length)
-                          . groupSortOn (gpdPackageName . snd)
-      dupAll    = concat $ dupGroups packages
+  let dupGroups = mapMaybe nonEmpty . groupSortOn (gpdPackageName . snd)
+      dupAll    = concatMap NE.toList $ dupGroups packages
       -- Among duplicates prefer to include the ones in upper level dirs
       pathlen     = length . FP.splitPath . toFilePath . fst
-      getmin      = minimumBy (compare `on` pathlen)
+      getmin      = minimumBy1 (compare `on` pathlen)
       dupSelected = map getmin (dupGroups packages)
       dupIgnored  = dupAll \\ dupSelected
       unique      = packages \\ dupIgnored
   when (dupIgnored /= []) $ do
-    dups <- mapM (mapM (prettyPath. fst)) (dupGroups packages)
+    dups <- mapM (mapM (prettyPath . fst)) (dupGroups packages)
     prettyWarn $
          flow "The following packages have duplicate package names:"
       <> line
       <> foldMap
-           ( \dup ->    bulletedList (map fromString dup)
+           ( \dup ->    bulletedList (map fromString (NE.toList dup))
                      <> line
            )
            dups

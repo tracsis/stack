@@ -1,22 +1,29 @@
 {-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE NoFieldSelectors    #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings   #-}
 
 -- | Functions related to Stack's @unpack@ command.
 module Stack.Unpack
-  ( unpackCmd
+  ( UnpackOpts (..)
+  , UnpackTarget
+  , unpackCmd
   , unpackPackages
   ) where
 
-import           Path ( (</>), parseRelDir )
-import           Path.IO ( doesDirExist, resolveDir' )
+import           Data.List.Extra ( notNull )
+import           Path ( SomeBase (..), (</>), parseRelDir )
+import           Path.IO ( doesDirExist, getCurrentDir )
 import           Pantry ( loadSnapshot )
 import qualified RIO.Map as Map
 import           RIO.Process ( HasProcessContext )
 import qualified RIO.Set as Set
 import qualified RIO.Text as T
 import           Stack.Config ( makeConcreteResolver )
+import           Stack.Constants ( relDirRoot )
 import           Stack.Prelude
 import           Stack.Runners ( ShouldReexec (..), withConfig )
+import           Stack.Types.Config ( Config (..), HasConfig, configL )
 import           Stack.Types.GlobalOpts ( GlobalOpts (..) )
 import           Stack.Types.Runner ( Runner, globalOptsL )
 
@@ -25,6 +32,8 @@ import           Stack.Types.Runner ( Runner, globalOptsL )
 data UnpackPrettyException
   = UnpackDirectoryAlreadyExists (Set (Path Abs Dir))
   | CouldNotParsePackageSelectors [StyleDoc]
+  | PackageCandidatesRequireVersions [PackageName]
+  | PackageLocationInvalid PackageIdentifierRevision
   deriving (Show, Typeable)
 
 instance Pretty UnpackPrettyException where
@@ -42,43 +51,110 @@ instance Pretty UnpackPrettyException where
             \identifiers:"
     <> line
     <> bulletedList errs
+  pretty (PackageCandidatesRequireVersions names) =
+    "[S-6114]"
+    <> line
+    <> flow "Package candidates to unpack cannot be identified by name only. \
+            \The following do not specify a version:"
+    <> line
+    <> bulletedList (map fromPackageName names)
+  pretty (PackageLocationInvalid pir) =
+    "[S-5170]"
+    <> line
+    <> fillSep
+         [ flow "While trying to unpack"
+         , style Target (fromString $ T.unpack $ textDisplay pir) <> ","
+         , flow "Stack encountered an error."
+         ]
 
 instance Exception UnpackPrettyException
 
--- | Function underlying the @stack unpack@ command. Unpack packages to the
--- filesystem.
+-- | Type synonymn representing packages to be unpacked by the @stack unpack@
+-- command, identified either by name only or by an identifier (including
+-- Hackage revision).
+type UnpackTarget = Either PackageName PackageIdentifierRevision
+
+-- | Type representing options for the @stack unpack@ command.
+data UnpackOpts = UnpackOpts
+  { targets :: [UnpackTarget]
+    -- ^ The packages or package candidates to be unpacked.
+  , areCandidates :: Bool
+    -- ^ Whether the targets are Hackage package candidates.
+  , dest :: Maybe (SomeBase Dir)
+    -- ^ The optional directory into which a target will be unpacked into a
+    -- subdirectory.
+  }
+
+-- | Function underlying the @stack unpack@ command. Unpack packages or package
+-- candidates to the filesystem.
 unpackCmd ::
-     ([String], Maybe Text)
-     -- ^ A pair of a list of names or identifiers and an optional destination
-     -- path.
+     UnpackOpts
   -> RIO Runner ()
-unpackCmd (names, Nothing) = unpackCmd (names, Just ".")
-unpackCmd (names, Just dstPath) = withConfig NoReexec $ do
-  mresolver <- view $ globalOptsL.to globalResolver
-  mSnapshot <- forM mresolver $ \resolver -> do
-    concrete <- makeConcreteResolver resolver
-    loc <- completeSnapshotLocation concrete
-    loadSnapshot loc
-  dstPath' <- resolveDir' $ T.unpack dstPath
-  unpackPackages mSnapshot dstPath' names
+unpackCmd (UnpackOpts targets areCandidates Nothing) =
+  unpackCmd (UnpackOpts targets areCandidates (Just $ Rel relDirRoot))
+unpackCmd (UnpackOpts targets areCandidates (Just dstPath)) =
+  withConfig NoReexec $ do
+    mresolver <- view $ globalOptsL . to (.resolver)
+    mSnapshot <- forM mresolver $ \resolver -> do
+      concrete <- makeConcreteResolver resolver
+      loc <- completeSnapshotLocation concrete
+      loadSnapshot loc
+    dstPath' <- case dstPath of
+      Abs path -> pure path
+      Rel path -> do
+        wd <- getCurrentDir
+        pure $ wd </> path
+    unpackPackages mSnapshot dstPath' targets areCandidates
 
 -- | Intended to work for the command line command.
 unpackPackages ::
-     forall env. (HasPantryConfig env, HasProcessContext env, HasTerm env)
+     forall env.
+       (HasConfig env, HasPantryConfig env, HasProcessContext env, HasTerm env)
   => Maybe RawSnapshot -- ^ When looking up by name, take from this build plan.
   -> Path Abs Dir -- ^ Destination.
-  -> [String] -- ^ Names or identifiers.
+  -> [UnpackTarget]
+  -> Bool
+     -- ^ Whether the targets are package candidates.
   -> RIO env ()
-unpackPackages mSnapshot dest input = do
-  let (errs1, (names, pirs1)) =
-        fmap partitionEithers $ partitionEithers $ map parse input
-  locs1 <- forM pirs1 $ \pir -> do
-    loc <- fmap cplComplete $ completePackageLocation $ RPLIHackage pir Nothing
+unpackPackages mSnapshot dest targets areCandidates = do
+  let (names, pirs) = partitionEithers targets
+      pisWithRevisions = any hasRevision pirs
+      hasRevision (PackageIdentifierRevision _ _ CFILatest) = False
+      hasRevision _ = True
+  when (areCandidates && notNull names) $
+    prettyThrowIO $ PackageCandidatesRequireVersions names
+  when (areCandidates && pisWithRevisions) $
+    prettyWarn $
+         flow "Package revisions are not meaningful for package candidates and \
+              \will be ignored."
+      <> line
+  locs1 <- forM pirs $ \pir -> do
+    hackageBaseUrl <- view $ configL . to (.hackageBaseUrl)
+    let rpli = if areCandidates
+          then
+            let -- Ignoring revisions for package candidates.
+                PackageIdentifierRevision candidateName candidateVersion _ = pir
+                candidatePkgId =
+                  PackageIdentifier candidateName candidateVersion
+                candidatePkgIdText =
+                  T.pack $ packageIdentifierString candidatePkgId
+                candidateUrl =
+                     hackageBaseUrl
+                  <> "package/"
+                  <> candidatePkgIdText
+                  <> "/candidate/"
+                  <> candidatePkgIdText
+                  <> ".tar.gz"
+                candidateLoc = ALUrl candidateUrl
+                candidateArchive = RawArchive candidateLoc Nothing Nothing ""
+                candidateMetadata = RawPackageMetadata Nothing Nothing Nothing
+            in RPLIArchive candidateArchive candidateMetadata
+          else RPLIHackage pir Nothing
+    loc <- cplComplete <$> completePackageLocation rpli
+      `catch` \(_ :: SomeException) -> prettyThrowIO $ PackageLocationInvalid pir
     pure (loc, packageLocationIdent loc)
-  (errs2, locs2) <- partitionEithers <$> traverse toLoc names
-  case errs1 ++ errs2 of
-    [] -> pure ()
-    errs -> prettyThrowM $ CouldNotParsePackageSelectors errs
+  (errs, locs2) <- partitionEithers <$> traverse toLoc names
+  unless (null errs) $ prettyThrowM $ CouldNotParsePackageSelectors errs
   locs <- Map.fromList <$> mapM
     (\(pir, ident) -> do
         suffix <- parseRelDir $ packageIdentifierString ident
@@ -100,46 +176,32 @@ unpackPackages mSnapshot dest input = do
       , pretty dest' <> "."
       ]
  where
-  toLoc | Just snapshot <- mSnapshot = toLocSnapshot snapshot
-        | otherwise = toLocNoSnapshot
+  toLoc name | Just snapshot <- mSnapshot = toLocSnapshot snapshot name
+             | otherwise = do
+                 void $ updateHackageIndex $ Just "Updating the package index."
+                 toLocNoSnapshot name
 
   toLocNoSnapshot ::
        PackageName
     -> RIO env (Either StyleDoc (PackageLocationImmutable, PackageIdentifier))
   toLocNoSnapshot name = do
-    mloc1 <- getLatestHackageLocation
+    mLoc <- getLatestHackageLocation
       YesRequireHackageIndex
       name
       UsePreferredVersions
-    mloc <-
-      case mloc1 of
-        Just _ -> pure mloc1
-        Nothing -> do
-          updated <- updateHackageIndex
-            $ Just
-            $    "Could not find package "
-              <> fromString (packageNameString name)
-              <> ", updating"
-          case updated of
-            UpdateOccurred ->
-              getLatestHackageLocation
-                YesRequireHackageIndex
-                name
-                UsePreferredVersions
-            NoUpdateOccurred -> pure Nothing
-    case mloc of
+    case mLoc of
       Nothing -> do
         candidates <- getHackageTypoCorrections name
         pure $ Left $ fillSep
           [ flow "Could not find package"
-          , style Current (fromString $ packageNameString name)
+          , style Current (fromPackageName name)
           , flow "on Hackage."
           , if null candidates
               then mempty
               else fillSep $
                   flow "Perhaps you meant one of:"
                 : mkNarrativeList (Just Good) False
-                    (map (fromString . packageNameString) candidates :: [StyleDoc])
+                    (map fromPackageName candidates :: [StyleDoc])
           ]
       Just loc -> pure $ Right (loc, packageLocationIdent loc)
 
@@ -152,20 +214,8 @@ unpackPackages mSnapshot dest input = do
       Nothing ->
         pure $ Left $ fillSep
           [ flow "Package does not appear in snapshot:"
-          , style Current (fromString $ packageNameString name) <> "."
+          , style Current (fromPackageName name) <> "."
           ]
       Just sp -> do
         loc <- cplComplete <$> completePackageLocation (rspLocation sp)
         pure $ Right (loc, packageLocationIdent loc)
-
-  -- Possible future enhancement: parse names as name + version range
-  parse s =
-    case parsePackageName s of
-      Just x -> Right $ Left x
-      Nothing ->
-        case parsePackageIdentifierRevision (T.pack s) of
-          Right x -> Right $ Right x
-          Left _ -> Left $ fillSep
-            [ flow "Could not parse as package name or identifier:"
-            , style Current (fromString s) <> "."
-            ]

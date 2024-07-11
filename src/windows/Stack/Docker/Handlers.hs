@@ -1,4 +1,5 @@
 {-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 
 -- | The module of this name differs as between Windows and non-Windows builds.
 -- This is the Windows version.
@@ -26,13 +27,13 @@ handleSignals ::
 handleSignals docker keepStdinOpen containerID = do
   let args' = concat
         [ ["start"]
-        , ["-a" | not (dockerDetach docker)]
+        , ["-a" | not docker.detach]
         , ["-i" | keepStdinOpen]
         , [containerID]
         ]
   finally
     (try $ proc "docker" args' $ runProcess_ . setDelegateCtlc False)
-    ( unless (dockerPersist docker || dockerDetach docker) $
+    ( unless (docker.persist || docker.detach) $
         readProcessNull "docker" ["rm", "-f", containerID]
           `catch` (\(_ :: ExitCodeException) -> pure ())
     )

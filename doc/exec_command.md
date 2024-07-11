@@ -26,9 +26,47 @@ By default:
   `--cwd <directory>` to execute the executable in the specified directory.
 
 The option `--package <package>` has no effect for the `stack exec` command. For
-further information about its use, see the [`stack ghc` command](ghc_command.md) documentation or the [`stack runghc` command](runghc_command.md) documentation.
+further information about its use, see the [`stack ghc` command](ghc_command.md)
+documentation or the [`stack runghc` command](runghc_command.md) documentation.
 
-Pass the option `--rts-option <rts_flag>` to specify a GHC RTS flag or option.
+Pass the option `--rts-option <rts_flag(s)>` to specify a GHC RTS flag or option.
 The option can be specified multiple times. All specified GHC RTS flags and
 options are added to the arguments for the specified executable between
 arguments `+RTS` and `-RTS`.
+
+Specified GHC RTS flags and options are separated by spaces. Items can be
+unquoted (if they do not contain space or `"` characters) or quoted (`""`).
+Quoted items can include 'escaped' characters, escaped with an initial `\`
+character.
+
+Account may need to be taken of the shell's approach to the processing of
+command line arguments. For example, to pass `'a single quoted string'`:
+
+=== "Unix-like (Bash or Zsh)"
+
+    In Bash, or Zsh (if `RC_QUOTES` option not set):
+
+    `stack exec <command> -- \''a single quoted string'\'`
+
+    Outside of single quotes, `\'` escapes a single quote. The content of single
+    quotes is taken literally, but cannot contain a single quote.
+
+    In Zsh (if `RC_QUOTES` option set):
+
+    `stack exec <command> -- '''a single quoted string'''`
+
+    The content of single quotes is taken literally. Within single quotes, `''`
+    escapes a single quote.
+
+=== "Windows (PowerShell)"
+
+    `stack exec <command> -- '''a single quoted string'''`
+
+    The content of single quotes is taken literally. Within single quotes, `''`
+    escapes a single quote.
+
+The command also accepts flags and options of the
+[`stack build`](build_command.md#flags-affecting-ghcs-behaviour) command that
+affect the location of the local project installation directory, such as
+`--profile` and `--no-strip`. For further information, see the documentation of
+the [project Stack work directory](stack_work.md#project-stack-work-directory).

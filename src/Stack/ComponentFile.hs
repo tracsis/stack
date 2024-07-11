@@ -1,5 +1,6 @@
 {-# LANGUAGE NoImplicitPrelude   #-}
 {-# LANGUAGE DataKinds           #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings   #-}
 
 -- | A module which exports all component-level file-gathering logic. It also
@@ -7,15 +8,16 @@
 
 module Stack.ComponentFile
   ( resolveOrWarn
-  , libraryFiles
-  , executableFiles
-  , testFiles
-  , benchmarkFiles
   , componentOutputDir
   , componentBuildDir
   , packageAutogenDir
   , buildDir
   , componentAutogenDir
+  , ComponentFile (..)
+  , stackLibraryFiles
+  , stackExecutableFiles
+  , stackTestSuiteFiles
+  , stackBenchmarkFiles
   ) where
 
 import           Control.Exception ( throw )
@@ -27,13 +29,12 @@ import qualified Data.Text as T
 import           Distribution.ModuleName ( ModuleName )
 import qualified Distribution.ModuleName as Cabal
 import           Distribution.PackageDescription
-                   ( Benchmark (..), BenchmarkInterface (..), BuildInfo (..)
-                   , Executable (..), Library (..), TestSuite (..)
-                   , TestSuiteInterface (..)
-                   )
+                   ( BenchmarkInterface (..), TestSuiteInterface (..) )
 import           Distribution.Text ( display )
-import           Distribution.Utils.Path ( getSymbolicPath )
+import           Distribution.Utils.Path
+                   ( PackageDir, SourceDir, SymbolicPath, getSymbolicPath )
 import           Distribution.Version ( mkVersion )
+import           GHC.Records ( HasField )
 import qualified HiFileParser as Iface
 import           Path
                    ( (</>), filename, isProperPrefixOf, parent, parseRelDir
@@ -50,6 +51,11 @@ import           Stack.Constants
                    , relDirAutogen, relDirBuild, relDirGlobalAutogen
                    )
 import           Stack.Prelude hiding ( Display (..) )
+import           Stack.Types.Component
+                   ( StackBenchmark (..), StackBuildInfo (..)
+                   , StackExecutable (..), StackLibrary (..)
+                   , StackTestSuite (..), StackUnqualCompName (..)
+                   )
 import           Stack.Types.Config
                    ( Config (..), HasConfig (..), prettyStackDevL )
 import           Stack.Types.NamedComponent ( NamedComponent (..) )
@@ -61,84 +67,83 @@ import           Stack.Types.PackageFile
 import qualified System.Directory as D ( doesFileExist )
 import qualified System.FilePath as FilePath
 
+data ComponentFile = ComponentFile
+  { moduleFileMap :: !(Map ModuleName (Path Abs File))
+  , otherFile :: ![DotCabalPath]
+  , packageWarning :: ![PackageWarning]
+  }
+
 -- | Get all files referenced by the benchmark.
-benchmarkFiles ::
-     NamedComponent
-  -> Benchmark
-  -> RIO
-       GetPackageFileContext
-       (Map ModuleName (Path Abs File), [DotCabalPath], [PackageWarning])
-benchmarkFiles component bench =
-  resolveComponentFiles component build names
+stackBenchmarkFiles ::
+     StackBenchmark
+  -> RIO GetPackageFileContext (NamedComponent, ComponentFile)
+stackBenchmarkFiles bench =
+  resolveComponentFiles (CBench bench.name.unqualCompToText) build names
  where
   names = bnames <> exposed
   exposed =
-    case benchmarkInterface bench of
+    case bench.interface of
       BenchmarkExeV10 _ fp -> [DotCabalMain fp]
       BenchmarkUnsupported _ -> []
-  bnames = map DotCabalModule (otherModules build)
-  build = benchmarkBuildInfo bench
+  bnames = map DotCabalModule build.otherModules
+  build = bench.buildInfo
 
 -- | Get all files referenced by the test.
-testFiles ::
-     NamedComponent
-  -> TestSuite
-  -> RIO
-       GetPackageFileContext
-       (Map ModuleName (Path Abs File), [DotCabalPath], [PackageWarning])
-testFiles component test =
-  resolveComponentFiles component build names
+stackTestSuiteFiles ::
+     StackTestSuite
+  -> RIO GetPackageFileContext (NamedComponent, ComponentFile)
+stackTestSuiteFiles test =
+  resolveComponentFiles (CTest test.name.unqualCompToText) build names
  where
   names = bnames <> exposed
   exposed =
-    case testInterface test of
+    case test.interface of
       TestSuiteExeV10 _ fp -> [DotCabalMain fp]
       TestSuiteLibV09 _ mn -> [DotCabalModule mn]
       TestSuiteUnsupported _ -> []
-  bnames = map DotCabalModule (otherModules build)
-  build = testBuildInfo test
+  bnames = map DotCabalModule build.otherModules
+  build = test.buildInfo
 
 -- | Get all files referenced by the executable.
-executableFiles ::
-     NamedComponent
-  -> Executable
-  -> RIO
-       GetPackageFileContext
-       (Map ModuleName (Path Abs File), [DotCabalPath], [PackageWarning])
-executableFiles component exe =
-  resolveComponentFiles component build names
+stackExecutableFiles ::
+     StackExecutable
+  -> RIO GetPackageFileContext (NamedComponent, ComponentFile)
+stackExecutableFiles exe =
+  resolveComponentFiles (CExe exe.name.unqualCompToText) build names
  where
-  build = buildInfo exe
+  build = exe.buildInfo
   names =
-    map DotCabalModule (otherModules build) ++
-    [DotCabalMain (modulePath exe)]
+    map DotCabalModule build.otherModules ++ [DotCabalMain exe.modulePath]
 
--- | Get all files referenced by the library.
-libraryFiles ::
-     NamedComponent
-  -> Library
-  -> RIO
-       GetPackageFileContext
-       (Map ModuleName (Path Abs File), [DotCabalPath], [PackageWarning])
-libraryFiles component lib =
-  resolveComponentFiles component build names
+-- | Get all files referenced by the library. Handle all libraries (CLib and
+-- SubLib), based on empty name or not.
+stackLibraryFiles ::
+     StackLibrary
+  -> RIO GetPackageFileContext (NamedComponent, ComponentFile)
+stackLibraryFiles lib =
+  resolveComponentFiles componentName build names
  where
-  build = libBuildInfo lib
+  componentRawName = lib.name.unqualCompToText
+  componentName
+    | componentRawName == mempty = CLib
+    | otherwise = CSubLib componentRawName
+  build = lib.buildInfo
   names = bnames ++ exposed
-  exposed = map DotCabalModule (exposedModules lib)
-  bnames = map DotCabalModule (otherModules build)
+  exposed = map DotCabalModule lib.exposedModules
+  bnames = map DotCabalModule build.otherModules
 
 -- | Get all files referenced by the component.
 resolveComponentFiles ::
-     NamedComponent
-  -> BuildInfo
+     ( CAndJsSources rec
+     , HasField "hsSourceDirs" rec [SymbolicPath PackageDir SourceDir]
+     )
+  => NamedComponent
+  -> rec
   -> [DotCabalDescriptor]
-  -> RIO
-       GetPackageFileContext
-       (Map ModuleName (Path Abs File), [DotCabalPath], [PackageWarning])
+  -> RIO GetPackageFileContext (NamedComponent, ComponentFile)
 resolveComponentFiles component build names = do
-  dirs <- mapMaybeM (resolveDirOrWarn . getSymbolicPath) (hsSourceDirs build)
-  dir <- asks (parent . ctxFile)
+  dirs <- mapMaybeM (resolveDirOrWarn . getSymbolicPath) build.hsSourceDirs
+  dir <- asks (parent . (.file))
   agdirs <- autogenDirs
   (modules,files,warnings) <-
     resolveFilesAndDeps
@@ -146,19 +151,18 @@ resolveComponentFiles component build names = do
       ((if null dirs then [dir] else dirs) ++ agdirs)
       names
   cfiles <- buildOtherSources build
-  pure (modules, files <> cfiles, warnings)
+  pure (component, ComponentFile modules (files <> cfiles) warnings)
  where
   autogenDirs = do
-    cabalVer <- asks ctxCabalVer
-    distDir <- asks ctxDistDir
+    cabalVer <- asks (.cabalVer)
+    distDir <- asks (.distDir)
     let compDir = componentAutogenDir cabalVer component distDir
         pkgDir = maybeToList $ packageAutogenDir cabalVer distDir
     filterM doesDirExist $ compDir : pkgDir
 
--- | Try to resolve the list of base names in the given directory by
--- looking for unique instances of base names applied with the given
--- extensions, plus find any of their module and TemplateHaskell
--- dependencies.
+-- | Try to resolve the list of base names in the given directory by looking for
+-- unique instances of base names applied with the given extensions, plus find
+-- any of their module and TemplateHaskell dependencies.
 resolveFilesAndDeps ::
      NamedComponent       -- ^ Package component name
   -> [Path Abs Dir]       -- ^ Directories to look in.
@@ -267,8 +271,8 @@ getDependencies knownUsages component dirs dotCabalPath =
     DotCabalCFilePath{} -> pure (S.empty, M.empty)
  where
   readResolvedHi resolvedFile = do
-    dumpHIDir <- componentOutputDir component <$> asks ctxDistDir
-    dir <- asks (parent . ctxFile)
+    dumpHIDir <- componentOutputDir component <$> asks (.distDir)
+    dir <- asks (parent . (.file))
     let sourceDir = fromMaybe dir $ find (`isProperPrefixOf` resolvedFile) dirs
         stripSourceDir d = stripProperPrefix d resolvedFile
     case stripSourceDir sourceDir of
@@ -291,7 +295,7 @@ parseHI ::
      -- ^ The path to the *.hi file to be parsed
   -> RIO GetPackageFileContext (Set ModuleName, Map FilePath (Path Abs File))
 parseHI knownUsages hiPath = do
-  dir <- asks (parent . ctxFile)
+  dir <- asks (parent . (.file))
   result <-
     liftIO $ catchAnyDeep
       (Iface.fromFile hiPath)
@@ -332,7 +336,8 @@ componentOutputDir :: NamedComponent -> Path Abs Dir -> Path Abs Dir
 componentOutputDir namedComponent distDir =
   case namedComponent of
     CLib -> buildDir distDir
-    CInternalLib name -> makeTmp name
+    CSubLib name -> makeTmp name
+    CFlib name -> makeTmp name
     CExe name -> makeTmp name
     CTest name -> makeTmp name
     CBench name -> makeTmp name
@@ -357,8 +362,8 @@ findCandidate ::
   -> DotCabalDescriptor
   -> RIO GetPackageFileContext (Maybe DotCabalPath)
 findCandidate dirs name = do
-  pkg <- asks ctxFile >>= parsePackageNameFromFilePath
-  customPreprocessorExts <- view $ configL . to configCustomPreprocessorExts
+  pkg <- asks (.file) >>= parsePackageNameFromFilePath
+  customPreprocessorExts <- view $ configL . to (.customPreprocessorExts)
   let haskellPreprocessorExts =
         haskellDefaultPreprocessorExts ++ customPreprocessorExts
   candidates <- liftIO $ makeNameCandidates haskellPreprocessorExts
@@ -390,26 +395,25 @@ findCandidate dirs name = do
                     -> IO [Path Abs File]
   makeDirCandidates haskellPreprocessorExts dir =
     case name of
-        DotCabalMain fp -> resolveCandidate dir fp
-        DotCabalFile fp -> resolveCandidate dir fp
-        DotCabalCFile fp -> resolveCandidate dir fp
-        DotCabalModule mn -> do
-          let perExt ext =
-                resolveCandidate
-                  dir (Cabal.toFilePath mn ++ "." ++ T.unpack ext)
-          withHaskellExts <- mapM perExt haskellFileExts
-          withPPExts <- mapM perExt haskellPreprocessorExts
-          pure $
-            case (concat withHaskellExts, concat withPPExts) of
-              -- If we have exactly 1 Haskell extension and exactly
-              -- 1 preprocessor extension, assume the former file is
-              -- generated from the latter
-              --
-              -- See https://github.com/commercialhaskell/stack/issues/4076
-              ([_], [y]) -> [y]
-
-              -- Otherwise, return everything
-              (xs, ys) -> xs ++ ys
+      DotCabalMain fp -> resolveCandidate dir fp
+      DotCabalFile fp -> resolveCandidate dir fp
+      DotCabalCFile fp -> resolveCandidate dir fp
+      DotCabalModule mn -> do
+        let perExt ext =
+              resolveCandidate
+                dir (Cabal.toFilePath mn ++ "." ++ T.unpack ext)
+        withHaskellExts <- mapM perExt haskellFileExts
+        withPPExts <- mapM perExt haskellPreprocessorExts
+        pure $
+          case (concat withHaskellExts, concat withPPExts) of
+            -- If we have exactly 1 Haskell extension and exactly
+            -- 1 preprocessor extension, assume the former file is
+            -- generated from the latter
+            --
+            -- See https://github.com/commercialhaskell/stack/issues/4076
+            ([_], [y]) -> [y]
+            -- Otherwise, return everything
+            (xs, ys) -> xs ++ ys
   resolveCandidate dir = fmap maybeToList . resolveDirFile dir
 
 -- | Log that we couldn't find a candidate, but there are
@@ -445,12 +449,18 @@ logPossibilities dirs mn = do
       )
       dirs
 
+type CAndJsSources rec =
+  (HasField "cSources" rec [FilePath], HasField "jsSources" rec [FilePath])
+
 -- | Get all C sources and extra source files in a build.
-buildOtherSources :: BuildInfo -> RIO GetPackageFileContext [DotCabalPath]
+buildOtherSources ::
+     CAndJsSources rec
+  => rec
+  -> RIO GetPackageFileContext [DotCabalPath]
 buildOtherSources build = do
   cwd <- liftIO getCurrentDir
-  dir <- asks (parent . ctxFile)
-  file <- asks ctxFile
+  dir <- asks (parent . (.file))
+  file <- asks (.file)
   let resolveDirFiles files toCabalPath =
         forMaybeM files $ \fp -> do
           result <- resolveDirFile dir fp
@@ -459,19 +469,17 @@ buildOtherSources build = do
               warnMissingFile "File" cwd fp file
               pure Nothing
             Just p -> pure $ Just (toCabalPath p)
-  csources <- resolveDirFiles (cSources build) DotCabalCFilePath
-  jsources <- resolveDirFiles (targetJsSources build) DotCabalFilePath
+  csources <- resolveDirFiles build.cSources DotCabalCFilePath
+  jsources <- resolveDirFiles build.jsSources DotCabalFilePath
   pure (csources <> jsources)
-
--- | Get the target's JS sources.
-targetJsSources :: BuildInfo -> [FilePath]
-targetJsSources = jsSources
 
 -- | Resolve file as a child of a specified directory, symlinks
 -- don't get followed.
 resolveDirFile ::
      (MonadIO m, MonadThrow m)
-  => Path Abs Dir -> FilePath.FilePath -> m (Maybe (Path Abs File))
+  => Path Abs Dir
+  -> FilePath.FilePath
+  -> m (Maybe (Path Abs File))
 resolveDirFile x y = do
   -- The standard canonicalizePath does not work for this case
   p <- parseCollapsedAbsFile (toFilePath x FilePath.</> y)
@@ -543,7 +551,8 @@ buildDir distDir = distDir </> relDirBuild
 -- component names.
 componentNameToDir :: Text -> Path Rel Dir
 componentNameToDir name =
-  fromMaybe (throw ComponentNotParsedBug) (parseRelDir (T.unpack name))
+  fromMaybe (throw $ ComponentNotParsedBug sName) (parseRelDir sName)
+  where sName = T.unpack name
 
 -- | See 'Distribution.Simple.LocalBuildInfo.componentBuildDir'
 componentBuildDir :: Version -> NamedComponent -> Path Abs Dir -> Path Abs Dir
@@ -552,20 +561,22 @@ componentBuildDir cabalVer component distDir
   | otherwise =
       case component of
         CLib -> buildDir distDir
-        CInternalLib name -> buildDir distDir </> componentNameToDir name
+        CSubLib name -> buildDir distDir </> componentNameToDir name
+        CFlib name -> buildDir distDir </> componentNameToDir name
         CExe name -> buildDir distDir </> componentNameToDir name
         CTest name -> buildDir distDir </> componentNameToDir name
         CBench name -> buildDir distDir </> componentNameToDir name
 
 -- Internal helper to define resolveFileOrWarn and resolveDirOrWarn
-resolveOrWarn :: Text
-              -> (Path Abs Dir -> String -> RIO GetPackageFileContext (Maybe a))
-              -> FilePath.FilePath
-              -> RIO GetPackageFileContext (Maybe a)
+resolveOrWarn ::
+     Text
+  -> (Path Abs Dir -> String -> RIO GetPackageFileContext (Maybe a))
+  -> FilePath.FilePath
+  -> RIO GetPackageFileContext (Maybe a)
 resolveOrWarn subject resolver path = do
   cwd <- liftIO getCurrentDir
-  file <- asks ctxFile
-  dir <- asks (parent . ctxFile)
+  file <- asks (.file)
+  dir <- asks (parent . (.file))
   result <- resolver dir path
   when (isNothing result) $ warnMissingFile subject cwd path file
   pure result

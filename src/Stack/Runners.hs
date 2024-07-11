@@ -1,6 +1,8 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE DataKinds         #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE NoImplicitPrelude     #-}
+{-# LANGUAGE DataKinds             #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE OverloadedRecordDot   #-}
+{-# LANGUAGE OverloadedStrings     #-}
 
 -- | Utilities for running stack commands.
 --
@@ -18,7 +20,11 @@ module Stack.Runners
   , ShouldReexec (..)
   ) where
 
-import           RIO.Process ( mkDefaultProcessContext )
+import qualified Data.ByteString.Lazy.Char8 as L8
+import           RIO.Process
+                   ( findExecutable, mkDefaultProcessContext, proc
+                   , readProcess
+                   )
 import           RIO.Time ( addUTCTime, getCurrentTime )
 import           Stack.Build.Target ( NeedTargets (..) )
 import           Stack.Config
@@ -26,28 +32,30 @@ import           Stack.Config
                    , withNewLogFunc
                    )
 import           Stack.Constants
-                   ( defaultTerminalWidth, maxTerminalWidth, minTerminalWidth )
+                   ( defaultTerminalWidth, maxTerminalWidth, minTerminalWidth
+                   , nixProgName
+                   )
 import           Stack.DefaultColorWhen ( defaultColorWhen )
 import qualified Stack.Docker as Docker
 import qualified Stack.Nix as Nix
 import           Stack.Prelude
 import           Stack.Setup ( setupEnv )
 import           Stack.Storage.User ( logUpgradeCheck, upgradeChecksSince )
-import           Stack.Types.BuildOpts
+import           Stack.Types.BuildOptsCLI
                    ( BuildOptsCLI, defaultBuildOptsCLI )
 import           Stack.Types.ColorWhen ( ColorWhen (..) )
 import           Stack.Types.Config ( Config (..) )
 import           Stack.Types.ConfigMonoid ( ConfigMonoid (..) )
-import           Stack.Types.Docker ( dockerEnable )
+import           Stack.Types.Docker ( DockerOpts (..) )
 import           Stack.Types.EnvConfig ( EnvConfig )
 import           Stack.Types.GlobalOpts ( GlobalOpts (..) )
-import           Stack.Types.Nix ( nixEnable )
+import           Stack.Types.Nix ( NixOpts (..) )
 import           Stack.Types.Runner
                    ( Runner (..), globalOptsL, reExecL, stackYamlLocL )
 import           Stack.Types.StackYamlLoc ( StackYamlLoc (..) )
 import           Stack.Types.Version
                    ( minorVersion, stackMinorVersion, stackVersion )
-import           System.Console.ANSI ( hSupportsANSI )
+import           System.Console.ANSI ( hNowSupportsANSI )
 import           System.Terminal ( getTerminalWidth )
 
 -- | Type representing exceptions thrown by functions exported by the
@@ -121,7 +129,7 @@ withConfig shouldReexec inner =
     -- If we have been relaunched in a Docker container, perform in-container
     -- initialization (switch UID, etc.).  We do this after first loading the
     -- configuration since it must happen ASAP but needs a configuration.
-    view (globalOptsL.to globalDockerEntrypoint) >>=
+    view (globalOptsL . to (.dockerEntrypoint)) >>=
       traverse_ (Docker.entrypoint config)
     runRIO config $ do
       -- Catching all exceptions here, since we don't want this
@@ -139,8 +147,51 @@ withConfig shouldReexec inner =
 -- action.
 reexec :: RIO Config a -> RIO Config a
 reexec inner = do
-  nixEnable' <- asks $ nixEnable . configNix
-  dockerEnable' <- asks $ dockerEnable . configDocker
+  nixEnable' <- asks $ (.nix.enable)
+  notifyIfNixOnPath <- asks (.notifyIfNixOnPath)
+  when (not nixEnable' && notifyIfNixOnPath) $ do
+    eNix <- findExecutable nixProgName
+    case eNix of
+      Left _ -> pure ()
+      Right nix -> proc nix ["--version"] $ \pc -> do
+        let nixProgName' = style Shell (fromString nixProgName)
+            muteMsg = fillSep
+              [ flow "To mute this message in future, set"
+              , style Shell (flow "notify-if-nix-on-path: false")
+              , flow "in Stack's configuration."
+              ]
+            reportErr errMsg = prettyWarn $
+                 fillSep
+                   [ nixProgName'
+                   , flow "is on the PATH"
+                   , parens (fillSep ["at", style File (fromString nix)])
+                   , flow "but Stack encountered the following error with"
+                   , nixProgName'
+                   , style Shell "--version" <> ":"
+                   ]
+              <> blankLine
+              <> errMsg
+              <> blankLine
+              <> muteMsg
+              <> line
+        res <- tryAny (readProcess pc)
+        case res of
+          Left e -> reportErr (ppException e)
+          Right (ec, out, err) -> case ec of
+            ExitFailure _ -> reportErr $ string (L8.unpack err)
+            ExitSuccess -> do
+              let trimFinalNewline str = case reverse str of
+                    '\n' : rest -> reverse rest
+                    _ -> str
+              prettyWarn $ fillSep
+                   [ fromString (trimFinalNewline $ L8.unpack out)
+                   , flow "is on the PATH"
+                   , parens (fillSep ["at", style File (fromString nix)])
+                   , flow "but Stack's Nix integration is disabled."
+                   , muteMsg
+                   ]
+                <> line
+  dockerEnable' <- asks (.docker.enable)
   case (nixEnable', dockerEnable') of
     (True, True) -> throwIO DockerAndNixInvalid
     (False, False) -> inner
@@ -171,23 +222,27 @@ withRunnerGlobal :: GlobalOpts -> RIO Runner a -> IO a
 withRunnerGlobal go inner = do
   colorWhen <-
     maybe defaultColorWhen pure $
-    getFirst $ configMonoidColorWhen $ globalConfigMonoid go
+    getFirst go.configMonoid.colorWhen
   useColor <- case colorWhen of
     ColorNever -> pure False
     ColorAlways -> pure True
-    ColorAuto -> hSupportsANSI stderr
+    ColorAuto -> hNowSupportsANSI stderr
   termWidth <- clipWidth <$> maybe (fromMaybe defaultTerminalWidth
                                     <$> getTerminalWidth)
-                                   pure (globalTermWidth go)
+                                   pure go.termWidthOpt
   menv <- mkDefaultProcessContext
-  let update = globalStylesUpdate go
-  withNewLogFunc go useColor update $ \logFunc -> runRIO Runner
-    { runnerGlobalOpts = go
-    , runnerUseColor = useColor
-    , runnerLogFunc = logFunc
-    , runnerTermWidth = termWidth
-    , runnerProcessContext = menv
-    } inner
+  -- MVar used to ensure the Docker entrypoint is performed exactly once.
+  dockerEntrypointMVar <- newMVar False
+  let update = go.stylesUpdate
+  withNewLogFunc go useColor update $ \logFunc -> do
+    runRIO Runner
+      { globalOpts = go
+      , useColor = useColor
+      , logFunc = logFunc
+      , termWidth = termWidth
+      , processContext = menv
+      , dockerEntrypointMVar = dockerEntrypointMVar
+      } inner
  where
   clipWidth w
     | w < minTerminalWidth = minTerminalWidth
@@ -198,9 +253,9 @@ withRunnerGlobal go inner = do
 shouldUpgradeCheck :: RIO Config ()
 shouldUpgradeCheck = do
   config <- ask
-  when (configRecommendUpgrade config) $ do
+  when config.recommendUpgrade $ do
     now <- getCurrentTime
-    let yesterday = addUTCTime (-24 * 60 * 60) now
+    let yesterday = addUTCTime (-(24 * 60 * 60)) now
     checks <- upgradeChecksSince yesterday
     when (checks == 0) $ do
       mversion <- getLatestHackageVersion NoRequireHackageIndex "stack" UsePreferredVersions
@@ -226,7 +281,7 @@ shouldUpgradeCheck = do
                  [ flow "Tired of seeing this? Add"
                  , style Shell (flow "recommend-stack-upgrade: false")
                  , "to"
-                 , pretty (configUserConfigPath config) <> "."
+                 , pretty config.userConfigPath <> "."
                  ]
             <> blankLine
         _ -> pure ()

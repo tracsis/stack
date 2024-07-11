@@ -1,6 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE NoImplicitPrelude     #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE NoFieldSelectors      #-}
+{-# LANGUAGE OverloadedStrings     #-}
 
 -- | Nix types.
 module Stack.Types.Nix
@@ -24,16 +25,16 @@ import           Stack.Prelude
 -- | Nix configuration. Parameterize by resolver type to avoid cyclic
 -- dependency.
 data NixOpts = NixOpts
-  { nixEnable :: !Bool
-  , nixPureShell :: !Bool
-  , nixPackages :: ![Text]
+  { enable :: !Bool
+  , pureShell :: !Bool
+  , packages :: ![Text]
     -- ^ The system packages to be installed in the environment before it runs
-  , nixInitFile :: !(Maybe FilePath)
+  , initFile :: !(Maybe FilePath)
     -- ^ The path of a file containing preconfiguration of the environment
     -- (e.g shell.nix)
-  , nixShellOptions :: ![Text]
+  , shellOptions :: ![Text]
     -- ^ Options to be given to the nix-shell command line
-  , nixAddGCRoots :: !Bool
+  , addGCRoots :: !Bool
     -- ^ Should we register gc roots so running nix-collect-garbage doesn't
     -- remove nix dependencies
   }
@@ -42,20 +43,20 @@ data NixOpts = NixOpts
 -- | An uninterpreted representation of nix options.
 -- Configurations may be "cascaded" using mappend (left-biased).
 data NixOptsMonoid = NixOptsMonoid
-  { nixMonoidEnable :: !(First Bool)
+  { enable :: !(First Bool)
     -- ^ Is using nix-shell enabled?
-  , nixMonoidPureShell :: !(First Bool)
+  , pureShell :: !(First Bool)
     -- ^ Should the nix-shell be pure
-  , nixMonoidPackages :: !(First [Text])
+  , packages :: !(First [Text])
     -- ^ System packages to use (given to nix-shell)
-  , nixMonoidInitFile :: !(First FilePath)
+  , initFile :: !(First FilePath)
     -- ^ The path of a file containing preconfiguration of the environment (e.g
     -- shell.nix)
-  , nixMonoidShellOptions :: !(First [Text])
+  , shellOptions :: !(First [Text])
     -- ^ Options to be given to the nix-shell command line
-  , nixMonoidPath :: !(First [Text])
+  , path :: !(First [Text])
     -- ^ Override parts of NIX_PATH (notably 'nixpkgs')
-  , nixMonoidAddGCRoots :: !FirstFalse
+  , addGCRoots :: !FirstFalse
     -- ^ Should we register gc roots so running nix-collect-garbage doesn't
     -- remove nix dependencies
   }
@@ -63,17 +64,23 @@ data NixOptsMonoid = NixOptsMonoid
 
 -- | Decode uninterpreted nix options from JSON/YAML.
 instance FromJSON (WithJSONWarnings NixOptsMonoid) where
-  parseJSON = withObjectWarnings "NixOptsMonoid"
-    ( \o -> do
-        nixMonoidEnable        <- First <$> o ..:? nixEnableArgName
-        nixMonoidPureShell     <- First <$> o ..:? nixPureShellArgName
-        nixMonoidPackages      <- First <$> o ..:? nixPackagesArgName
-        nixMonoidInitFile      <- First <$> o ..:? nixInitFileArgName
-        nixMonoidShellOptions  <- First <$> o ..:? nixShellOptsArgName
-        nixMonoidPath          <- First <$> o ..:? nixPathArgName
-        nixMonoidAddGCRoots    <- FirstFalse <$> o ..:? nixAddGCRootsArgName
-        pure NixOptsMonoid{..}
-    )
+  parseJSON = withObjectWarnings "NixOptsMonoid" $ \o -> do
+    enable        <- First <$> o ..:? nixEnableArgName
+    pureShell     <- First <$> o ..:? nixPureShellArgName
+    packages      <- First <$> o ..:? nixPackagesArgName
+    initFile      <- First <$> o ..:? nixInitFileArgName
+    shellOptions  <- First <$> o ..:? nixShellOptsArgName
+    path          <- First <$> o ..:? nixPathArgName
+    addGCRoots    <- FirstFalse <$> o ..:? nixAddGCRootsArgName
+    pure NixOptsMonoid
+      { enable
+      , pureShell
+      , packages
+      , initFile
+      , shellOptions
+      , path
+      , addGCRoots
+      }
 
 -- | Left-biased combine Nix options
 instance Semigroup NixOptsMonoid where

@@ -23,7 +23,7 @@ import           Stack.Options.BenchParser ( benchOptsParser )
 import           Stack.Options.TestParser ( testOptsParser )
 import           Stack.Options.HaddockParser ( haddockOptsParser )
 import           Stack.Options.Utils ( GlobalOptsContext (..), hideMods )
-import           Stack.Types.BuildOpts
+import           Stack.Types.BuildOptsMonoid
                    ( BuildOptsMonoid (..), CabalVerbosity, readProgressBarFormat
                    , toFirstCabalVerbosity
                    )
@@ -43,6 +43,7 @@ buildOptsMonoidParser hide0 = BuildOptsMonoid
   <*> haddockDeps
   <*> haddockInternal
   <*> haddockHyperlinkSource
+  <*> haddockForHackage
   <*> copyBins
   <*> copyCompilerTool
   <*> preFetch
@@ -141,6 +142,11 @@ buildOptsMonoidParser hide0 = BuildOptsMonoid
     "haddock-hyperlink-source"
     "building hyperlinked source for Haddock documentation (like \
     \'haddock --hyperlinked-source')."
+    hide
+  haddockForHackage = firstBoolFlagsFalse
+    "haddock-for-hackage"
+    "building with flags to generate Haddock documentation suitable for upload \
+    \to Hackage."
     hide
   copyBins = firstBoolFlagsFalse
     "copy-bins"

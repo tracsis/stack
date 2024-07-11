@@ -1,8 +1,9 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE DataKinds         #-}
-{-# LANGUAGE LambdaCase        #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ViewPatterns      #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE DataKinds           #-}
+{-# LANGUAGE LambdaCase          #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE ViewPatterns        #-}
 
 module Stack.Setup.Installed
   ( getCompilerVersion
@@ -14,7 +15,7 @@ module Stack.Setup.Installed
   , toolNameString
   , parseToolText
   , filterTools
-  , extraDirs
+  , toolExtraDirs
   , installDir
   , tempInstallDir
   ) where
@@ -132,47 +133,47 @@ getCompilerVersion wc exe =
   isValid c = c == '.' || isDigit c
 
 -- | Binary directories for the given installed package
-extraDirs :: HasConfig env => Tool -> RIO env ExtraDirs
-extraDirs tool = do
+toolExtraDirs :: HasConfig env => Tool -> RIO env ExtraDirs
+toolExtraDirs tool = do
   config <- view configL
-  dir <- installDir (configLocalPrograms config) tool
-  case (configPlatform config, toolNameString tool) of
+  dir <- installDir config.localPrograms tool
+  case (config.platform, toolNameString tool) of
     (Platform _ Cabal.Windows, isGHC -> True) -> pure mempty
-      { edBins =
+      { bins =
           [ dir </> relDirBin
           , dir </> relDirMingw </> relDirBin
           ]
       }
     (Platform Cabal.I386 Cabal.Windows, "msys2") -> pure mempty
-      { edBins =
+      { bins =
           [ dir </> relDirMingw32 </> relDirBin
           , dir </> relDirUsr </> relDirBin
           , dir </> relDirUsr </> relDirLocal </> relDirBin
           ]
-      , edInclude =
+      , includes =
           [ dir </> relDirMingw32 </> relDirInclude
           ]
-      , edLib =
+      , libs =
           [ dir </> relDirMingw32 </> relDirLib
           , dir </> relDirMingw32 </> relDirBin
           ]
       }
     (Platform Cabal.X86_64 Cabal.Windows, "msys2") -> pure mempty
-      { edBins =
+      { bins =
           [ dir </> relDirMingw64 </> relDirBin
           , dir </> relDirUsr </> relDirBin
           , dir </> relDirUsr </> relDirLocal </> relDirBin
           ]
-      , edInclude =
+      , includes =
           [ dir </> relDirMingw64 </> relDirInclude
           ]
-      , edLib =
+      , libs =
           [ dir </> relDirMingw64 </> relDirLib
           , dir </> relDirMingw64 </> relDirBin
           ]
       }
     (_, isGHC -> True) -> pure mempty
-      { edBins =
+      { bins =
           [ dir </> relDirBin
           ]
       }

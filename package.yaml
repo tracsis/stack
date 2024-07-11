@@ -2,7 +2,7 @@
 spec-version: 0.35.0
 
 name: stack
-version: '2.13.1'
+version: '2.15.7'
 synopsis: The Haskell Tool Stack
 description: |
   Please see the documentation at <https://docs.haskellstack.org>
@@ -57,11 +57,11 @@ ghc-options:
 # https://clang.llvm.org/docs/DiagnosticsReference.html#wnonportable-include-path
 - -optP-Wno-nonportable-include-path
 dependencies:
-- base >= 4.14.3.0 && < 5
+- base >= 4.16.0.0 && < 5
 - Cabal >= 3.8.1.0
 - aeson >= 2.0.3.0
-- aeson-warning-parser
-- ansi-terminal >= 1.0
+- aeson-warning-parser >= 0.1.1
+- ansi-terminal >= 1.0.2
 - array
 - async
 - attoparsec
@@ -83,7 +83,7 @@ dependencies:
 - fsnotify >= 0.4.1
 - generic-deriving
 - ghc-boot
-- hi-file-parser >= 0.1.4.0
+- hi-file-parser >= 0.1.6.0
 - hpack >= 0.36.0
 - hpc
 - http-client
@@ -98,8 +98,8 @@ dependencies:
 - neat-interpolation
 - open-browser
 - optparse-applicative >= 0.18.1.0
-- pantry >= 0.9.2
-- path
+- pantry >= 0.9.3.2 && < 0.10.0
+- path >= 0.9.5
 - path-io
 # In order for Cabal (the tool) to build Stack, it needs to be told of the
 # upper bound on persistent. See
@@ -111,7 +111,7 @@ dependencies:
 - project-template
 - random
 - rio >= 0.1.22.0
-- rio-prettyprint >= 0.1.7.0
+- rio-prettyprint >= 0.1.8.0
 - split
 - stm
 - tar
@@ -144,6 +144,11 @@ when:
     cpp-options: -DSTACK_DEVELOPER_MODE_DEFAULT=True
   else:
     cpp-options: -DSTACK_DEVELOPER_MODE_DEFAULT=False
+- condition: flag(disable-stack-upload)
+  then:
+    cpp-options: -DSTACK_DISABLE_STACK_UPLOAD=True
+  else:
+    cpp-options: -DSTACK_DISABLE_STACK_UPLOAD=False
 library:
   source-dirs: src
   ghc-options:
@@ -152,11 +157,13 @@ library:
   - Build_stack
   - Paths_stack
   exposed-modules:
+  - Codec.Archive.Tar.Utf8
   - Control.Concurrent.Execute
   - Data.Attoparsec.Args
   - Data.Attoparsec.Combinators
   - Data.Attoparsec.Interpreter
   - Data.Monoid.Map
+  - GHC.Utils.GhcPkg.Main.Compat
   - Network.HTTP.StackClient
   - Options.Applicative.Args
   - Options.Applicative.Builder.Extra
@@ -170,17 +177,22 @@ library:
   - Stack.Build.Cache
   - Stack.Build.ConstructPlan
   - Stack.Build.Execute
+  - Stack.Build.ExecuteEnv
+  - Stack.Build.ExecutePackage
   - Stack.Build.Haddock
   - Stack.Build.Installed
   - Stack.Build.Source
   - Stack.Build.Target
-  - Stack.BuildPlan
   - Stack.BuildInfo
+  - Stack.BuildOpts
+  - Stack.BuildPlan
   - Stack.CLI
   - Stack.Clean
+  - Stack.Component
   - Stack.ComponentFile
   - Stack.Config
   - Stack.Config.Build
+  - Stack.Config.ConfigureScript
   - Stack.Config.Docker
   - Stack.Config.Nix
   - Stack.ConfigCmd
@@ -189,6 +201,7 @@ library:
   - Stack.Constants.StackProgName
   - Stack.Coverage
   - Stack.DefaultColorWhen
+  - Stack.DependencyGraph
   - Stack.Docker
   - Stack.DockerCmd
   - Stack.Dot
@@ -234,6 +247,7 @@ library:
   - Stack.Options.ScriptParser
   - Stack.Options.SetupParser
   - Stack.Options.TestParser
+  - Stack.Options.UnpackParser
   - Stack.Options.UpgradeParser
   - Stack.Options.UploadParser
   - Stack.Options.Utils
@@ -259,30 +273,40 @@ library:
   - Stack.Types.ApplyGhcOptions
   - Stack.Types.ApplyProgOptions
   - Stack.Types.Build
+  - Stack.Types.Build.ConstructPlan
   - Stack.Types.Build.Exception
   - Stack.Types.BuildConfig
   - Stack.Types.BuildOpts
+  - Stack.Types.BuildOptsCLI
+  - Stack.Types.BuildOptsMonoid
   - Stack.Types.CabalConfigKey
   - Stack.Types.Cache
   - Stack.Types.Casa
   - Stack.Types.ColorWhen
+  - Stack.Types.CompCollection
   - Stack.Types.CompilerBuild
   - Stack.Types.CompilerPaths
   - Stack.Types.Compiler
+  - Stack.Types.Component
+  - Stack.Types.ComponentUtils
   - Stack.Types.Config
   - Stack.Types.Config.Exception
   - Stack.Types.ConfigMonoid
   - Stack.Types.ConfigureOpts
   - Stack.Types.Curator
   - Stack.Types.Dependency
+  - Stack.Types.DependencyTree
   - Stack.Types.Docker
   - Stack.Types.DockerEntrypoint
+  - Stack.Types.DotConfig
+  - Stack.Types.DotOpts
   - Stack.Types.DownloadInfo
   - Stack.Types.DumpLogs
   - Stack.Types.DumpPackage
   - Stack.Types.EnvConfig
   - Stack.Types.EnvSettings
   - Stack.Types.ExtraDirs
+  - Stack.Types.FileDigestCache
   - Stack.Types.GHCDownloadInfo
   - Stack.Types.GHCVariant
   - Stack.Types.GhcOptionKey
@@ -290,6 +314,7 @@ library:
   - Stack.Types.GhcPkgId
   - Stack.Types.GlobalOpts
   - Stack.Types.GlobalOptsMonoid
+  - Stack.Types.Installed
   - Stack.Types.IsMutable
   - Stack.Types.LockFileBehavior
   - Stack.Types.NamedComponent
@@ -431,5 +456,12 @@ flags:
   developer-mode:
     description: >-
       By default, output extra developer information.
+    manual: true
+    default: false
+  disable-stack-upload:
+    description: >-
+      For use only during development and debugging. Disable 'stack upload' so
+      that it does not make HTTP requests. Stack will output information about
+      the HTTP request(s) that it would have made if the command was enabled.
     manual: true
     default: false

@@ -1,5 +1,166 @@
 # Changelog
 
+## v2.15.7 - 2024-05-12
+
+Release notes:
+
+* This release fixes potential bugs.
+* The hash that Stack uses to distinguish one build plan from another has
+  changed for plans that set (as opposed to unset) manually Cabal flags for
+  immutable dependencies. This will cause Stack to rebuild dependencies for such
+  plans.
+
+**Changes since v2.15.5:**
+
+Major changes:
+
+* Stack 2.15.5 and earlier cannot build with Cabal (the library) version
+  `3.12.0.0`. Stack can now build with that Cabal version.
+
+Behavior changes:
+
+* Stack's `StackSetupShim` executable, when called with `repl` and
+  `stack-initial-build-steps`, no longer uses Cabal's `replHook` to apply
+  `initialBuildSteps` but takes a more direct approach.
+
+Bug fixes:
+
+* Fix a regression introduced in Stack 2.15.1 that caused a 'no operation'
+  `stack build` to be slower than previously.
+* The hashes that Stack uses to distinguish one build plan from another now
+  include the Cabal flags for immutable dependencies set manually. Previously,
+  in error, only such flags that were unset manually were included.
+
+## v2.15.5 - 2024-03-28
+
+Release notes:
+
+* This release fixes potential bugs.
+
+**Changes since v2.15.3:**
+
+Behavior changes:
+
+* Following the handover of the Stackage project to the Haskell Foundation, the
+  default value of the `urls` key is
+  `latest-snapshot: https://stackage-haddock.haskell.org/snapshots.json`.
+* Stack no longer includes the snapshot package database when compiling the
+  setup executable for a package with `build-type: Configure`.
+
+## v2.15.3 - 2024-03-07
+
+Release notes:
+
+* With one exception, this release fixes bugs.
+
+**Changes since v2.15.1:**
+
+Behavior changes:
+
+* `stack path --global-config`, `--programs`, and `--local-bin` no longer set
+  up Stack's environment.
+
+Bug fixes:
+
+* Due to a bug, Stack 2.15.1 did not support versions of GHC before 8.2. Stack
+  now supports GHC versions from 8.0.
+* `--haddock-for-hackage` does not ignore `--haddock-arguments`.
+* On Windows, package locations that are Git repositories with submodules now
+  work as intended.
+* The `ghc`, `runghc` and `runhaskell` commands accept `--package` values that
+  are a list of package names or package identifiers separated by spaces and, in
+  the case of package identifiers, in the same way as if they were specified as
+  targets to `stack build`.
+
+## v2.15.1 - 2024-02-09
+
+Release notes:
+
+* After an upgrade from an earlier version of Stack, on first use only,
+  Stack 2.15.1 may warn that it had trouble loading the CompilerPaths cache.
+* The hash used as a key for Stack's pre-compiled package cache has changed,
+  following the dropping of support for Cabal versions older than `1.24.0.0`.
+
+**Changes since v2.13.1:**
+
+Behavior changes:
+
+* Stack does not leave `*.hi` or `*.o` files in the `setup-exe-src` directory of
+  the Stack root, and deletes any corresponding to a `setup-<hash>.hs` or
+  `setup-shim-<hash>.hs` file, to avoid GHC issue
+  [#21250](https://gitlab.haskell.org/ghc/ghc/-/issues/21250).
+* If Stack's Nix integration is not enabled, Stack will notify the user if a
+  `nix` executable is on the PATH. This usually indicates the Nix package
+  manager is available. In YAML configuration files, the `notify-if-nix-on-path`
+  key is introduced, to allow the notification to be muted if unwanted.
+* Drop support for Intero (end of life in November 2019).
+* `stack path --stack-root` no longer sets up Stack's environment and does not
+  load Stack's configuration.
+* Stack no longer locks on configuration, so packages (remote and local) can
+  be configured in parallel. This increases the effective concurrency of builds
+  that before would use fewer threads. Reconsider your `--jobs` setting
+  accordingly. See [#84](https://github.com/commercialhaskell/stack/issues/84).
+* Stack warns that its support for Cabal versions before `2.2.0.0` is deprecated
+  and may be removed in the next version of Stack. Removal would mean that
+  projects using snapshots earlier than `lts-12.0` or `nightly-2018-03-18`
+  (GHC 8.4.1) might no longer build. See
+  [#6377](https://github.com/commercialhaskell/stack/issues/6377).
+* If Stack's `--resolver` option is not specified, Stack's `unpack` command with
+  a package name will seek to update the package index before seeking to
+  download the most recent version of the package in the index.
+* If the version of Cabal (the library) provided with the specified GHC can copy
+  specific components, Stack will copy only the components built and will not
+  build all executable components at least once.
+
+Other enhancements:
+
+* Consider GHC 9.8 to be a tested compiler and remove warnings.
+* Stack can build packages with dependencies on public sub-libraries of other
+  packages.
+* Add flag `--no-init` to Stack's `new` command to skip the initialisation of
+  the newly-created project for use with Stack.
+* The HTML file paths produced at the end of `stack haddock` are printed on
+  separate lines and without a trailing dot.
+* Add option of the form `--doctest-option=<argument>` to `stack build`, where
+  `doctest` is a program recognised by versions of the Cabal library from
+  `1.24.0.0`.
+* Experimental: Add flag `--haddock-for-hackage` to Stack's `build` command
+  (including the `haddock` synonym for `build --haddock`) to enable building
+  project packages with flags to generate Haddock documentation, and an archive
+  file, suitable for upload to Hackage. The form of the Haddock documentation
+  generated for other packages is unaffected.
+* Experimental: Add flag `--documentation` (`-d` for short) to Stack's `upload`
+  command to allow uploading of documentation for packages to Hackage.
+* `stack new` no longer rejects project templates that specify a `package.yaml`
+  in a subdirectory of the project directory.
+* Stack will notify the user if Stack has not been tested with the version of
+  GHC that is being user or a version of Cabal (the library) that has been
+  found. In YAML configuration files, the `notify-if-ghc-untested` and
+  `notify-if-cabal-untested` keys are introduced, to allow the notification to
+  be muted if unwanted.
+* The compiler version is included in Stack's build message (e.g.
+  `stack> build (lib + exe + test) with ghc-9.6.4`).
+* Add flag `--candidate` to Stack's `unpack` command, to allow package
+  candidates to be unpacked locally.
+* Stack will notify the user if a specified architecture value is unknown to
+  Cabal (the library). In YAML configuration files, the `notify-if-arch-unknown`
+  key is introduced, to allow the notification to be muted if unwanted.
+* Add option `--filter <item>` to Stack's `ls dependencies text` command to
+  filter out an item from the results, if present. The item can be `$locals` for
+  all project packages.
+* Add option `--snapshot` as synonym for `--resolver`.
+* Add the `config set snapshot` command, corresponding to the
+  `config set resolver` command.
+
+Bug fixes:
+
+* Fix the `Curator` instance of `ToJSON`, as regards `expect-haddock-failure`.
+* Better error message if a `resolver:` or `snapshot:` value is, in error, a
+  YAML number.
+* Stack accepts all package names that are, in fact, acceptable to Cabal.
+* Stack's `sdist` command can check packages with names that include non-ASCII
+  characters.
+
 ## v2.13.1 - 2023-09-29
 
 Release notes:
@@ -27,8 +188,8 @@ Behavior changes:
   considered a possible GHC build if `libc.musl-x86_64.so.1` is found in `\lib`
   or `\lib64`.
 * No longer supports Cabal versions older than `1.24.0.0`. This means projects
-  using snapshots earlier than `lts-7.0` or `nightly-2016-05-26` will no longer
-  build.
+  using snapshots earlier than `lts-7.0` or `nightly-2016-05-26` (GHC 8.0.1)
+  will no longer build. GHC 8.0.1 comes with Haddock 2.17.2.
 * When unregistering many packages in a single step, Stack can now do that
   efficiently. Stack no longer uses GHC-supplied `ghc-pkg unregister` (which is,
   currently, slower).
@@ -40,6 +201,8 @@ Behavior changes:
 
 Other enhancements:
 
+* Consider GHC 9.6 to be a tested compiler and remove warnings.
+* Consider Cabal 3.10 to be a tested library and remove warnings.
 * Bump to Hpack 0.36.0.
 * Depend on `pantry-0.9.2`, for support for long filenames and directory names
   in archives created by `git archive`.
@@ -55,7 +218,8 @@ Other enhancements:
   precedence over the existing `casa-repo-prefix` key. The latter is deprecated.
   The new key also allows Stack's use of a Casa (content-addressable storage
   archive) server to be disabled and the maximum number of keys per request to
-  be configured. The defaults are unchanged.
+  be configured. The default Casa prefix references https://casa.stackage.org,
+  instead of https://casa.fpcomplete.com.
 * Add option `--progress-bar=<format>` to Stack's `build` command to configure
   the format of the progress bar, where `<format>` is one of `none`,
   `count-only` (only the package count), `capped` (capped to a length equal to
@@ -117,8 +281,9 @@ Other enhancements:
   `c2hs`, `cpphs`, `gcc`, `greencard`, `happy`, `hsc2hs`, `hscolour`, `ld`,
   `pkg-config`, `strip` and `tar`. If Cabal uses the program during the
   configuration step, the argument is passed to it.
-* By default all `--PROG-option` options are applied to all local packages. This
-  behaviour can be changed with new configuration option `apply-prog-options`.
+* By default all `--PROG-option` options are applied to all project packages.
+  This behaviour can be changed with new configuration option
+  `apply-prog-options`.
 * Add flag `--[no-]use-root` to `stack script` (default disabled). Used with
   `--compile` or `--optimize`, when enabled all compilation outputs (including
   the executable) are written to a script-specific location in the `scripts`
@@ -138,8 +303,8 @@ Bug fixes:
 * `stack build` with `--file-watch` or `--file-watch-poll` outputs 'pretty'
   error messages, as intended. See
   [#5978](https://github.com/commercialhaskell/stack/issues/5978).
-* `stack build` unregisters any local packages for the sub libraries of a local
-  package that is to be unregistered. See
+* `stack build` unregisters any project packages for the sub libraries of a
+  project package that is to be unregistered. See
   [#6046](https://github.com/commercialhaskell/stack/issues/6046).
 * The warning that sublibrary dependency is not supported is no longer triggered
   by internal libraries.
@@ -149,7 +314,7 @@ Bug fixes:
 Hackage-only release of the `stack` package:
 
 * Supports building against snapshot Stackage LTS Haskell 21.0 (GHC 9.4.5),
-  without extra deps.
+  without extra-deps.
 * Supports build with `persistent-2.14.5.0`, using CPP directives.
 * Supports build with `unix-compat-0.7`, by removing reliance on the module
   `System.PosixCompat.User` removed in that package.
@@ -197,8 +362,8 @@ Other enhancements:
   `STACK_ROOT` environment variable.
 * Add `stack path --global-config`, to yield the full path of Stack's
   user-specific global YAML configuration file (`config.yaml`).
-* Add an experimental option, `allow-newer-deps`, which allows users to
-  specify a subset of dependencies for which version bounds should be ignored
+* Experimental: Add option `allow-newer-deps`, which allows users to specify a
+  subset of dependencies for which version bounds should be ignored
   (`allow-newer-deps: ['foo', 'bar']`). This field has no effect unless
   `allow-newer` is enabled.
 
@@ -240,6 +405,8 @@ Behavior changes:
 
 Other enhancements:
 
+* Consider GHC 9.2 and 9.4 to be tested compilers and remove warnings.
+* Consider Cabal 3.6 and 3.8 to be a tested libraries and remove warnings.
 * Bump to Hpack 0.35.0.
 * On Windows, the installer now sets `DisplayVersion` in the registry, enabling
   tools like `winget` to properly read the version number.
@@ -298,7 +465,6 @@ Behavior changes:
 Other enhancements:
 
 * `stack setup` supports installing GHC for macOS aarch64 (M1)
-
 * `stack upload` supports authentication with a Hackage API key (via
   `HACKAGE_KEY` environment variable).
 
@@ -358,7 +524,6 @@ Behavior changes:
   packages. It also sets now proper working directory when invoked with
   one package. See
   [#5421](https://github.com/commercialhaskell/stack/issues/5421)
-
 * `custom-setup` dependencies are now properly initialized for `stack dist`.
   This makes `explicit-setup-deps` no longer required and that option was
   removed. See
@@ -366,25 +531,20 @@ Behavior changes:
 
 Other enhancements:
 
+* Consider GHC 9.0 to be a tested compiler and remove warnings.
+* Consider Cabal 3.6 to be a tested library and remove warnings.
 * Nix integration now passes `ghcVersion` (in addition to existing `ghc`) to
   `shell-file` as an identifier that can be looked up in a compiler attribute
   set.
-
 * Nix integration now allows Nix integration if the user is ready in nix-shell.
   This gets rid of "In Nix shell but reExecL is False" error.
-
 * `stack list` is a new command to list package versions in a snapshot.
   See [#5431](https://github.com/commercialhaskell/stack/pull/5431)
-
-* Consider GHC 9.0 a tested compiler and remove warnings.
-
 * `custom-preprocessor-extensions` is a new configuration option for allowing
   Stack to be aware of any custom preprocessors you have added to `Setup.hs`.
   See [#3491](https://github.com/commercialhaskell/stack/issues/3491)
-
 * Added `--candidate` flag to `upload` command to upload a package candidate
   rather than publishing the package.
-
 * Error output using `--no-interleaved-output` no longer prepends indenting
   whitespace. This allows emacs compilation-mode and vim quickfix to locate
   and track errors. See
@@ -395,14 +555,11 @@ Bug fixes:
 * `stack new` now supports branches other than `master` as default for GitHub
   repositories. See
   [#5422](https://github.com/commercialhaskell/stack/issues/5422)
-
 * Ignore all errors from `hi-file-parser`. See
   [#5445](https://github.com/commercialhaskell/stack/issues/5445) and
   [#5486](https://github.com/commercialhaskell/stack/issues/5486).
-
 * Support basic auth in package-indices. See
   [#5509](https://github.com/commercialhaskell/stack/issues/5509).
-
 * Add support for parsing `.hi`. files from GHC 8.10 and 9.0. See
   [hi-file-parser#2](https://github.com/commercialhaskell/hi-file-parser/pull/2).
 
@@ -424,7 +581,6 @@ Major changes:
   override the default location of snapshot configuration files. This option
   affects how snapshot synonyms (LTS/Nightly) are expanded to URLs by the
   `pantry` library.
-
 * `docker-network` configuration key added to override docker `--net` arg
 
 Behavior changes:
@@ -635,7 +791,7 @@ Other enhancements:
   affect the Stackage Curator use case, but there is now an additional message
   letting the user know when a previously-failed test case is being rerun.
 
-* Move configure information for local packages back to .stack-work to improve
+* Move configure information for project packages back to .stack-work to improve
   caching. See
   [#4893](https://github.com/commercialhaskell/stack/issues/4893).
 
@@ -750,7 +906,7 @@ Major changes:
 * Remove the `stack image` command. With the advent of Docker multistage
   builds, this functionality is no longer useful. For an example, please see
   [Building Haskell Apps with Docker](https://www.fpcomplete.com/blog/2017/12/building-haskell-apps-with-docker).
-* Support building GHC from source (experimental)
+* Experimental: Support building GHC from source
     * Stack now supports building and installing GHC from source. The built GHC
       is uniquely identified by a commit id and an Hadrian "flavour" (Hadrian is
       the newer GHC build system), hence `compiler` can be set to use a GHC
@@ -821,7 +977,7 @@ Other enhancements:
 
 * Support MX Linux in get-stack.sh. Fixes
   [#4769](https://github.com/commercialhaskell/stack/issues/4769).
-* Defer loading up of files for local packages. This allows us to get
+* Defer loading up of files for project packages. This allows us to get
   plan construction errors much faster, and avoid some unnecessary
   work when only building a subset of packages. This is especially
   useful for the curator use case.
@@ -1529,7 +1685,7 @@ Bug fixes:
 * `stack script` can now handle relative paths to source files.
   See [#3372](https://github.com/commercialhaskell/stack/issues/3372).
 * Fixes explanation of why a target is needed by the build plan, when the
-  target is an extra dependency from the commandline.
+  target is an extra-dep from the commandline.
   See [#3378](https://github.com/commercialhaskell/stack/issues/3378).
 * Previously, if you delete a yaml file from ~/.stack/build-plan, it would
   trust the etag and not re-download.  Fixed in this version.
@@ -1633,11 +1789,10 @@ Other enhancements:
   [#3126](https://github.com/commercialhaskell/stack/issues/3126)
 * When using Nix, nix-shell now depends always on git to prevent runtime errors
   while fetching metadata
-* The `stack unpack` command now accepts a form where an explicit
-  Hackage revision hash is specified, e.g. `stack unpack
-  foo-1.2.3@gitsha1:deadbeef`. Note that this should be considered
-  _experimental_, Stack will likely move towards a different hash
-  format in the future.
+* Experimental: The `stack unpack` command now accepts a form where an explicit
+  Hackage revision hash is specified, e.g.
+  `stack unpack foo-1.2.3@gitsha1:deadbeef`. Note that Stack will likely move
+  towards a different hash format in the future.
 * Binary "stack upgrade" will now warn if the installed executable is not
   on the PATH or shadowed by another entry.
 * Allow running tests on tarball created by sdist and upload
@@ -2252,7 +2407,7 @@ Other enhancements:
 * Fix too much rebuilding when enabling/disabling profiling flags.
 * `stack build pkg-1.0` will now build `pkg-1.0` even if the snapshot specifies
   a different version (it introduces a temporary extra-dep)
-* Experimental support for `--split-objs` added
+* Experimental: Support for `--split-objs` added
   [#1284](https://github.com/commercialhaskell/stack/issues/1284).
 * `git` packages with submodules are supported by passing the `--recursive`
   flag to `git clone`.
@@ -2360,8 +2515,8 @@ Major changes:
     * Overall it should now be able to initialize almost all existing Cabal
       packages out of the box as long as the package itself is consistently
       defined.
-    * Choose the best possible snapshot and add extra dependencies on top
-      of a snapshot resolver rather than a compiler resolver -
+    * Choose the best possible snapshot and add extra-deps on top
+      of a snapshot other than a compiler snapshot -
       [#1583](https://github.com/commercialhaskell/stack/pull/1583)
     * Automatically omit a package (`--omit-packages`) when it is compiler
       incompatible or when there are packages with conflicting dependency
@@ -2731,7 +2886,7 @@ Other enhancements:
   [#1070](https://github.com/commercialhaskell/stack/pull/1070)
 * Use Stack-installed GHCs for `stack init --solver`
   [#1072](https://github.com/commercialhaskell/stack/issues/1072)
-* New experimental `stack query` command
+* Experimental: Add `stack query` command
   [#1087](https://github.com/commercialhaskell/stack/issues/1087)
 * By default, Stack no longer rebuilds a package due to GHC options changes.
   This behavior can be tweaked with the `rebuild-ghc-options` setting.
@@ -2828,7 +2983,7 @@ Bug fixes:
 
 * Hacky workaround for optparse-applicative issue with `stack exec --help`
   [#806](https://github.com/commercialhaskell/stack/issues/806)
-* Build executables for local extra deps
+* Build executables for local extra-deps
   [#920](https://github.com/commercialhaskell/stack/issues/920)
 * copyFile can't handle directories
   [#942](https://github.com/commercialhaskell/stack/pull/942)

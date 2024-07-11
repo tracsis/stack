@@ -9,13 +9,13 @@ here is to be as helpful and concise as possible.
 ## What version of GHC is used when I run something like `stack ghci`?
 
 The version of GHC, as well as which packages can be installed, are specified by
-the _resolver_. This may be something like `lts-21.13`, which is from
+the _snapshot_. This may be something like `lts-22.21`, which is from
 [Stackage](https://www.stackage.org/). The [user's guide](GUIDE.md) discusses
-the resolver in more detail.
+the snapshot in more detail.
 
-The resolver is determined by finding the relevant project-level configuration
-file (`stack.yaml`) for the directory you're running the command from. This
-essentially works by:
+The snapshot is determined by finding the relevant project-level configuration
+file (`stack.yaml`, by default) for the directory you're running the command
+from. This essentially works by:
 
 1. Check for a `STACK_YAML` environment variable or the `--stack-yaml`
    command line argument
@@ -32,7 +32,7 @@ more recent LTS snapshot. You can do this using the following command from
 outside of a project:
 
 ~~~text
-stack config set resolver lts
+stack config set snapshot lts
 ~~~
 
 ## Where is Stack installed and will it interfere with the GHC (etc) I already have installed?
@@ -76,11 +76,11 @@ You can make tweaks to a snapshot by modifying the `extra-deps` configuration
 value in your `stack.yaml` file, e.g.:
 
 ~~~yaml
-resolver: lts-21.13
+snapshot: lts-22.21
 packages:
 - .
 extra-deps:
-- text-2.0.2@rev:1
+- text-2.1.1@rev:0
 ~~~
 
 ## I need to use a package (or version of a package) that is not available on Hackage, what should I do?
@@ -91,7 +91,7 @@ Add it to the
 directory where your `stack.yaml` file lives, e.g.
 
 ~~~yaml
-resolver: lts-21.13
+snapshot: lts-22.21
 packages:
 - .
 extra-deps:
@@ -216,8 +216,9 @@ If you would like Stack to use your system GHC installation, use the
 suitable GHC by default.
 
 Stack can only use a system GHC installation if its version is compatible with
-the configuration of the current project, particularly the
-[`resolver` or `snapshot`](yaml_configuration.md#resolver-or-snapshot) setting.
+the configuration of the current project, particularly the snapshot specified by
+the [`snapshot`](yaml_configuration.md#snapshot) or
+[`resolver`](yaml_configuration.md#resolver) key.
 
 GHC installation doesn't work for all operating systems, so in some cases you
 will need to use `system-ghc` and install GHC yourself.
@@ -246,8 +247,8 @@ dependencies, in particular [Alex](https://hackage.haskell.org/package/alex) and
 
 !!! note
 
-    This works when using LTS or nightly resolvers, not with GHC or custom
-    resolvers. You can manually install build tools by running, e.g.,
+    This works when using LTS or nightly snapshots, not with GHC or custom
+    snapshots. You can manually install build tools by running, e.g.,
     `stack build alex happy`.
 
 ## How does Stack choose which snapshot to use when creating a new configuration file?
@@ -297,8 +298,8 @@ of those three. Updating the index will have no impact on Stack's behavior.
 
 ## I have a custom package index I'd like to use, how do I do so?
 
-You can configure this in your project-level configuration file (`stack.yaml`).
-See [YAML configuration](yaml_configuration.md).
+You can configure this in your project-level configuration file (`stack.yaml`,
+by default). See [YAML configuration](yaml_configuration.md).
 
 ## How can I make sure my project builds against multiple GHC versions?
 
@@ -337,6 +338,35 @@ Yes, Stack supports using Docker with images that contain preinstalled Stackage
 packages and the tools. See [Docker integration](docker_integration.md) for
 details.
 
+## How do I build a statically-linked executable on Linux?
+
+The way that Stack itself builds statically-linked Stack executables for Linux
+is as follows:
+
+* In the Cabal file, the following
+  [`ld-options`](https://cabal.readthedocs.io/en/stable/cabal-package.html#pkg-field-ld-options)
+  are set: `-static` and `-pthread`.
+
+* The Stack command is run in a Docker container based on Alpine Linux. The
+  relevant Docker image repository is set out in Stack's `stack.yaml` file. See
+  also Olivier Benz's [GHC musl project](https://gitlab.com/benz0li/ghc-musl).
+
+* Stack's configuration includes:
+
+    ~~~yaml
+    extra-include-dirs:
+    - /usr/include
+    extra-lib-dirs:
+    - /lib
+    - /usr/lib
+    ~~~
+
+* The build command is `stack build --docker --system-ghc --no-install-ghc` (on
+  x86_64) or
+  `stack build --docker --docker-stack-exe=image --system-ghc --no-install-ghc`
+  (on AArch64; the host Stack and the image Stack must have the same version
+  number).
+
 ## How do I use this with Travis CI?
 
 See the [Travis CI instructions](travis_ci.md)
@@ -371,7 +401,7 @@ Windows is not able to find the necessary C++ libraries from the standard
 prompt because they're not in the PATH environment variable. `stack exec` works
 because it's modifying PATH to include extra things.
 
-Those libraries are shipped with GHC (and, theoretically in some cases, MSYS).
+Those libraries are shipped with GHC (and, theoretically in some cases, MSYS2).
 The easiest way to find them is `stack exec which`. For example, command:
 
 ~~~text
@@ -426,10 +456,9 @@ doesn't lead to a rebuild, add the `-fforce-recomp` flag to your
 
 ## Why doesn't Stack apply my `--ghc-options` to my dependencies?
 
-By default, Stack applies command line GHC options only to local packages (these
-are all the packages that are specified in the `packages` section of your
-`stack.yaml` file). For an explanation of this choice see this discussion on
-issue
+By default, Stack applies command line GHC options only to
+[project packages](yaml_configuration.md#packages). For an explanation of this
+choice see this discussion on issue
 [#827](https://github.com/commercialhaskell/stack/issues/827#issuecomment-133263678).
 
 If you still want to set specific GHC options for a dependency, use the
@@ -625,7 +654,7 @@ by modifying a global setting:
 ~~~
 
 **Note that we're fixing `ghc-8.2.2` in this case; repeat for other versions as necessary.**
-You should apply this fix for the version of GHC that matches your resolver.
+You should apply this fix for the version of GHC that matches your snapshot.
 
 Issue [#4009](https://github.com/commercialhaskell/stack/issues/4009) goes into
 further detail.

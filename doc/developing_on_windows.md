@@ -3,10 +3,11 @@
 # Developing on Windows #
 
 On Windows, Stack comes with an installation of [MSYS2](https://www.msys2.org/).
-MSYS2 will be used by Stack to provide a Unix-like shell and environment for
-Stack. This may be necessary for installing some Haskell packages, such as those
-which use `configure` scripts, or if your project needs some additional tools
-during the build phase.
+The MINGW64 (MINGW32 on 32-bit Windows) environment of MSYS2 will be used by
+Stack to provide a Unix-like shell and environment for Stack. This may be
+necessary for installing some Haskell packages, such as those which use
+`configure` scripts, or if your project needs some additional tools during the
+build phase.
 
 No matter which terminal software you choose (Windows Terminal, Console Windows
 Host, Command Prompt, PowerShell, Git bash or any other) you can use this
@@ -26,11 +27,18 @@ example, help about the operation `--sync` (or `-S`) can be obtained with
 `stack exec -- pacman -Sh`.
 
 Command `stack path --bin-path` to see the PATH in the Stack environment. On
-Windows, it includes the `\mingw64\bin`, `\usr\bin` and `\usr\local\bin`
-directories of the Stack-supplied MSYS2. If your executable depends on files
-(for example, dynamic-link libraries) in those directories and you want ro run
-it outside of the Stack environment, you will need to ensure copies of those
-files are on the PATH.
+Windows, it includes the `\mingw64\bin` (`\mingw32\bin` on 32-bit Windows),
+`\usr\bin` and `\usr\local\bin` directories of the Stack-supplied MSYS2. If your
+executable depends on files (for example, dynamic-link libraries) in those
+directories and you want to run it outside of the Stack environment, you will
+need to ensure copies of those files are on the PATH.
+
+Command `stack path --extra-include-dirs` and `stack path --extra-library-dirs`
+to see the extra directories searched for C header files or system libraries
+files in the Stack environment. On Windows, it includes the `\mingw64\include`
+(`mingw32\include` on 32-bit Windows) (include) and the `\mingw64\lib` and
+`\mingw64\bin` directories (`mingw32\lib` and `mingw32\bin` on 32-bit Windows)
+(library) of the Stack-supplied MSYS2.
 
 ## Updating the Stack-supplied MSYS2 ##
 
@@ -56,8 +64,18 @@ The following lists MSYS2 packages known to allow the installation of some
 common Haskell packages on Windows. Feel free to submit additional entries via a
 pull request.
 
-* For [text-icu](https://github.com/bos/text-icu) install
-  `mingw64/mingw-w64-x86_64-icu`
+*   For [text-icu](https://hackage.haskell.org/package/text-icu) install
+    `mingw64/mingw-w64-x86_64-icu`.
+
+*   For [zlib >= 0.7](https://hackage.haskell.org/package/zlib) the default
+    Cabal flag `pkg-config` is `true` and requires executable `pkg-config` on
+    the PATH. MSYS2 [defaults](https://www.msys2.org/docs/pkgconfig/) to
+    [`pkgconf`](https://packages.msys2.org/package/pkgconf?repo=msys&variant=x86_64)
+    as its `pkg-config` implementation. Installation:
+
+        stack exec -- pacman -S pkgconf
+
+    Alternatively, build with `--flag zlib:-pkg-config`.
 
 ## CMake ##
 

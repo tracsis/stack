@@ -1,6 +1,9 @@
-{-# LANGUAGE NoImplicitPrelude  #-}
-{-# LANGUAGE OverloadedStrings  #-}
-{-# LANGUAGE TypeFamilies       #-}
+{-# LANGUAGE NoImplicitPrelude     #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE NoFieldSelectors      #-}
+{-# LANGUAGE OverloadedRecordDot   #-}
+{-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE TypeFamilies          #-}
 
 -- Types and functions related to Stack's @sdist@ command.
 module Stack.SDist
@@ -9,9 +12,10 @@ module Stack.SDist
   , getSDistTarball
   , checkSDistTarball
   , checkSDistTarball'
+  , readLocalPackage
   ) where
 
-import qualified Codec.Archive.Tar as Tar
+import qualified Codec.Archive.Tar.Utf8 as Tar
 import qualified Codec.Archive.Tar.Entry as Tar
 import qualified Codec.Compression.GZip as GZip
 import           Conduit ( runConduitRes, sourceLazy, sinkFileCautious )
@@ -23,7 +27,6 @@ import qualified Data.ByteString.Lazy as L
 import           Data.Char ( toLower )
 import           Data.Data ( cast )
 import qualified Data.List as List
-import qualified Data.List.NonEmpty as NE
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as T
@@ -44,39 +47,37 @@ import           Distribution.Version
                    )
 import           Path ( (</>), parent, parseRelDir, parseRelFile )
 import           Path.IO ( ensureDir, resolveDir' )
+import           RIO.NonEmpty ( nonEmpty )
+import qualified RIO.NonEmpty as NE
 import           Stack.Build ( mkBaseConfigOpts, build, buildLocalTargets )
 import           Stack.Build.Execute
-                   ( ExcludeTHLoading (..), KeepOutputOpen (..), withExecuteEnv
-                   , withSingleContext
-                   )
+                   ( ExcludeTHLoading (..), KeepOutputOpen (..) )
+import           Stack.Build.ExecuteEnv ( withExecuteEnv, withSingleContext )
 import           Stack.Build.Installed ( getInstalled, toInstallMap )
 import           Stack.Build.Source ( projectLocalPackages )
+import           Stack.BuildOpts ( defaultBuildOpts )
 import           Stack.Constants ( stackProgName, stackProgName' )
 import           Stack.Constants.Config ( distDirFromDir )
-import           Stack.Package
-                   ( PackageDescriptionPair (..), resolvePackage
-                   , resolvePackageDescription
-                   )
+import           Stack.Package ( resolvePackage, resolvePackageDescription )
 import           Stack.Prelude
 import           Stack.Runners
                    ( ShouldReexec (..), withConfig, withDefaultEnvConfig )
 import           Stack.SourceMap ( mkProjectPackage )
-import           Stack.Types.Build
-                   ( CachePkgSrc (..), Task (..), TaskConfigOpts (..)
-                   , TaskType (..)
-                   )
+import           Stack.Types.Build ( TaskType (..) )
 import           Stack.Types.BuildConfig
                    ( BuildConfig (..), HasBuildConfig (..), stackYamlL )
-import           Stack.Types.BuildOpts
-                   ( BuildOpts (..), defaultBuildOpts, defaultBuildOptsCLI )
+import           Stack.Types.BuildOpts ( BuildOpts (..) )
+import           Stack.Types.BuildOptsCLI ( defaultBuildOptsCLI )
 import           Stack.Types.Config ( Config (..), HasConfig (..) )
-import           Stack.Types.ConfigureOpts ( ConfigureOpts (..) )
 import           Stack.Types.EnvConfig
                    ( EnvConfig (..), HasEnvConfig (..), actualCompilerVersionL )
 import           Stack.Types.GhcPkgId ( GhcPkgId )
+import           Stack.Types.Installed
+                   ( InstallMap, Installed (..), InstalledMap
+                   , InstalledLibraryInfo (..), installedVersion
+                   )
 import           Stack.Types.Package
-                   ( InstallMap, Installed (..), InstalledMap, LocalPackage (..)
-                   , Package (..), PackageConfig (..), installedVersion
+                   ( LocalPackage (..), Package (..), PackageConfig (..)
                    , packageIdentifier
                    )
 import           Stack.Types.Platform ( HasPlatform (..) )
@@ -86,6 +87,7 @@ import           Stack.Types.SourceMap
                    ( CommonPackage (..), ProjectPackage (..), SMWanted (..)
                    , SourceMap (..), ppRoot
                    )
+import qualified Stack.Types.SourceMap as SourceMap ( SourceMap (..) )
 import           Stack.Types.Version
                    ( intersectVersionRanges, nextMajorVersion )
 import           System.Directory
@@ -109,15 +111,15 @@ instance Pretty SDistPrettyException where
     <> flow "Package check reported the following errors:"
     <> line
     <> bulletedList (map (string . show) (NE.toList xs) :: [StyleDoc])
-  pretty (CabalFilePathsInconsistentBug cabalfp cabalfp') =
+  pretty (CabalFilePathsInconsistentBug cabalFP cabalFP') =
     "[S-9595]"
     <> line
     <> fillSep
          [ flow "The impossible happened! Two Cabal file paths are \
                 \inconsistent:"
-         , pretty cabalfp
+         , pretty cabalFP
          , "and"
-         , pretty cabalfp' <> "."
+         , pretty cabalFP' <> "."
          ]
   pretty (ToTarPathException e) =
     "[S-7875]"
@@ -128,16 +130,16 @@ instance Exception SDistPrettyException
 
 -- | Type representing command line options for @stack sdist@ command.
 data SDistOpts = SDistOpts
-  { sdoptsDirsToWorkWith :: [String]
-  -- ^ Directories to package
-  , sdoptsPvpBounds :: Maybe PvpBounds
-  -- ^ PVP Bounds overrides
-  , sdoptsIgnoreCheck :: Bool
-  -- ^ Whether to ignore check of the package for common errors
-  , sdoptsBuildTarball :: Bool
-  -- ^ Whether to build the tarball
-  , sdoptsTarPath :: Maybe FilePath
-  -- ^ Where to copy the tarball
+  { dirsToWorkWith :: [String]
+    -- ^ Directories to package
+  , pvpBounds :: Maybe PvpBounds
+    -- ^ PVP Bounds overrides
+  , ignoreCheck :: Bool
+    -- ^ Whether to ignore check of the package for common errors
+  , buildTarball :: Bool
+    -- ^ Whether to build the tarball
+  , tarPath :: Maybe FilePath
+    -- ^ Where to copy the tarball
   }
 
 -- | Function underlying the @stack sdist@ command.
@@ -145,10 +147,10 @@ sdistCmd :: SDistOpts -> RIO Runner ()
 sdistCmd sdistOpts =
   withConfig YesReexec $ withDefaultEnvConfig $ do
     -- If no directories are specified, build all sdist tarballs.
-    dirs' <- if null (sdoptsDirsToWorkWith sdistOpts)
+    dirs' <- if null sdistOpts.dirsToWorkWith
       then do
         dirs <- view $
-          buildConfigL.to (map ppRoot . Map.elems . smwProject . bcSMWanted)
+          buildConfigL . to (map ppRoot . Map.elems . (.smWanted.project))
         when (null dirs) $ do
           stackYaml <- view stackYamlL
           prettyErrorL
@@ -161,10 +163,10 @@ sdistCmd sdistOpts =
             ]
           exitFailure
         pure dirs
-      else mapM resolveDir' (sdoptsDirsToWorkWith sdistOpts)
+      else mapM resolveDir' sdistOpts.dirsToWorkWith
     forM_ dirs' $ \dir -> do
       (tarName, tarBytes, _mcabalRevision) <-
-        getSDistTarball (sdoptsPvpBounds sdistOpts) dir
+        getSDistTarball sdistOpts.pvpBounds dir
       distDir <- distDirFromDir dir
       tarPath <- (distDir </>) <$> parseRelFile tarName
       ensureDir (parent tarPath)
@@ -176,7 +178,7 @@ sdistCmd sdistOpts =
         , pretty tarPath <> "."
         ]
       checkSDistTarball sdistOpts tarPath
-      forM_ (sdoptsTarPath sdistOpts) $ copyTarToTarPath tarPath tarName
+      forM_ sdistOpts.tarPath $ copyTarToTarPath tarPath tarName
  where
   copyTarToTarPath tarPath tarName targetDir = liftIO $ do
     let targetTarPath = targetDir FP.</> tarName
@@ -193,17 +195,22 @@ getSDistTarball ::
      -- ^ Override Config value
   -> Path Abs Dir
      -- ^ Path to local package
-  -> RIO env (FilePath, L.ByteString, Maybe (PackageIdentifier, L.ByteString))
+  -> RIO
+       env
+       ( FilePath
+       , L.ByteString
+       , Maybe (PackageIdentifier, L.ByteString)
+       )
      -- ^ Filename, tarball contents, and option Cabal file revision to upload
 getSDistTarball mpvpBounds pkgDir = do
   config <- view configL
   let PvpBounds pvpBounds asRevision =
-        fromMaybe (configPvpBounds config) mpvpBounds
+        fromMaybe config.pvpBounds mpvpBounds
       tweakCabal = pvpBounds /= PvpBoundsNone
       pkgFp = toFilePath pkgDir
   lp <- readLocalPackage pkgDir
-  forM_ (packageSetupDeps (lpPackage lp)) $ \customSetupDeps ->
-    case NE.nonEmpty (map (T.pack . packageNameString) (Map.keys customSetupDeps)) of
+  forM_ lp.package.setupDeps $ \customSetupDeps ->
+    case nonEmpty (map (T.pack . packageNameString) (Map.keys customSetupDeps)) of
       Just nonEmptyDepTargets -> do
         eres <- buildLocalTargets nonEmptyDepTargets
         case eres of
@@ -216,18 +223,18 @@ getSDistTarball mpvpBounds pkgDir = do
             pure ()
       Nothing ->
         prettyWarnS "unexpected empty custom-setup dependencies."
-  sourceMap <- view $ envConfigL.to envConfigSourceMap
+  sourceMap <- view $ envConfigL . to (.sourceMap)
   installMap <- toInstallMap sourceMap
   (installedMap, _globalDumpPkgs, _snapshotDumpPkgs, _localDumpPkgs) <-
     getInstalled installMap
   let deps = Map.fromList
-        [ (pid, ghcPkgId)
-        | (_, Library pid ghcPkgId _) <- Map.elems installedMap]
+        [ (pid, libInfo.ghcPkgId)
+        | (_, Library pid libInfo) <- Map.elems installedMap]
   prettyInfoL
     [ flow "Getting the file list for"
     , style File (fromString  pkgFp) <> "."
     ]
-  (fileList, cabalfp) <- getSDistFileList lp deps
+  (fileList, cabalFP) <- getSDistFileList lp deps
   prettyInfoL
     [ flow "Building a compressed archive file in the sdist format for"
     , style File (fromString pkgFp) <> "."
@@ -243,7 +250,7 @@ getSDistTarball mpvpBounds pkgDir = do
   -- prone and more predictable to read everything in at once, so that's what
   -- we're doing for now:
   let tarPath isDir fp =
-        case Tar.toTarPath isDir (forceUtf8Enc (pkgId FP.</> fp)) of
+        case Tar.toTarPath isDir (forceUtf8Enc (pkgIdName FP.</> fp)) of
           Left e -> prettyThrowIO $ ToTarPathException e
           Right tp -> pure tp
       -- convert a String of proper characters to a String of bytes in UTF8
@@ -256,20 +263,21 @@ getSDistTarball mpvpBounds pkgDir = do
         -- This is a Cabal file, we're going to tweak it, but only tweak it as a
         -- revision.
         | tweakCabal && isCabalFp fp && asRevision = do
-            lbsIdent <- getCabalLbs pvpBounds (Just 1) cabalfp sourceMap
+            lbsIdent <- getCabalLbs pvpBounds (Just 1) cabalFP sourceMap
             liftIO (writeIORef cabalFileRevisionRef (Just lbsIdent))
             packWith packFileEntry False fp
         -- Same, except we'll include the Cabal file in the original tarball
         -- upload.
         | tweakCabal && isCabalFp fp = do
-            (_ident, lbs) <- getCabalLbs pvpBounds Nothing cabalfp sourceMap
+            (_ident, lbs) <- getCabalLbs pvpBounds Nothing cabalFP sourceMap
             currTime <- liftIO getPOSIXTime -- Seconds from UNIX epoch
             tp <- liftIO $ tarPath False fp
             pure $ (Tar.fileEntry tp lbs) { Tar.entryTime = floor currTime }
         | otherwise = packWith packFileEntry False fp
-      isCabalFp fp = toFilePath pkgDir FP.</> fp == toFilePath cabalfp
-      tarName = pkgId FP.<.> "tar.gz"
-      pkgId = packageIdentifierString (packageIdentifier (lpPackage lp))
+      isCabalFp fp = toFilePath pkgDir FP.</> fp == toFilePath cabalFP
+      tarName = pkgIdName FP.<.> "tar.gz"
+      pkgIdName = packageIdentifierString pkgId
+      pkgId = packageIdentifier lp.package
   dirEntries <- mapM packDir (dirsFromFiles files)
   fileEntries <- mapM packFile files
   mcabalFileRevision <- liftIO (readIORef cabalFileRevisionRef)
@@ -287,20 +295,20 @@ getCabalLbs ::
   -> Path Abs File -- ^ Cabal file
   -> SourceMap
   -> RIO env (PackageIdentifier, L.ByteString)
-getCabalLbs pvpBounds mrev cabalfp sourceMap = do
-  (gpdio, _name, cabalfp') <-
-    loadCabalFilePath (Just stackProgName') (parent cabalfp)
+getCabalLbs pvpBounds mrev cabalFP sourceMap = do
+  (gpdio, _name, cabalFP') <-
+    loadCabalFilePath (Just stackProgName') (parent cabalFP)
   gpd <- liftIO $ gpdio NoPrintWarnings
-  unless (cabalfp == cabalfp') $
-    prettyThrowIO $ CabalFilePathsInconsistentBug cabalfp cabalfp'
+  unless (cabalFP == cabalFP') $
+    prettyThrowIO $ CabalFilePathsInconsistentBug cabalFP cabalFP'
   installMap <- toInstallMap sourceMap
   (installedMap, _, _, _) <- getInstalled installMap
-  let internalPackages = Set.fromList $
+  let subLibPackages = Set.fromList $
           gpdPackageName gpd
         : map
             (Cabal.unqualComponentNameToPackageName . fst)
             (Cabal.condSubLibraries gpd)
-      gpd' = gtraverseT (addBounds internalPackages installMap installedMap) gpd
+      gpd' = gtraverseT (addBounds subLibPackages installMap installedMap) gpd
       gpd'' =
         case mrev of
           Nothing -> gpd'
@@ -326,7 +334,7 @@ getCabalLbs pvpBounds mrev cabalfp sourceMap = do
            fillSep
              [ flow "Bug detected in Cabal library. ((parse . render . parse) \
                     \=== id) does not hold for the Cabal file at"
-             , pretty cabalfp
+             , pretty cabalFP
              ]
         <> blankLine
       (_warnings, eres) = Cabal.runParseResult
@@ -394,8 +402,8 @@ getCabalLbs pvpBounds mrev cabalfp sourceMap = do
     -> InstalledMap
     -> Dependency
     -> Dependency
-  addBounds internalPackages installMap installedMap dep =
-    if name `Set.member` internalPackages
+  addBounds subLibPackages installMap installedMap dep =
+    if name `Set.member` subLibPackages
       then dep
       else case foundVersion of
         Nothing -> dep
@@ -448,24 +456,24 @@ gtraverseT f =
 readLocalPackage :: HasEnvConfig env => Path Abs Dir -> RIO env LocalPackage
 readLocalPackage pkgDir = do
   config  <- getDefaultPackageConfig
-  (gpdio, _, cabalfp) <- loadCabalFilePath (Just stackProgName') pkgDir
+  (gpdio, _, cabalFP) <- loadCabalFilePath (Just stackProgName') pkgDir
   gpd <- liftIO $ gpdio YesPrintWarnings
   let package = resolvePackage config gpd
   pure LocalPackage
-    { lpPackage = package
-    , lpWanted = False -- HACK: makes it so that sdist output goes to a log
+    { package
+    , wanted = False -- HACK: makes it so that sdist output goes to a log
                        -- instead of a file.
-    , lpCabalFile = cabalfp
-    -- NOTE: these aren't the 'correct values, but aren't used in
-    -- the usage of this function in this module.
-    , lpTestBench = Nothing
-    , lpBuildHaddocks = False
-    , lpForceDirty = False
-    , lpDirtyFiles = pure Nothing
-    , lpNewBuildCaches = pure Map.empty
-    , lpComponentFiles = pure Map.empty
-    , lpComponents = Set.empty
-    , lpUnbuildable = Set.empty
+    , cabalFP
+    -- NOTE: these aren't the 'correct' values, but aren't used in the usage of
+    -- this function in this module.
+    , testBench = Nothing
+    , buildHaddocks = False
+    , forceDirty = False
+    , dirtyFiles = pure Nothing
+    , newBuildCaches = pure Map.empty
+    , componentFiles = pure Map.empty
+    , components = Set.empty
+    , unbuildable = Set.empty
     }
 
 -- | Returns a newline-separate list of paths, and the absolute path to the
@@ -485,33 +493,18 @@ getSDistFileList lp deps =
       [] [] [] Nothing -- provide empty list of globals. This is a hack around
                        -- custom Setup.hs files
       $ \ee ->
-      withSingleContext ac ee task deps (Just "sdist") $
-        \_package cabalfp _pkgDir cabal _announce _outputType -> do
+      withSingleContext ac ee taskType deps (Just "sdist") $
+        \_package cabalFP _pkgDir cabal _announce _outputType -> do
           let outFile = toFilePath tmpdir FP.</> "source-files-list"
           cabal
             CloseOnException
             KeepTHLoading
             ["sdist", "--list-sources", outFile]
           contents <- liftIO (S.readFile outFile)
-          pure (T.unpack $ T.decodeUtf8With T.lenientDecode contents, cabalfp)
+          pure (T.unpack $ T.decodeUtf8With T.lenientDecode contents, cabalFP)
  where
-  package = lpPackage lp
   ac = ActionContext Set.empty [] ConcurrencyAllowed
-  task = Task
-    { taskProvides =
-        PackageIdentifier (packageName package) (packageVersion package)
-    , taskType = TTLocalMutable lp
-    , taskConfigOpts = TaskConfigOpts
-        { tcoMissing = Set.empty
-        , tcoOpts = \_ -> ConfigureOpts [] []
-        }
-    , taskBuildHaddock = False
-    , taskPresent = Map.empty
-    , taskAllInOne = True
-    , taskCachePkgSrc = CacheSrcLocal (toFilePath (parent $ lpCabalFile lp))
-    , taskAnyMissing = True
-    , taskBuildTypeConfig = False
-    }
+  taskType = TTLocalMutable lp
 
 normalizeTarballPaths ::
      (HasRunner env, HasTerm env)
@@ -560,13 +553,13 @@ checkSDistTarball opts tarball = withTempTarGzContents tarball $ \pkgDir' -> do
   pkgDir <- (pkgDir' </>) <$>
     (parseRelDir . FP.takeBaseName . FP.takeBaseName . toFilePath $ tarball)
   --               ^ drop ".tar"     ^ drop ".gz"
-  when (sdoptsBuildTarball opts)
+  when opts.buildTarball
     ( buildExtractedTarball ResolvedPath
         { resolvedRelative = RelFilePath "this-is-not-used" -- ugly hack
         , resolvedAbsolute = pkgDir
         }
     )
-  unless (sdoptsIgnoreCheck opts) (checkPackageInExtractedTarball pkgDir)
+  unless opts.ignoreCheck (checkPackageInExtractedTarball pkgDir)
 
 checkPackageInExtractedTarball ::
      HasEnvConfig env
@@ -576,10 +569,10 @@ checkPackageInExtractedTarball pkgDir = do
   (gpdio, name, _cabalfp) <- loadCabalFilePath (Just stackProgName') pkgDir
   gpd <- liftIO $ gpdio YesPrintWarnings
   config <- getDefaultPackageConfig
-  let PackageDescriptionPair pkgDesc _ = resolvePackageDescription config gpd
+  let pkgDesc = resolvePackageDescription config gpd
   prettyInfoL
     [ flow "Checking package"
-    , style Current (fromString $ packageNameString name)
+    , style Current (fromPackageName name)
     , flow "for common mistakes."
     ]
   let pkgChecks =
@@ -607,7 +600,7 @@ checkPackageInExtractedTarball pkgDir = do
          flow "Package check reported the following warnings:"
       <> line
       <> bulletedList (map (fromString . show) warnings)
-  case NE.nonEmpty errors of
+  case nonEmpty errors of
     Nothing -> pure ()
     Just ne -> prettyThrowM $ CheckException ne
 
@@ -619,26 +612,23 @@ buildExtractedTarball pkgDir = do
   let isPathToRemove path = do
         localPackage <- readLocalPackage path
         pure
-          $  packageName (lpPackage localPackage)
-          == packageName (lpPackage localPackageToBuild)
+          $  localPackage.package.name
+          == localPackageToBuild.package.name
   pathsToKeep <- Map.fromList <$> filterM
-    (fmap not . isPathToRemove . resolvedAbsolute . ppResolvedDir . snd)
-    (Map.toList (smwProject (bcSMWanted (envConfigBuildConfig envConfig))))
+    (fmap not . isPathToRemove . resolvedAbsolute . (.resolvedDir) . snd)
+    (Map.toList envConfig.buildConfig.smWanted.project)
   pp <- mkProjectPackage YesPrintWarnings pkgDir False
   let adjustEnvForBuild env =
         let updatedEnvConfig = envConfig
-              { envConfigSourceMap =
-                  updatePackagesInSourceMap (envConfigSourceMap envConfig)
-              , envConfigBuildConfig =
-                  updateBuildConfig (envConfigBuildConfig envConfig)
+              { sourceMap = updatePackagesInSourceMap envConfig.sourceMap
+              , buildConfig = updateBuildConfig envConfig.buildConfig
               }
             updateBuildConfig bc = bc
-              { bcConfig = (bcConfig bc)
-                 { configBuild = defaultBuildOpts { boptsTests = True } }
+              { config = bc.config { build = defaultBuildOpts { tests = True } }
               }
         in  set envConfigL updatedEnvConfig env
       updatePackagesInSourceMap sm =
-        sm {smProject = Map.insert (cpName $ ppCommon pp) pp pathsToKeep}
+        sm { SourceMap.project = Map.insert pp.projectCommon.name pp pathsToKeep }
   local adjustEnvForBuild $ build Nothing
 
 -- | Version of 'checkSDistTarball' that first saves lazy bytestring to
@@ -700,11 +690,11 @@ getDefaultPackageConfig = do
   platform <- view platformL
   compilerVersion <- view actualCompilerVersionL
   pure PackageConfig
-    { packageConfigEnableTests = False
-    , packageConfigEnableBenchmarks = False
-    , packageConfigFlags = mempty
-    , packageConfigGhcOptions = []
-    , packageConfigCabalConfigOpts = []
-    , packageConfigCompilerVersion = compilerVersion
-    , packageConfigPlatform = platform
+    { enableTests = False
+    , enableBenchmarks = False
+    , flags = mempty
+    , ghcOptions = []
+    , cabalConfigOpts = []
+    , compilerVersion
+    , platform
     }

@@ -1,5 +1,4 @@
----
-resolver: lts-21.13
+snapshot: lts-22.21
 name: local-snapshot
 packages:
 - archive: package-0.1.2.3.tar.gz

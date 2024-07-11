@@ -1,6 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude  #-}
-{-# LANGUAGE OverloadedStrings  #-}
-{-# LANGUAGE RecordWildCards    #-}
+{-# LANGUAGE NoImplicitPrelude     #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE OverloadedRecordDot   #-}
+{-# LANGUAGE OverloadedStrings     #-}
 
 -- | Docker configuration
 module Stack.Config.Docker
@@ -19,7 +20,7 @@ import           Stack.Types.Docker
                    , DockerOptsMonoid (..), dockerImageArgName
                    )
 import           Stack.Types.Resolver ( AbstractResolver (..) )
-import           Stack.Types.Version ( getIntersectingVersionRange )
+import           Stack.Types.Version ( IntersectingVersionRange (..) )
 
 -- | Type representing exceptions thrown by functions exported by the
 -- "Stack.Config.Docker" module.
@@ -38,7 +39,7 @@ instance Exception ConfigDockerException where
           (_, Just aresolver) ->
             T.unpack $ utf8BuilderToText $ display aresolver
           (Just project, Nothing) ->
-            T.unpack $ utf8BuilderToText $ display $ projectResolver project
+            T.unpack $ utf8BuilderToText $ display project.resolver
       , "\nUse an LTS resolver, or set the '"
       , T.unpack dockerImageArgName
       , "' explicitly, in your configuration file."]
@@ -56,7 +57,7 @@ addDefaultTag base mproject maresolver = do
     Just (ARResolver (RSLSynonym lts@(LTS _ _))) -> pure lts
     Just _aresolver -> exc
     Nothing ->
-      case projectResolver <$> mproject of
+      case (.resolver) <$> mproject of
         Just (RSLSynonym lts@(LTS _ _)) -> pure lts
         _ -> exc
   pure $ base ++ ":" ++ show lts
@@ -68,38 +69,63 @@ dockerOptsFromMonoid ::
   -> Maybe AbstractResolver
   -> DockerOptsMonoid
   -> m DockerOpts
-dockerOptsFromMonoid mproject maresolver DockerOptsMonoid{..} = do
-  let dockerImage =
-        case getFirst dockerMonoidRepoOrImage of
+dockerOptsFromMonoid mproject maresolver dockerMonoid = do
+  let image =
+        case getFirst dockerMonoid.repoOrImage of
           Nothing -> addDefaultTag "fpco/stack-build" mproject maresolver
-          Just (DockerMonoidImage image) -> pure image
+          Just (DockerMonoidImage image') -> pure image'
           Just (DockerMonoidRepo repo) ->
             case find (`elem` (":@" :: String)) repo of
               Nothing -> addDefaultTag repo mproject maresolver
               -- Repo already specified a tag or digest, so don't append default
               Just _ -> pure repo
-  let dockerEnable =
-        fromFirst (getAny dockerMonoidDefaultEnable) dockerMonoidEnable
-      dockerRegistryLogin =
+  let enable =
         fromFirst
-          (isJust (emptyToNothing (getFirst dockerMonoidRegistryUsername)))
-          dockerMonoidRegistryLogin
-      dockerRegistryUsername = emptyToNothing (getFirst dockerMonoidRegistryUsername)
-      dockerRegistryPassword = emptyToNothing (getFirst dockerMonoidRegistryPassword)
-      dockerAutoPull = fromFirstTrue dockerMonoidAutoPull
-      dockerDetach = fromFirstFalse dockerMonoidDetach
-      dockerPersist = fromFirstFalse dockerMonoidPersist
-      dockerContainerName = emptyToNothing (getFirst dockerMonoidContainerName)
-      dockerNetwork = emptyToNothing (getFirst dockerMonoidNetwork)
-      dockerRunArgs = dockerMonoidRunArgs
-      dockerMount = dockerMonoidMount
-      dockerMountMode = emptyToNothing (getFirst dockerMonoidMountMode)
-      dockerEnv = dockerMonoidEnv
-      dockerSetUser = getFirst dockerMonoidSetUser
-      dockerRequireDockerVersion =
-        simplifyVersionRange (getIntersectingVersionRange dockerMonoidRequireDockerVersion)
-      dockerStackExe = getFirst dockerMonoidStackExe
-  pure DockerOpts{..}
+          (getAny dockerMonoid.defaultEnable)
+          dockerMonoid.enable
+      registryLogin =
+        fromFirst
+          (isJust (emptyToNothing (getFirst dockerMonoid.registryUsername)))
+          dockerMonoid.registryLogin
+      registryUsername =
+        emptyToNothing (getFirst dockerMonoid.registryUsername)
+      registryPassword =
+        emptyToNothing (getFirst dockerMonoid.registryPassword)
+      autoPull = fromFirstTrue dockerMonoid.autoPull
+      detach = fromFirstFalse dockerMonoid.detach
+      persist = fromFirstFalse dockerMonoid.persist
+      containerName =
+        emptyToNothing (getFirst dockerMonoid.containerName)
+      network = emptyToNothing (getFirst dockerMonoid.network)
+      runArgs = dockerMonoid.runArgs
+      mount = dockerMonoid.mount
+      mountMode =
+        emptyToNothing (getFirst dockerMonoid.mountMode)
+      env = dockerMonoid.env
+      setUser = getFirst dockerMonoid.setUser
+      requireDockerVersion =
+        simplifyVersionRange
+          dockerMonoid.requireDockerVersion.intersectingVersionRange
+      stackExe = getFirst dockerMonoid.stackExe
+  pure DockerOpts
+    { enable
+    , image
+    , registryLogin
+    , registryUsername
+    , registryPassword
+    , autoPull
+    , detach
+    , persist
+    , containerName
+    , network
+    , runArgs
+    , mount
+    , mountMode
+    , env
+    , stackExe
+    , setUser
+    , requireDockerVersion
+    }
  where
   emptyToNothing Nothing = Nothing
   emptyToNothing (Just s)

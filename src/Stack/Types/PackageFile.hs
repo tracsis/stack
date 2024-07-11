@@ -1,5 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude          #-}
-{-# LANGUAGE DataKinds                  #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE DataKinds           #-}
+{-# LANGUAGE NoFieldSelectors    #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 
 -- | The facility for retrieving all files from the main Stack
 -- 'Stack.Types.Package' type. This was moved into its own module to allow
@@ -9,8 +11,9 @@ module Stack.Types.PackageFile
   ( GetPackageFileContext (..)
   , DotCabalPath (..)
   , DotCabalDescriptor (..)
-  , GetPackageFiles (..)
   , PackageWarning (..)
+  , StackPackageFile (..)
+  , PackageComponentFile (..)
   ) where
 
 import           Distribution.ModuleName ( ModuleName )
@@ -19,54 +22,53 @@ import           Stack.Prelude
 import           Stack.Types.BuildConfig
                    ( BuildConfig (..), HasBuildConfig (..) )
 import           Stack.Types.Config ( HasConfig (..) )
-import           Stack.Types.EnvConfig ( HasEnvConfig )
 import           Stack.Types.GHCVariant ( HasGHCVariant (..) )
 import           Stack.Types.NamedComponent ( NamedComponent )
 import           Stack.Types.Platform ( HasPlatform (..) )
 import           Stack.Types.Runner ( HasRunner (..) )
 
 data GetPackageFileContext = GetPackageFileContext
-  { ctxFile :: !(Path Abs File)
-  , ctxDistDir :: !(Path Abs Dir)
-  , ctxBuildConfig :: !BuildConfig
-  , ctxCabalVer :: !Version
+  { file :: !(Path Abs File)
+  , distDir :: !(Path Abs Dir)
+  , buildConfig :: !BuildConfig
+  , cabalVer :: !Version
   }
 
 instance HasPlatform GetPackageFileContext where
-  platformL = configL.platformL
+  platformL = configL . platformL
   {-# INLINE platformL #-}
-  platformVariantL = configL.platformVariantL
+  platformVariantL = configL . platformVariantL
   {-# INLINE platformVariantL #-}
 
 instance HasGHCVariant GetPackageFileContext where
-  ghcVariantL = configL.ghcVariantL
+  ghcVariantL = configL . ghcVariantL
   {-# INLINE ghcVariantL #-}
 
 instance HasLogFunc GetPackageFileContext where
-  logFuncL = configL.logFuncL
+  logFuncL = configL . logFuncL
 
 instance HasRunner GetPackageFileContext where
-  runnerL = configL.runnerL
+  runnerL = configL . runnerL
 
 instance HasStylesUpdate GetPackageFileContext where
-  stylesUpdateL = runnerL.stylesUpdateL
+  stylesUpdateL = runnerL . stylesUpdateL
 
 instance HasTerm GetPackageFileContext where
-  useColorL = runnerL.useColorL
-  termWidthL = runnerL.termWidthL
+  useColorL = runnerL . useColorL
+  termWidthL = runnerL . termWidthL
 
 instance HasConfig GetPackageFileContext where
-  configL = buildConfigL.lens bcConfig (\x y -> x { bcConfig = y })
+  configL = buildConfigL . lens (.config) (\x y -> x { config = y })
   {-# INLINE configL #-}
 
 instance HasBuildConfig GetPackageFileContext where
-  buildConfigL = lens ctxBuildConfig (\x y -> x { ctxBuildConfig = y })
+  buildConfigL = lens (.buildConfig) (\x y -> x { buildConfig = y })
 
 instance HasPantryConfig GetPackageFileContext where
-  pantryConfigL = configL.pantryConfigL
+  pantryConfigL = configL . pantryConfigL
 
 instance HasProcessContext GetPackageFileContext where
-  processContextL = configL.processContextL
+  processContextL = configL . processContextL
 
 -- | A path resolved from the Cabal file, which is either main-is or
 -- an exposed/internal/referenced module.
@@ -91,21 +93,6 @@ data DotCabalDescriptor
   | DotCabalCFile !FilePath
   deriving (Eq, Ord, Show)
 
--- | Files that the package depends on, relative to package directory.
--- Argument is the location of the Cabal file
-newtype GetPackageFiles = GetPackageFiles
-  { getPackageFiles :: forall env. HasEnvConfig env
-                    => Path Abs File
-                    -> RIO env
-                         ( Map NamedComponent (Map ModuleName (Path Abs File))
-                         , Map NamedComponent [DotCabalPath]
-                         , Set (Path Abs File)
-                         , [PackageWarning]
-                         )
-  }
-instance Show GetPackageFiles where
-  show _ = "<GetPackageFiles>"
-
 -- | Warning generated when reading a package
 data PackageWarning
   = UnlistedModulesWarning NamedComponent [ModuleName]
@@ -116,3 +103,27 @@ data PackageWarning
   | MissingModulesWarning (Path Abs File) (Maybe String) [ModuleName]
     -- ^ Modules not found in file system, which are listed in Cabal file
   -}
+
+-- | This is the information from Cabal we need at the package level to track
+-- files.
+data StackPackageFile = StackPackageFile
+  { extraSrcFiles :: [FilePath]
+  , dataDir :: FilePath
+  , dataFiles :: [FilePath]
+  }
+  deriving (Show, Typeable)
+
+-- | Files that the package depends on, relative to package directory.
+data PackageComponentFile = PackageComponentFile
+  { modulePathMap :: Map NamedComponent (Map ModuleName (Path Abs File))
+  , cabalFileMap :: !(Map NamedComponent [DotCabalPath])
+  , packageExtraFile :: Set (Path Abs File)
+  , warnings :: [PackageWarning]
+  }
+
+instance Semigroup PackageComponentFile where
+  PackageComponentFile x1 x2 x3 x4 <> PackageComponentFile y1 y2 y3 y4 =
+    PackageComponentFile (x1 <> y1) (x2 <> y2) (x3 <> y3) (x4 <> y4)
+
+instance Monoid PackageComponentFile where
+  mempty = PackageComponentFile mempty mempty mempty mempty

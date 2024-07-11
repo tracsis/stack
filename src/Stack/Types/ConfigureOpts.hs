@@ -1,12 +1,14 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE NoFieldSelectors    #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings   #-}
 
 module Stack.Types.ConfigureOpts
   ( ConfigureOpts (..)
   , BaseConfigOpts (..)
   , configureOpts
-  , configureOptsDirs
-  , configureOptsNoDir
+  , configureOptsPathRelated
+  , configureOptsNonPathRelated
   ) where
 
 import qualified Data.Map as Map
@@ -24,7 +26,8 @@ import           Stack.Constants
                    , relDirEtc, relDirLib, relDirLibexec, relDirShare
                    )
 import           Stack.Prelude
-import           Stack.Types.BuildOpts ( BuildOpts (..), BuildOptsCLI )
+import           Stack.Types.BuildOpts ( BuildOpts (..) )
+import           Stack.Types.BuildOptsCLI ( BuildOptsCLI )
 import           Stack.Types.Compiler ( getGhcVersion, whichCompiler )
 import           Stack.Types.Config
                    ( Config (..), HasConfig (..) )
@@ -36,39 +39,41 @@ import           System.FilePath ( pathSeparator )
 
 -- | Basic information used to calculate what the configure options are
 data BaseConfigOpts = BaseConfigOpts
-  { bcoSnapDB :: !(Path Abs Dir)
-  , bcoLocalDB :: !(Path Abs Dir)
-  , bcoSnapInstallRoot :: !(Path Abs Dir)
-  , bcoLocalInstallRoot :: !(Path Abs Dir)
-  , bcoBuildOpts :: !BuildOpts
-  , bcoBuildOptsCLI :: !BuildOptsCLI
-  , bcoExtraDBs :: ![Path Abs Dir]
+  { snapDB :: !(Path Abs Dir)
+  , localDB :: !(Path Abs Dir)
+  , snapInstallRoot :: !(Path Abs Dir)
+  , localInstallRoot :: !(Path Abs Dir)
+  , buildOpts :: !BuildOpts
+  , buildOptsCLI :: !BuildOptsCLI
+  , extraDBs :: ![Path Abs Dir]
   }
   deriving Show
 
 -- | Render a @BaseConfigOpts@ to an actual list of options
-configureOpts :: EnvConfig
-              -> BaseConfigOpts
-              -> Map PackageIdentifier GhcPkgId -- ^ dependencies
-              -> Bool -- ^ local non-extra-dep?
-              -> IsMutable
-              -> Package
-              -> ConfigureOpts
+configureOpts ::
+     EnvConfig
+  -> BaseConfigOpts
+  -> Map PackageIdentifier GhcPkgId -- ^ dependencies
+  -> Bool -- ^ local non-extra-dep?
+  -> IsMutable
+  -> Package
+  -> ConfigureOpts
 configureOpts econfig bco deps isLocal isMutable package = ConfigureOpts
-  { coDirs = configureOptsDirs bco isMutable package
-  , coNoDirs = configureOptsNoDir econfig bco deps isLocal package
+  { pathRelated = configureOptsPathRelated bco isMutable package
+  , nonPathRelated =
+      configureOptsNonPathRelated econfig bco deps isLocal package
   }
 
-
-configureOptsDirs :: BaseConfigOpts
-                  -> IsMutable
-                  -> Package
-                  -> [String]
-configureOptsDirs bco isMutable package = concat
+configureOptsPathRelated ::
+     BaseConfigOpts
+  -> IsMutable
+  -> Package
+  -> [String]
+configureOptsPathRelated bco isMutable package = concat
   [ ["--user", "--package-db=clear", "--package-db=global"]
   , map (("--package-db=" ++) . toFilePathNoTrailingSep) $ case isMutable of
-      Immutable -> bcoExtraDBs bco ++ [bcoSnapDB bco]
-      Mutable -> bcoExtraDBs bco ++ [bcoSnapDB bco] ++ [bcoLocalDB bco]
+      Immutable -> bco.extraDBs ++ [bco.snapDB]
+      Mutable -> bco.extraDBs ++ [bco.snapDB] ++ [bco.localDB]
   , [ "--libdir=" ++ toFilePathNoTrailingSep (installRoot </> relDirLib)
     , "--bindir=" ++ toFilePathNoTrailingSep (installRoot </> bindirSuffix)
     , "--datadir=" ++ toFilePathNoTrailingSep (installRoot </> relDirShare)
@@ -81,37 +86,37 @@ configureOptsDirs bco isMutable package = concat
  where
   installRoot =
     case isMutable of
-      Immutable -> bcoSnapInstallRoot bco
-      Mutable -> bcoLocalInstallRoot bco
+      Immutable -> bco.snapInstallRoot
+      Mutable -> bco.localInstallRoot
   docDir =
     case pkgVerDir of
       Nothing -> installRoot </> docDirSuffix
       Just dir -> installRoot </> docDirSuffix </> dir
   pkgVerDir = parseRelDir
     (  packageIdentifierString
-        (PackageIdentifier (packageName package) (packageVersion package))
+        (PackageIdentifier package.name package.version)
     ++ [pathSeparator]
     )
 
 -- | Same as 'configureOpts', but does not include directory path options
-configureOptsNoDir ::
+configureOptsNonPathRelated ::
      EnvConfig
   -> BaseConfigOpts
   -> Map PackageIdentifier GhcPkgId -- ^ Dependencies.
   -> Bool -- ^ Is this a local, non-extra-dep?
   -> Package
   -> [String]
-configureOptsNoDir econfig bco deps isLocal package = concat
+configureOptsNonPathRelated econfig bco deps isLocal package = concat
   [ depOptions
   , [ "--enable-library-profiling"
-    | boptsLibProfile bopts || boptsExeProfile bopts
+    | bopts.libProfile || bopts.exeProfile
     ]
-  , ["--enable-profiling" | boptsExeProfile bopts && isLocal]
-  , ["--enable-split-objs" | boptsSplitObjs bopts]
+  , ["--enable-profiling" | bopts.exeProfile && isLocal]
+  , ["--enable-split-objs" | bopts.splitObjs]
   , [ "--disable-library-stripping"
-    | not $ boptsLibStrip bopts || boptsExeStrip bopts
+    | not $ bopts.libStrip || bopts.exeStrip
     ]
-  , ["--disable-executable-stripping" | not (boptsExeStrip bopts) && isLocal]
+  , ["--disable-executable-stripping" | not bopts.exeStrip && isLocal]
   , map (\(name,enabled) ->
                      "-f" <>
                      (if enabled
@@ -119,14 +124,14 @@ configureOptsNoDir econfig bco deps isLocal package = concat
                         else "-") <>
                      flagNameString name)
                   (Map.toList flags)
-  , map T.unpack $ packageCabalConfigOpts package
-  , processGhcOptions (packageGhcOptions package)
-  , map ("--extra-include-dirs=" ++) (configExtraIncludeDirs config)
-  , map ("--extra-lib-dirs=" ++) (configExtraLibDirs config)
+  , map T.unpack package.cabalConfigOpts
+  , processGhcOptions package.ghcOptions
+  , map ("--extra-include-dirs=" ++) config.extraIncludeDirs
+  , map ("--extra-lib-dirs=" ++) config.extraLibDirs
   , maybe
       []
       (\customGcc -> ["--with-gcc=" ++ toFilePath customGcc])
-      (configOverrideGccPath config)
+      config.overrideGccPath
   , ["--exact-configuration"]
   , ["--ghc-option=-fhide-source-paths" | hideSourcePaths cv]
   ]
@@ -161,18 +166,18 @@ configureOptsNoDir econfig bco deps isLocal package = concat
         newArgs = concat [preRtsArgs, fullRtsArgs, postRtsArgs]
     in  concatMap (\x -> [compilerOptionsCabalFlag wc, T.unpack x]) newArgs
 
-  wc = view (actualCompilerVersionL.to whichCompiler) econfig
-  cv = view (actualCompilerVersionL.to getGhcVersion) econfig
+  wc = view (actualCompilerVersionL . to whichCompiler) econfig
+  cv = view (actualCompilerVersionL . to getGhcVersion) econfig
 
   hideSourcePaths ghcVersion =
-    ghcVersion >= C.mkVersion [8, 2] && configHideSourcePaths config
+    ghcVersion >= C.mkVersion [8, 2] && config.hideSourcePaths
 
   config = view configL econfig
-  bopts = bcoBuildOpts bco
+  bopts = bco.buildOpts
 
   -- Unioning atop defaults is needed so that all flags are specified with
   -- --exact-configuration.
-  flags = packageFlags package `Map.union` packageDefaultFlags package
+  flags = package.flags `Map.union` package.defaultFlags
 
   depOptions = map toDepOption $ Map.toList deps
 
@@ -189,13 +194,14 @@ configureOptsNoDir econfig bco deps isLocal package = concat
       LSubLibName cn ->
         unPackageName subPkgName <> ":" <> unUnqualComponentName cn
 
--- | Configure options to be sent to Setup.hs configure
+-- | Configure options to be sent to Setup.hs configure.
 data ConfigureOpts = ConfigureOpts
-  { coDirs :: ![String]
+  { pathRelated :: ![String]
     -- ^ Options related to various paths. We separate these out since they do
-    -- not have an impact on the contents of the compiled binary for checking
+    -- not have an effect on the contents of the compiled binary for checking
     -- if we can use an existing precompiled cache.
-  , coNoDirs :: ![String]
+  , nonPathRelated :: ![String]
+    -- ^ Options other than path-related options.
   }
   deriving (Data, Eq, Generic, Show, Typeable)
 

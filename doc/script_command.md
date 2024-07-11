@@ -15,10 +15,10 @@ default, runs it.
 
 Unlike `stack ghc` and `stack runghc`, the command ignores all Stack YAML
 configuration files (global and project-level). A snapshot must be specified on
-the command line (with the `--resolver` option). For example:
+the command line (with the `--snapshot` option). For example:
 
 ~~~text
-stack script --resolver lts-21.13 MyScript.hs
+stack script --snapshot lts-22.21 MyScript.hs
 ~~~
 
 The `stack script` command behaves as if the `--install-ghc` flag had been
@@ -100,7 +100,7 @@ main = do
 can be compiled and run, with arguments, with:
 
 ~~~text
-stack --resolver lts-21.13 script --package acme-missiles --compile MyScript.hs -- "Don't panic!" "Duck and cover!"
+stack --snapshot lts-22.21 script --package acme-missiles --compile MyScript.hs -- "Don't panic!" "Duck and cover!"
 ~~~
 
 All the compilation outputs (like `Main.hi`, `Main.o`, and the executable
@@ -123,7 +123,7 @@ LTS Haskell 20.25, where considerations on Windows differ from non-Windows. The
 
     ~~~haskell
     {- stack script
-       --resolver lts-20.25
+       --snapshot lts-20.25
        --extra-dep acme-missiles-0.3
        --extra-dep directory-1.3.6.2
        --extra-dep process-1.6.16.0
@@ -138,17 +138,17 @@ LTS Haskell 20.25, where considerations on Windows differ from non-Windows. The
     ~~~
 
     `acme-missiles` is not in the snapshot and so needs to be specified as an
-    extra dep.
+    extra-dep.
 
     Stack can deduce that the module imports imply that the required packages
     are `acme-missiles`, `time` and `extra` (which is in the snapshot).
 
     `extra` depends on `directory` and `process`. If `directory` and `process`
-    are not specified as extra deps, Stack will complain that they have been
+    are not specified as extra-deps, Stack will complain that they have been
     'pruned'.
 
     `directory-1.3.6.2` depends on `time < 1.12`. If `time` is not specified as
-    an extra dep, Stack will try to construct a build plan based on the latest
+    an extra-dep, Stack will try to construct a build plan based on the latest
     version in the package index (which will fail, as the latest version is
     `>= 1.12`)
 
@@ -156,7 +156,7 @@ LTS Haskell 20.25, where considerations on Windows differ from non-Windows. The
 
     ~~~haskell
     {- stack script
-       --resolver lts-20.25
+       --snapshot lts-20.25
        --extra-dep acme-missiles-0.3
     -}
 
@@ -168,7 +168,7 @@ LTS Haskell 20.25, where considerations on Windows differ from non-Windows. The
     ~~~
 
     `acme-missiles` is not in the snapshot and so needs to be specified as an
-    extra dep.
+    extra-dep.
 
     Stack can deduce that the module imports imply that the required packages
     are `acme-missiles`, `time` and `extra` (which is in the snapshot).

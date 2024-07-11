@@ -67,14 +67,16 @@ execOptsExtraParser = ExecOptsExtra
   eoPackagesParser :: Parser [String]
   eoPackagesParser = many (strOption
     (  long "package"
-    <> metavar "PACKAGE"
-    <> help "Add a package (can be specified multiple times)."
+    <> metavar "PACKAGE(S)"
+    <> help "Add package(s) as a list of names or identifiers separated by \
+            \spaces (can be specified multiple times)."
     ))
 
   eoRtsOptionsParser :: Parser [String]
   eoRtsOptionsParser = concat <$> many (argsOption
     ( long "rts-options"
-    <> help "Explicit RTS options to pass to application."
+    <> help "Explicit RTS options to pass to application (can be specified \
+            \multiple times)."
     <> metavar "RTSFLAG"
     ))
 

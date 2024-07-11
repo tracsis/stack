@@ -5,7 +5,7 @@ cabal-version: 2.0
 -- see: https://github.com/sol/hpack
 
 name:           stack
-version:        2.13.1
+version:        2.15.7
 synopsis:       The Haskell Tool Stack
 description:    Please see the documentation at <https://docs.haskellstack.org>
                 for usage information.
@@ -85,6 +85,7 @@ extra-source-files:
     doc/SIGNING_KEY.md
     doc/Stack_and_VS_Code.md
     doc/stack_root.md
+    doc/stack_work.md
     doc/stack_yaml_vs_cabal_package_file.md
     doc/templates_command.md
     doc/travis_ci.md
@@ -124,6 +125,11 @@ flag disable-git-info
   manual: True
   default: False
 
+flag disable-stack-upload
+  description: For use only during development and debugging. Disable 'stack upload' so that it does not make HTTP requests. Stack will output information about the HTTP request(s) that it would have made if the command was enabled.
+  manual: True
+  default: False
+
 flag hide-dependency-versions
   description: Hides dependency versions from 'stack --version'. Used only when building a Stack executable for official release. Note to packagers/distributors: DO NOT OVERRIDE THIS FLAG IF YOU ARE BUILDING STACK ANY OTHER WAY (e.g. using Cabal or from Hackage), as it makes debugging support requests more difficult.
   manual: True
@@ -146,11 +152,13 @@ flag supported-build
 
 library
   exposed-modules:
+      Codec.Archive.Tar.Utf8
       Control.Concurrent.Execute
       Data.Attoparsec.Args
       Data.Attoparsec.Combinators
       Data.Attoparsec.Interpreter
       Data.Monoid.Map
+      GHC.Utils.GhcPkg.Main.Compat
       Network.HTTP.StackClient
       Options.Applicative.Args
       Options.Applicative.Builder.Extra
@@ -164,17 +172,22 @@ library
       Stack.Build.Cache
       Stack.Build.ConstructPlan
       Stack.Build.Execute
+      Stack.Build.ExecuteEnv
+      Stack.Build.ExecutePackage
       Stack.Build.Haddock
       Stack.Build.Installed
       Stack.Build.Source
       Stack.Build.Target
-      Stack.BuildPlan
       Stack.BuildInfo
+      Stack.BuildOpts
+      Stack.BuildPlan
       Stack.CLI
       Stack.Clean
+      Stack.Component
       Stack.ComponentFile
       Stack.Config
       Stack.Config.Build
+      Stack.Config.ConfigureScript
       Stack.Config.Docker
       Stack.Config.Nix
       Stack.ConfigCmd
@@ -183,6 +196,7 @@ library
       Stack.Constants.StackProgName
       Stack.Coverage
       Stack.DefaultColorWhen
+      Stack.DependencyGraph
       Stack.Docker
       Stack.DockerCmd
       Stack.Dot
@@ -228,6 +242,7 @@ library
       Stack.Options.ScriptParser
       Stack.Options.SetupParser
       Stack.Options.TestParser
+      Stack.Options.UnpackParser
       Stack.Options.UpgradeParser
       Stack.Options.UploadParser
       Stack.Options.Utils
@@ -253,30 +268,40 @@ library
       Stack.Types.ApplyGhcOptions
       Stack.Types.ApplyProgOptions
       Stack.Types.Build
+      Stack.Types.Build.ConstructPlan
       Stack.Types.Build.Exception
       Stack.Types.BuildConfig
       Stack.Types.BuildOpts
+      Stack.Types.BuildOptsCLI
+      Stack.Types.BuildOptsMonoid
       Stack.Types.CabalConfigKey
       Stack.Types.Cache
       Stack.Types.Casa
       Stack.Types.ColorWhen
+      Stack.Types.CompCollection
       Stack.Types.CompilerBuild
       Stack.Types.CompilerPaths
       Stack.Types.Compiler
+      Stack.Types.Component
+      Stack.Types.ComponentUtils
       Stack.Types.Config
       Stack.Types.Config.Exception
       Stack.Types.ConfigMonoid
       Stack.Types.ConfigureOpts
       Stack.Types.Curator
       Stack.Types.Dependency
+      Stack.Types.DependencyTree
       Stack.Types.Docker
       Stack.Types.DockerEntrypoint
+      Stack.Types.DotConfig
+      Stack.Types.DotOpts
       Stack.Types.DownloadInfo
       Stack.Types.DumpLogs
       Stack.Types.DumpPackage
       Stack.Types.EnvConfig
       Stack.Types.EnvSettings
       Stack.Types.ExtraDirs
+      Stack.Types.FileDigestCache
       Stack.Types.GHCDownloadInfo
       Stack.Types.GHCVariant
       Stack.Types.GhcOptionKey
@@ -284,6 +309,7 @@ library
       Stack.Types.GhcPkgId
       Stack.Types.GlobalOpts
       Stack.Types.GlobalOptsMonoid
+      Stack.Types.Installed
       Stack.Types.IsMutable
       Stack.Types.LockFileBehavior
       Stack.Types.NamedComponent
@@ -319,10 +345,6 @@ library
       System.Terminal
       Build_stack
       Paths_stack
-  other-modules:
-      GHC.Utils.GhcPkg.Main.Compat
-      Stack.Config.ConfigureScript
-      Stack.Types.FileDigestCache
   autogen-modules:
       Build_stack
       Paths_stack
@@ -332,12 +354,12 @@ library
   build-depends:
       Cabal >=3.8.1.0
     , aeson >=2.0.3.0
-    , aeson-warning-parser
-    , ansi-terminal >=1.0
+    , aeson-warning-parser >=0.1.1
+    , ansi-terminal >=1.0.2
     , array
     , async
     , attoparsec
-    , base >=4.14.3.0 && <5
+    , base >=4.16.0.0 && <5
     , base64-bytestring
     , bytestring
     , casa-client >=0.0.2
@@ -356,7 +378,7 @@ library
     , fsnotify >=0.4.1
     , generic-deriving
     , ghc-boot
-    , hi-file-parser >=0.1.4.0
+    , hi-file-parser >=0.1.6.0
     , hpack >=0.36.0
     , hpc
     , http-client
@@ -371,8 +393,8 @@ library
     , neat-interpolation
     , open-browser
     , optparse-applicative >=0.18.1.0
-    , pantry >=0.9.2
-    , path
+    , pantry >=0.9.3.2 && <0.10.0
+    , path >=0.9.5
     , path-io
     , persistent >=2.14.0.0 && <2.15
     , persistent-sqlite
@@ -381,7 +403,7 @@ library
     , project-template
     , random
     , rio >=0.1.22.0
-    , rio-prettyprint >=0.1.7.0
+    , rio-prettyprint >=0.1.8.0
     , split
     , stm
     , tar
@@ -411,6 +433,10 @@ library
     cpp-options: -DSTACK_DEVELOPER_MODE_DEFAULT=True
   else
     cpp-options: -DSTACK_DEVELOPER_MODE_DEFAULT=False
+  if flag(disable-stack-upload)
+    cpp-options: -DSTACK_DISABLE_STACK_UPLOAD=True
+  else
+    cpp-options: -DSTACK_DISABLE_STACK_UPLOAD=False
   if os(windows)
     other-modules:
         Stack.Constants.UsrLibDirs
@@ -450,12 +476,12 @@ executable stack
   build-depends:
       Cabal >=3.8.1.0
     , aeson >=2.0.3.0
-    , aeson-warning-parser
-    , ansi-terminal >=1.0
+    , aeson-warning-parser >=0.1.1
+    , ansi-terminal >=1.0.2
     , array
     , async
     , attoparsec
-    , base >=4.14.3.0 && <5
+    , base >=4.16.0.0 && <5
     , base64-bytestring
     , bytestring
     , casa-client >=0.0.2
@@ -474,7 +500,7 @@ executable stack
     , fsnotify >=0.4.1
     , generic-deriving
     , ghc-boot
-    , hi-file-parser >=0.1.4.0
+    , hi-file-parser >=0.1.6.0
     , hpack >=0.36.0
     , hpc
     , http-client
@@ -489,8 +515,8 @@ executable stack
     , neat-interpolation
     , open-browser
     , optparse-applicative >=0.18.1.0
-    , pantry >=0.9.2
-    , path
+    , pantry >=0.9.3.2 && <0.10.0
+    , path >=0.9.5
     , path-io
     , persistent >=2.14.0.0 && <2.15
     , persistent-sqlite
@@ -499,7 +525,7 @@ executable stack
     , project-template
     , random
     , rio >=0.1.22.0
-    , rio-prettyprint >=0.1.7.0
+    , rio-prettyprint >=0.1.8.0
     , split
     , stack
     , stm
@@ -530,6 +556,10 @@ executable stack
     cpp-options: -DSTACK_DEVELOPER_MODE_DEFAULT=True
   else
     cpp-options: -DSTACK_DEVELOPER_MODE_DEFAULT=False
+  if flag(disable-stack-upload)
+    cpp-options: -DSTACK_DISABLE_STACK_UPLOAD=True
+  else
+    cpp-options: -DSTACK_DISABLE_STACK_UPLOAD=False
   if flag(static)
     ld-options: -static -pthread
 
@@ -547,12 +577,12 @@ executable stack-integration-test
   build-depends:
       Cabal >=3.8.1.0
     , aeson >=2.0.3.0
-    , aeson-warning-parser
-    , ansi-terminal >=1.0
+    , aeson-warning-parser >=0.1.1
+    , ansi-terminal >=1.0.2
     , array
     , async
     , attoparsec
-    , base >=4.14.3.0 && <5
+    , base >=4.16.0.0 && <5
     , base64-bytestring
     , bytestring
     , casa-client >=0.0.2
@@ -571,7 +601,7 @@ executable stack-integration-test
     , fsnotify >=0.4.1
     , generic-deriving
     , ghc-boot
-    , hi-file-parser >=0.1.4.0
+    , hi-file-parser >=0.1.6.0
     , hpack >=0.36.0
     , hpc
     , hspec
@@ -588,8 +618,8 @@ executable stack-integration-test
     , open-browser
     , optparse-applicative >=0.18.1.0
     , optparse-generic
-    , pantry >=0.9.2
-    , path
+    , pantry >=0.9.3.2 && <0.10.0
+    , path >=0.9.5
     , path-io
     , persistent >=2.14.0.0 && <2.15
     , persistent-sqlite
@@ -598,7 +628,7 @@ executable stack-integration-test
     , project-template
     , random
     , rio >=0.1.22.0
-    , rio-prettyprint >=0.1.7.0
+    , rio-prettyprint >=0.1.8.0
     , split
     , stm
     , tar
@@ -628,6 +658,10 @@ executable stack-integration-test
     cpp-options: -DSTACK_DEVELOPER_MODE_DEFAULT=True
   else
     cpp-options: -DSTACK_DEVELOPER_MODE_DEFAULT=False
+  if flag(disable-stack-upload)
+    cpp-options: -DSTACK_DISABLE_STACK_UPLOAD=True
+  else
+    cpp-options: -DSTACK_DISABLE_STACK_UPLOAD=False
   if !(flag(integration-tests))
     buildable: False
   if flag(static)
@@ -660,12 +694,12 @@ test-suite stack-unit-test
       Cabal >=3.8.1.0
     , QuickCheck
     , aeson >=2.0.3.0
-    , aeson-warning-parser
-    , ansi-terminal >=1.0
+    , aeson-warning-parser >=0.1.1
+    , ansi-terminal >=1.0.2
     , array
     , async
     , attoparsec
-    , base >=4.14.3.0 && <5
+    , base >=4.16.0.0 && <5
     , base64-bytestring
     , bytestring
     , casa-client >=0.0.2
@@ -684,7 +718,7 @@ test-suite stack-unit-test
     , fsnotify >=0.4.1
     , generic-deriving
     , ghc-boot
-    , hi-file-parser >=0.1.4.0
+    , hi-file-parser >=0.1.6.0
     , hpack >=0.36.0
     , hpc
     , hspec
@@ -700,8 +734,8 @@ test-suite stack-unit-test
     , neat-interpolation
     , open-browser
     , optparse-applicative >=0.18.1.0
-    , pantry >=0.9.2
-    , path
+    , pantry >=0.9.3.2 && <0.10.0
+    , path >=0.9.5
     , path-io
     , persistent >=2.14.0.0 && <2.15
     , persistent-sqlite
@@ -711,7 +745,7 @@ test-suite stack-unit-test
     , random
     , raw-strings-qq
     , rio >=0.1.22.0
-    , rio-prettyprint >=0.1.7.0
+    , rio-prettyprint >=0.1.8.0
     , split
     , stack
     , stm
@@ -742,6 +776,10 @@ test-suite stack-unit-test
     cpp-options: -DSTACK_DEVELOPER_MODE_DEFAULT=True
   else
     cpp-options: -DSTACK_DEVELOPER_MODE_DEFAULT=False
+  if flag(disable-stack-upload)
+    cpp-options: -DSTACK_DISABLE_STACK_UPLOAD=True
+  else
+    cpp-options: -DSTACK_DISABLE_STACK_UPLOAD=False
   if os(windows)
     other-modules:
         Stack.Ghci.FakePaths

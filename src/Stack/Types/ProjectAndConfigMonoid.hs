@@ -30,29 +30,31 @@ parseProjectAndConfigMonoid rootDir =
     packages <- o ..:? "packages" ..!= [RelFilePath "."]
     deps <- jsonSubWarningsTT (o ..:? "extra-deps") ..!= []
     flags' <- o ..:? "flags" ..!= mempty
-    let flags = unCabalStringMap <$> unCabalStringMap
+    let flagsByPkg = unCabalStringMap <$> unCabalStringMap
                 (flags' :: Map (CabalString PackageName) (Map (CabalString FlagName) Bool))
 
-    resolver <- jsonSubWarnings $ o ...: ["snapshot", "resolver"]
-    mcompiler <- o ..:? "compiler"
-    msg <- o ..:? "user-message"
+    resolver' <- jsonSubWarnings $ o ...: ["snapshot", "resolver"]
+    compiler <- o ..:? "compiler"
+    userMsg <- o ..:? "user-message"
     config <- parseConfigMonoidObject rootDir o
     extraPackageDBs <- o ..:? "extra-package-dbs" ..!= []
-    mcurator <- jsonSubWarningsT (o ..:? "curator")
+    curator <- jsonSubWarningsT (o ..:? "curator")
     drops <- o ..:? "drop-packages" ..!= mempty
+    let dropPackages = Set.map unCabalString drops
     pure $ do
       deps' <- mapM (resolvePaths (Just rootDir)) deps
-      resolver' <- resolvePaths (Just rootDir) resolver
+      let extraDeps =
+            concatMap toList (deps' :: [NonEmpty RawPackageLocation])
+      resolver <- resolvePaths (Just rootDir) resolver'
       let project = Project
-            { projectUserMsg = msg
-            , projectResolver = resolver'
-            , projectCompiler = mcompiler -- FIXME make sure resolver' isn't SLCompiler
-            , projectExtraPackageDBs = extraPackageDBs
-            , projectPackages = packages
-            , projectDependencies =
-                concatMap toList (deps' :: [NonEmpty RawPackageLocation])
-            , projectFlags = flags
-            , projectCurator = mcurator
-            , projectDropPackages = Set.map unCabalString drops
+            { userMsg
+            , resolver
+            , compiler -- FIXME make sure resolver' isn't SLCompiler
+            , extraPackageDBs
+            , packages
+            , extraDeps
+            , flagsByPkg
+            , curator
+            , dropPackages
             }
       pure $ ProjectAndConfigMonoid project config

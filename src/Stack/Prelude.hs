@@ -1,5 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude         #-}
-{-# LANGUAGE OverloadedStrings         #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE NoFieldSelectors    #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings   #-}
 
 module Stack.Prelude
   ( withSystemTempDir
@@ -52,6 +54,9 @@ module Stack.Prelude
   , encloseSep
   , fill
   , fillSep
+  , foldr'
+  , fromPackageId
+  , fromPackageName
   , flow
   , hang
   , hcat
@@ -94,6 +99,7 @@ import qualified Data.Conduit.Binary as CB
 import qualified Data.Conduit.List as CL
 import           Data.Conduit.Process.Typed
                    ( byteStringInput, createSource, withLoggedProcess_ )
+import           Data.Foldable ( Foldable(foldr') )
 import qualified Data.Text.IO as T
 import           Distribution.Types.LibraryName ( LibraryName (..) )
 import           Distribution.Types.MungedPackageId ( MungedPackageId (..) )
@@ -267,7 +273,7 @@ promptBool txt = liftIO $ do
 
 -- | Like @First Bool@, but the default is @True@.
 newtype FirstTrue
-  = FirstTrue { getFirstTrue :: Maybe Bool }
+  = FirstTrue { firstTrue :: Maybe Bool }
   deriving (Eq, Ord, Show)
 
 instance Semigroup FirstTrue where
@@ -280,15 +286,15 @@ instance Monoid FirstTrue where
 
 -- | Get the 'Bool', defaulting to 'True'
 fromFirstTrue :: FirstTrue -> Bool
-fromFirstTrue = fromMaybe True . getFirstTrue
+fromFirstTrue = fromMaybe True . (.firstTrue)
 
 -- | Helper for filling in default values
-defaultFirstTrue :: (a -> FirstTrue) -> Bool
+defaultFirstTrue :: FirstTrue -> Bool
 defaultFirstTrue _ = True
 
 -- | Like @First Bool@, but the default is @False@.
 newtype FirstFalse
-  = FirstFalse { getFirstFalse :: Maybe Bool }
+  = FirstFalse { firstFalse :: Maybe Bool }
   deriving (Eq, Ord, Show)
 
 instance Semigroup FirstFalse where
@@ -301,10 +307,10 @@ instance Monoid FirstFalse where
 
 -- | Get the 'Bool', defaulting to 'False'
 fromFirstFalse :: FirstFalse -> Bool
-fromFirstFalse = fromMaybe False . getFirstFalse
+fromFirstFalse = fromMaybe False . (.firstFalse)
 
 -- | Helper for filling in default values
-defaultFirstFalse :: (a -> FirstFalse) -> Bool
+defaultFirstFalse :: FirstFalse -> Bool
 defaultFirstFalse _ = False
 
 -- | Write a @Builder@ to a file and atomically rename.
@@ -362,3 +368,11 @@ putUtf8Builder = putBuilder . getUtf8Builder
 -- | Write a 'Builder' to the standard output stream.
 putBuilder :: MonadIO m => Builder -> m ()
 putBuilder = hPutBuilder stdout
+
+-- | Convert a package identifier to a value of a string-like type.
+fromPackageId :: IsString a => PackageIdentifier -> a
+fromPackageId = fromString . packageIdentifierString
+
+-- | Convert a package name to a value of a string-like type.
+fromPackageName :: IsString a => PackageName -> a
+fromPackageName = fromString . packageNameString

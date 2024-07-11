@@ -12,11 +12,11 @@ stack build [TARGET] [--dry-run] [--pedantic] [--fast] [--ghc-options OPTIONS]
             [--[no-]library-stripping] [--[no-]executable-stripping]
             [--[no-]haddock] [--haddock-arguments HADDOCK_ARGS]
             [--[no-]open] [--[no-]haddock-deps] [--[no-]haddock-internal]
-            [--[no-]haddock-hyperlink-source] [--[no-]copy-bins]
-            [--[no-]copy-compiler-tool] [--[no-]prefetch] [--[no-]keep-going]
-            [--[no-]keep-tmp-files] [--[no-]force-dirty] [--[no-]test]
-            [--[no-]rerun-tests] [--ta|--test-arguments TEST_ARGS] [--coverage]
-            [--no-run-tests] [--test-suite-timeout ARG]
+            [--[no-]haddock-hyperlink-source] [--[no-]haddock-for-hackage]
+            [--[no-]copy-bins] [--[no-]copy-compiler-tool] [--[no-]prefetch]
+            [--[no-]keep-going] [--[no-]keep-tmp-files] [--[no-]force-dirty]
+            [--[no-]test] [--[no-]rerun-tests] [--ta|--test-arguments TEST_ARGS]
+            [--coverage] [--no-run-tests] [--test-suite-timeout ARG]
             [--[no-]tests-allow-stdin] [--[no-]bench]
             [--ba|--benchmark-arguments BENCH_ARGS] [--no-run-benchmarks]
             [--[no-]reconfigure] [--cabal-verbosity VERBOSITY |
@@ -63,103 +63,147 @@ run. The running behaviour can be disabled with the `--no-run-tests` flag.
 Similarly, if a benchmark component is targeted, it is built and run unless the
 running behaviour is disabled with the `--no-run-benchmarks` flag.
 
-This ability to specify a component applies only to a local package. With
+This ability to specify a component applies only to a project package. With
 dependencies, Stack will *always* build the library (if present) and all
 executables (if any), and ignore test suites and benchmarks. If you want more
 control over a package, you must add it to your `packages` setting in your
-project-level configuration file (`stack.yaml`).
+project-level configuration file (`stack.yaml`, by default).
 
 ## Target syntax
 
 `stack build` takes a list of one or more optional *targets* to be built. The
-supported syntaxes for targets are:
+supported syntaxes for targets are as follows:
 
-*   *package*, e.g. `stack build foobar`, is the most commonly used target. It
-    will try to find the package in the following locations: local packages,
-    extra deps, snapshots, and package index (e.g. Hackage). If it's found in
-    the package index, then the latest version of that package from the index is
-    implicitly added to your extra dependencies.
+* no targets specified
+* *package*
+* *package identifier*
+* project package *component*
+* *local directory*
 
-    If the package is a local package, the library and executable components are
-    selected to be built. If the `--test` and `--bench` flags are set, then all
-    of the test suite and benchmark components, respectively, are selected to be
-    built.
+### No targets specified
 
-    If *package* is a GHC boot package (packages that come with GHC and are
-    included in GHC's global package database), the behaviour can be complex.
-    If the boot package has not been 'replaced', then `stack build` will,
-    effectively, do nothing. However, if the boot package has been 'replaced'
-    then `stack build` will specify the latest version of that package in the
-    package index, which may differ from the version provided by the version of
-    GHC specified by the snapshot. A boot package will be treated as 'replaced'
-    if the package is included directly in the Stackage snapshot or it depends
-    on a package included directly in the snapshot. Stackage snapshots do not
-    include directly most boot packages but some snapshots may include directly
-    some boot packages. In particular, some snapshots include directly `Win32`
-    (which is a boot package on Windows) while others do not. For example, if
-    `Cabal` (a boot package) is not a local package or an extra dep, then
-    `stack build Cabal` with Stackage snapshot LTS Haskell 20.25 will:
+Example: `stack build`
 
-    * on Windows, try to build the latest version of `Cabal` in the package
-      index (because that snapshot includes `Win32` directly, and `Cabal`
-      depends on `Win32` and so is treated as 'replaced'); and
-    * on non-Windows, effectively, do nothing (because `Cabal` is not
-      'replaced').
+`stack build` with no targets specified will build all project packages.
 
-*   *package identifier*, e.g. `stack build foobar-1.2.3`, is usually used to
-    include specific package versions from the package index.
+### Target: *package*
 
-    If the package name conflicts with that of a local package, then Stack
-    fails with an error.
+Example: `stack build foobar`
 
-    Otherwise, this is the same as using `stack build foobar` (that is, ignoring
-    the specified version), unless the specified version exists in the package
-    index. If it exists, then the latest revision of that version from the
-    package index is used.
+Stack will try to find the package in the following locations:
 
-*   *component*. Instead of referring to an entire package and letting Stack
-    decide which components to build, you select individual components from
-    inside a package. This can be done for more fine-grained control over which
-    test suites to run, or to have a faster compilation cycle. There are
-    multiple ways to refer to a specific component (provided for convenience):
+* project packages,
+* extra-deps,
+* the snapshot, and
+* the package index (e.g. Hackage).
 
-    *   `<package-name>:lib` or `<package-name>:<comp-type>:<comp-name>` (where
-        the component type, `<comp-type>`, is one of `exe`, `test`, or `bench`)
-        is the most explicit. The library component type (`lib`) does not have
-        an associated component name, `<comp-name>`.
+If the package is found in the package index, then the latest version of that
+package from the index is implicitly added as an extra-dep.
 
-        !!! note
+If the package is a project package, the library and executable components are
+selected to be built. If the `--test` and `--bench` flags are set, then all of
+the test suite and benchmark components, respectively, are selected to be built.
 
-            When any `exe` component is specified, all of the package's
-            executable components will be built. This is due to limitations in
-            all currently released versions of Cabal. See
-            [issue#1046](https://github.com/commercialhaskell/stack/issues/1406)
+If *package* is a GHC boot package (packages that come with GHC and are included
+in GHC's global package database), the behaviour can be complex:
 
-    *   `<package-name>:<comp-name>` allows you to leave out the component type,
-         as that will often be unique for a given component name. For
-         example, `stack build mypackage:mytestsuite`.
+* If the boot package has not been 'replaced', then `stack build` will,
+  effectively, do nothing.
 
-    *   `:<comp-name>` is a useful shortcut, saying "find the component
-        `<comp-name>` in all of the local packages". This will result in an
-        error if more than one package has a component with the specified name.
-        To continue the above example, `stack build :mytestsuite`.
+* If the boot package has been 'replaced' then `stack build` will specify the
+  latest version of that package in the package index, which may differ from the
+  version provided by the version of GHC specified by the snapshot.
 
-*   *directory*, e.g. `stack build foo/bar`, will find all local packages that
-    exist in the given directory hierarchy and then follow the same procedure as
-    passing in package names as mentioned above. There's an important caveat
-    here: if your directory name is parsed as one of the above target types, it
-    will be treated as that. Explicitly starting your target with `./` can be a
-    good way to avoid that, e.g. `stack build ./foo`.
+A boot package will be treated as 'replaced' if the package is included directly
+in the Stackage snapshot or it depends on a package included directly in the
+snapshot.
 
-    !!! note
+!!! note
 
-        `stack build .` will target local packages in the current working
-        directory or its subdirectories.
+    Stackage snapshots do not include directly most boot packages but some
+    snapshots may include directly some boot packages. In particular, some
+    snapshots include directly `Win32` (which is a boot package on Windows)
+    while others do not.
 
-`stack build` with no targets specified will build all local packages.
+    For example, if `Cabal` (a boot package) is not a project package or an
+    extra-dep, then `stack build Cabal` with Stackage snapshot LTS Haskell 20.25
+    will:
+
+    *   on Windows, try to build the latest version of `Cabal` in the package
+        index (because that snapshot includes `Win32` directly, and `Cabal`
+        depends on `Win32` and so is treated as 'replaced'); and
+    *   on non-Windows, effectively, do nothing (because `Cabal` is not
+        'replaced').
+
+### Target: *package identifier*
+
+Example: `stack build foobar-1.2.3`
+
+If the package name is that of a project package, then Stack fails with an
+error.
+
+If the package version is in the package index (e.g. Hackage) then Stack will
+use the latest revision of that version from the package index.
+
+If the package is an extra-dep or in the snapshot, Stack will behave as if only
+the package name had been specified as the target (that is, ignoring the
+specified version).
+
+Otherwise, Stack will fail with an error, reporting that the package name is
+unknown.
+
+### Target: project package *component*
+
+Examples:
+
+* `stack build my-package:lib`
+* `stack build my-package:exe:my-executable`
+* `stack build my-package:test:my-test-suite`
+* `stack build my-package:bench:my-benchmark`
+* `stack build my-package:my-test-suite`
+* `stack build :my-test-suite`
+
+You can select individual components from inside a project package to be built.
+This can be done for more fine-grained control over which test suites to run, or
+to have a faster compilation cycle.
+
+There are multiple ways to refer to a specific component:
+
+*   `<package-name>:lib` or `<package-name>:<comp-type>:<comp-name>` (where the
+    component type, `<comp-type>`, is one of `exe`, `test`, or `bench`) is the
+    most explicit. The library component type (`lib`) does not have an
+    associated component name, `<comp-name>`.
+
+*   `<package-name>:<comp-name>` allows you to leave out the component type, as
+    that will often be unique for a given component name.
+
+*   `:<comp-name>` is a useful shortcut, saying "find the component`<comp-name>`
+    in all of the project packages". This will result in an error if more than
+    one package has a component with the specified name.
 
 For further information about available targets, see the
 [`stack ide targets` command](ide_command.md).
+
+### Target: *local directory*
+
+Examples:
+
+* `stack build foo/bar`
+* `stack build ./foo`
+* `stack build .`
+
+Stack will find all project packages that exist in the given directory hierarchy
+and then follow the same procedure as passing in package names as mentioned
+above.
+
+`stack build .` will target project packages in the current working directory or
+its subdirectories.
+
+!!! note
+
+    If the directory name is parsed as one of the other target types, it will
+    be treated as that. Explicitly starting the target with `./` can avoid that.
+    For example, `stack build ./foo`.
 
 ## Controlling what gets built
 
@@ -168,7 +212,11 @@ part of Stack's [user's guide](GUIDE.md#the-stack-build-command) for information
 about how these dependencies get specified.
 
 In addition to specifying targets, you can also control what gets built, or
-retained, with the following flags:
+retained, with the flags and options listed below. You can also affect what gets
+built by specifying Cabal (the library) options for the configure step
+of the Cabal build process (for further information, see the documentation for
+the [configure-options](yaml_configuration.md#configure-options) configuration
+option).
 
 ### `--bench` flag
 
@@ -188,25 +236,50 @@ Set the flag to build nothing and output information about the build plan.
 
 ### `--flag` option
 
+The option can be specified multiple times. It has two forms:
+
+* `--flag <package_name>:[-]<flag_name>`; and
+
+* `--flag *:[-]<flag_name>`.
+
 `stack build --flag <package_name>:[-]<flag_name>` sets (or unsets) the
-specified Cabal flag for the specified package.
+specified Cabal flag for the specified package. Stack will report an error if:
 
-This option can be specified multiple times to set (or unset) multiple Cabal
-flags.
+* a package of that name is not known to Stack; or
 
-The same Cabal flag name can be set (or unset) for multiple packages (at the
-command line only) with:
+* a flag of that name is not a flag of that package.
 
-~~~text
-stack build --flag *:[-]<flag_name>
-~~~
+This overrides:
+
+* any Cabal flag specifications for the package in the snapshot;
+
+* any Cabal flag specifications for the package in Stack's project-level
+  configuration file (`stack.yaml`); and
+
+* any use of `--flag *` (see below).
+
+`stack build --flag *:[-]<flag_name>` sets (or unsets) the specified Cabal flag
+for all packages (project packages and dependencies) (whether or not a flag of
+that name is a flag of the package).
+
+This overrides:
+
+* any Cabal flag specifications for packages in the snapshot; and
+
+* any Cabal flag specifications for packages in Stack's project-level
+  configuration file (`stack.yaml`).
 
 !!! note
 
-    Currently you needs to list all of your modules that interpret flags in the
-    `other-modules` section of a Cabal file. Cabal (the tool) has a different
-    behavior currently and doesn't require that the modules be listed. This may
-    change in a future release.
+    For a package included directly in the snapshot, if the Cabal flag
+    specifications differ from the Cabal flag specifications (if any) in the
+    snapshot, then the package will automatically be promoted to be an
+    [extra-dep](#extra-deps).
+
+!!! note
+
+    In order to set a Cabal flag for a GHC boot package, the package must be
+    specified as an [extra-dep](yaml_configuration.md#extra-deps).
 
 ### `--[no-]force-dirty` flag
 
@@ -223,10 +296,35 @@ Set the flag to build Haddock documentation. This may cause a lot of packages to
 get re-built, so that the documentation links work. The `stack haddock` synonym
 sets this flag.
 
+Stack applies Haddock's `--gen-contents` and `--gen-index` flags to generate a
+single HTML contents and index for multiple sets of Haddock documentation.
+
+!!! warning
+
+    On Windows, the values for the `haddock-interfaces` and `haddock-html` keys
+    in the `*.conf` files for boot packages provided with certain versions of
+    GHC (in its `lib\package.conf.d` directory) can be corrupt and refer to
+    non-existent files and directories. For example, in the case of GHC 9.0.1
+    to GHC 9.8.1 the references are to
+    `${pkgroot}/../../docs/html/libraries/...` or
+    `${pkgroot}/../../doc/html/libraries/...` instead of
+    `${pkgroot}/../docs/html/libraries/...` or
+    `${pkgroot}/../doc/html/libraries/...`. Until those values are corrected,
+    Haddock documentation will be missing links to what those packages expose.
+
 ### `--haddock-arguments` option
 
-`stack haddock --haddock-arguments <haddock_arguments>` passes the specified
+`stack haddock --haddock-arguments <haddock_argument(s)>` passes the specified
 arguments to the Haddock tool.
+
+Specified arguments are separated by spaces. Arguments can be unquoted (if they
+do not contain space or `"` characters) or quoted (`""`). Quoted arguments can
+include 'escaped' characters, escaped with an initial `\` character.
+
+!!! note
+
+    Haddock's `--latex` flag is incompatible with the Haddock flags used by
+    Stack to generate a single HTML contents and index.
 
 ### `--[no-]haddock-deps` flag
 
@@ -234,17 +332,74 @@ Default: Enabled (if building Haddock documnentation)
 
 Unset the flag to disable building Haddock documentation for dependencies.
 
+### `--[no-]haddock-for-hackage` flag
+
+:octicons-beaker-24: Experimental
+
+[:octicons-tag-24: 2.15.1](https://github.com/commercialhaskell/stack/releases/tag/v2.15.1)
+
+Default: Disabled
+
+Set the flag to build project packages with flags to generate Haddock
+documentation suitable for upload to Hackage. The form of the Haddock
+documentation generated for other packages is unaffected.
+
+For each project package:
+
+* the generated Haddock documentation files are in directory
+  `doc\html\<package_version>-docs\`, relative to Stack's dist work directory
+  (see [`stack path --dist-dir`](path_command.md)); and
+* an archive of the `<package_version>-docs` directory and its contents is in
+  Stack's dist work directory.
+
+If the flag is set:
+
+* the [`--[no-]haddock-hyperlink-source`](#-no-haddock-hyperlink-source-flag)
+  flag is ignored and `--haddock-hyperlink-source` is implied;
+* the [`--[no-]haddock-deps`](#-no-haddock-deps-flag) flag is ignored and the
+  default value for the flag is implied;
+* the [`--[no-]haddock-internal`](#-no-haddock-hyperlink-internal-flag) flag is
+  ignored and `--no-haddock-internal` is implied;
+* the [`--[no-]open`](#-no-open-flag) flag is ignored and `--no-open` is
+  implied; and
+* the [`--[no-]force-dirty`](#-no-force-dirty-flag) flag is ignored and
+  `--force-dirty` is implied.
+
+!!! info
+
+    Stack does not distinguish the building of Haddock documentation for Hackage
+    from the building of Haddock documentation generally, which is why the
+    `--force-dirty` flag is implied.
+
+!!! note
+
+    If set, Haddock will warn that `-source-*` options are ignored when
+    `--hyperlinked-source` is enabled. That is due to a known bug in Cabal
+    (the libiary).
+
+!!! note
+
+    If set, Cabal (the library) will report that documentation has been created
+    in `index.html` and `<package_name>.txt` files. Those files do not exist.
+    That false report is due to a known bug in Cabal (the library).
+
 ### `--[no-]haddock-hyperlink-source` flag
 
 Default: Enabled
 
 Unset the flag to disable building building hyperlinked source for Haddock.
 
+If the [`--haddock-for-hackage`](#-no-haddock-for-hackage-flag) flag is passed,
+this flag is ignored.
+
 ### `--[no-]haddock-internal` flag
 
 Default: Disabled
 
 Set the flag to enable building Haddock documentation for internal modules.
+
+If the [`--haddock-for-hackage`](#-no-haddock-for-hackage-flag) flag is passed,
+this flag is ignored.
 
 ### `--[no-]keep-going` flag
 
@@ -301,7 +456,7 @@ particular when they depend on external data files.
 ### `--skip` option
 
 `stack build --skip <component>` skips building the specified components of a
-local package. It allows you to skip test suites and benchmark without
+project package. It allows you to skip test suites and benchmark without
 specifying other components (e.g. `stack test --skip long-test-suite` will run
 the tests without the `long-test-suite` test suite). Be aware that skipping
 executables won't work the first time the package is built due to an issue in
@@ -332,14 +487,119 @@ using events to determine if a file has changed.
 [:octicons-tag-24: 2.5.1](https://github.com/commercialhaskell/stack/releases/tag/v2.5.1)
 
 Pass the flag to rebuild your project every time any local file changes (from
-project packages or from local dependencies). See also the `--file-watch` flag.
+project packages or from dependencies located locally). See also the
+`--file-watch` flag.
 
 ## Controlling what happens after building
 
+### `--benchmark-arguments`, `--ba` option
+
+`stack build --bench --benchmark-arguments=<argument(s)>` will pass the
+specified argument, or arguments, to each benchmark when it is run.
+
+Specified arguments are separated by spaces. Arguments can be unquoted (if they
+do not contain space or `"` characters) or quoted (`""`). Quoted arguments can
+include 'escaped' characters, escaped with an initial `\` character.
+
+Account may need to be taken of the shell's approach to the processing of
+command line arguments. For example, to pass `'a single quoted string'`:
+
+=== "Unix-like (Bash or Zsh)"
+
+    In Bash, or Zsh (if `RC_QUOTES` option not set):
+
+    `stack bench --benchmark-arguments \"\''a single quoted string'\'\"`
+
+    Outside of single quotes, `\"` escapes a double quote and `\'` escapes a
+    single quote. The content of single quotes is taken literally, but cannot
+    contain a single quote.
+
+    In Zsh (if `RC_QUOTES` option set):
+
+    `stack bench --benchmark-arguments '"''a single quoted string''"'`
+
+    The content of single quotes is taken literally. Within single quotes, `''`
+    escapes a single quote.
+
+=== "Windows (PowerShell)"
+
+    `stack bench --benchmark-arguments '"''a single quoted string''"'`
+
+    The content of single quotes is taken literally. Within single quotes, `''`
+    escapes a single quote.
+
 ### `--exec` option
 
-`stack build --exec "<command> [<arguments>]"` will run the specified command
+`stack build --exec '<command> [<argument(s)>]'` will run the specified command
 after a successful build.
+
+Specified arguments are separated by spaces. Arguments can be unquoted (if they
+do not contain space or `"` characters) or quoted (`""`). Quoted arguments can
+include 'escaped' characters, escaped with an initial `\` character.
+
+Account may need to be taken of the shell's approach to the processing of
+command line arguments. For example, to pass `'a single quoted string'`:
+
+=== "Unix-like (Bash or Zsh)"
+
+    In Bash, or Zsh (if `RC_QUOTES` option not set):
+
+    `stack build --exec '<command> '\"\''a single quoted string'\'\"`
+
+    Outside of single quotes, `\"` escapes a double quote and `\'` escapes a
+    single quote. The content of single quotes is taken literally, but cannot
+    contain a single quote.
+
+    In Zsh (if `RC_QUOTES` option set):
+
+    `stack build --exec '<command> "''a single quoted string''"'`
+
+    The content of single quotes is taken literally. Within single quotes, `''`
+    escapes a single quote.
+
+=== "Windows (PowerShell)"
+
+    `stack build --exec '<command> "''a single quoted string''"'`
+
+    The content of single quotes is taken literally. Within single quotes, `''`
+    escapes a single quote.
+
+### `--test-arguments`, `--ta` option
+
+`stack build --test --test-arguments=<argument(s)>` will pass the specified
+argument, or arguments, to each test when it is run. This option can be
+specified multiple times.
+
+Specified arguments are separated by spaces. Arguments can be unquoted (if they
+do not contain space or `"` characters) or quoted (`""`). Quoted arguments can
+include 'escaped' characters, escaped with an initial `\` character.
+
+Account may need to be taken of the shell's approach to the processing of
+command line arguments. For example, to pass `'a single quoted string'`:
+
+=== "Unix-like (Bash or Zsh)"
+
+    In Bash, or Zsh (if `RC_QUOTES` option not set):
+
+    `stack test --test-arguments \"\''a single quoted string'\'\"`
+
+    Outside of single quotes, `\"` escapes a double quote and `\'` escapes a
+    single quote. The content of single quotes is taken literally, but cannot
+    contain a single quote.
+
+    In Zsh (if `RC_QUOTES` option set):
+
+    `stack bench --benchmark-arguments '"''a single quoted string''"'`
+
+    The content of single quotes is taken literally. Within single quotes, `''`
+    escapes a single quote.
+
+=== "Windows (PowerShell)"
+
+    `stack test --test-arguments '"''a single quoted string''"'`
+
+    The content of single quotes is taken literally. Within single quotes, `''`
+    escapes a single quote.
 
 ## Flags affecting GHC's behaviour
 
@@ -350,6 +610,9 @@ Default: Disabled
 Set the flag to enable executable profiling for TARGETs and all its
 dependencies.
 
+The flag affects the location of the local project installation directory. See
+the [`stack path --local-install-root`](path_command.md) command.
+
 ### `--[no-]executable-stripping` flag
 
 Default: Enabled
@@ -357,12 +620,40 @@ Default: Enabled
 Unset the flag to disable executable stripping for TARGETs and all its
 dependencies.
 
+The flag may affect the location of the local project installation directory.
+See the [`stack path --local-install-root`](path_command.md) command.
+
 ### `--fast` flag
 
-Pass the flag to build your project with the GHC option `-O0`. `-O0` disables
-GHC's optimisations (which is GHC's default).
+GHC has many flags that specify individual optimisations of the compiler. GHC
+also uses its `-O*` flags to specify convenient 'packages' of GHC optimisation
+flags. GHC's flags are evaluated from left to right and later flags can override
+the effect of earlier ones.
+
+If no GHC `-O*` type flag is specified, GHC takes that to mean "Please
+compile quickly; I'm not over-bothered about compiled-code quality." GHC's `-O0`
+flag reverts to the same settings as if no `-O*` flags had been specified.
+
+Pass Stack's `--fast` flag to add `-O0` to the flags and options passed to GHC.
+The effect of `--fast` can be overriden with Stack's
+[`--ghc-options`](#-ghc-options-option) command line options.
+
+!!! note
+
+    With one exception, GHC's `-O` flag is always passed to GHC first (being
+    Cabal's default behaviour). The exception is if Cabal's
+    `--disable-optimization` flag or `--enable-optimization[=n]`, `-O[n]`
+    options are used during the configure step of the Cabal build process; see
+    Stack's [`configure-options`](yaml_configuration.md#configure-options) YAML
+    configuration option.
 
 ### `--ghc-options` option
+
+GHC command line options can be specified for a package in its Cabal file
+(including one created from a `package.yaml` file). This option augments and, if
+applicable (see below), overrides any such GHC command line options and those
+specified in Stack's YAML configuration files - see the
+[`ghc-options`](yaml_configuration.md#ghc-options) configuration option.
 
 `stack build --ghc-options <ghc_options>` passes the specified command line
 options to GHC, depending on Stack's
@@ -370,9 +661,9 @@ options to GHC, depending on Stack's
 configuration option. This option can be specified multiple times.
 
 GHC's command line options are _order-dependent_ and evaluated from left to
-right. Later options can override earlier options. Stack applies the options
-specified at the command line last. Any existing GHC command line options of a
-package are applied after those specified at the command line.
+right. Later options can override the effect of earlier ones. Any GHC command
+line options for a package specified at Stack's command line are applied after
+those specified in Stack's YAML configuration files.
 
 ### `--[no-]library-profiling` flag
 
@@ -380,12 +671,18 @@ Default: Disabled
 
 Set the flag to enable library profiling for TARGETs and all its dependencies.
 
+The flag affects the location of the local project installation directory. See
+the [`stack path --local-install-root`](path_command.md) command.
+
 ### `--[no-]library-stripping` flag
 
 Default: Enabled
 
 Unset the flag to disable library stripping for TARGETs and all its
 dependencies.
+
+The flag may affect the location of the local project installation directory.
+See the [`stack path --local-install-root`](path_command.md) command.
 
 ### `--pedantic` flag
 
@@ -398,13 +695,16 @@ Pass the flag to build your project with the GHC options `-Wall` and `-Werror`.
 Pass the flag to enable profiling in libraries, executables, etc. for all
 expressions, and generate a profiling report in tests or benchmarks.
 
+The flag affects the location of the local project installation directory. See
+the [`stack path --local-install-root`](path_command.md) command.
+
 ### `--[no-]split-objs` flag
 
 :octicons-beaker-24: Experimental
 
 Default: Disabled
 
-Set the flag to enable the GHC option `--split-objs`. This will reduce output
+Set the flag to enable the GHC option `-split-objs`. This will reduce output
 size (at the cost of build time).
 
 !!! note
@@ -414,6 +714,11 @@ size (at the cost of build time).
     compile all dependencies with split-objs, you will need to delete the
     snapshot (and all snapshots that could reference that snapshot).
 
+!!! note
+
+    GHC's `-split-objs` flag was deprecated in favour of `-split-sections` in
+    GHC 8.2.1 and was not supported by GHC on any platform from GHC 8.10.1.
+
 ### `--no-strip` flag
 
 Pass the flag to disable DWARF debugging symbol stripping in libraries,
@@ -421,10 +726,16 @@ executables, etc. for all expressions, producing larger executables but allowing
 the use of standard debuggers/profiling tools/other utilities that use debugging
 symbols.
 
+The flag affects the location of the local project installation directory. See
+the [`stack path --local-install-root`](path_command.md) command.
+
 ### `--trace` flag
 
 Pass the flag to enable profiling in libraries, executables, etc. for all
 expressions, and generate a backtrace on exception.
+
+The flag affects the location of the local project installation directory. See
+the [`stack path --local-install-root`](path_command.md) command.
 
 ## Flags affecting other tools' behaviour
 
@@ -444,7 +755,7 @@ used by Cabal during the configuration step, you could command
 to `happy` its `--ghc` flag.
 
 By default, all and any `--PROG-option` options on Stack's command line are
-applied to all local packages (targets or otherwise). This behaviour can be
+applied to all project packages (targets or otherwise). This behaviour can be
 changed. See the
 [`apply-prog-options`](yaml_configuration.md#apply-prog-options) configuration
 option.
@@ -675,14 +986,14 @@ Examples:
     the most recent Stackage Nightly snapshot:
 
     ~~~text
-    stack --resolver nightly install Agda-2.6.3
+    stack --snapshot nightly install Agda-2.6.3
     ~~~
 
     Alternatively, Stack can be used to unpack the package from the package
     index into a local project directory named after the package identifier (for
     further infomation, see the [`stack unpack` command](unpack_command.md)
     documentation) and, if the package does not provide its own Stack
-    configuration file (`stack.yaml`), to attempt to initialise that
+    configuration file (`stack.yaml`, by default), to attempt to initialise that
     configuration (for further information, see the
     [`stack init` command](init_command.md) documentation). For example:
 

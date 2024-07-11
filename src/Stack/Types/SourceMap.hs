@@ -1,4 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE NoImplicitPrelude     #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE NoFieldSelectors      #-}
+{-# LANGUAGE OverloadedRecordDot   #-}
 
 -- | A sourcemap maps a package name to how it should be built, including source
 -- code, flags, options, etc. This module contains various stages of source map
@@ -38,16 +41,18 @@ import           Stack.Prelude
 import           Stack.Types.Compiler ( ActualCompiler )
 import           Stack.Types.NamedComponent ( NamedComponent (..) )
 
--- | Common settings for both dependency and project package.
+-- | Settings common to dependency packages ('Stack.Types.SourceMap.DepPackage')
+-- and project packages ('Stack.Types.SourceMap.ProjectPackage').
 data CommonPackage = CommonPackage
-  { cpGPD :: !(IO GenericPackageDescription)
-  , cpName :: !PackageName
-  , cpFlags :: !(Map FlagName Bool)
+  { gpd :: !(IO GenericPackageDescription)
+  , name :: !PackageName
+  , flags :: !(Map FlagName Bool)
     -- ^ overrides default flags
-  , cpGhcOptions :: ![Text]
+  , ghcOptions :: ![Text]
     -- also lets us know if we're doing profiling
-  , cpCabalConfigOpts :: ![Text]
-  , cpHaddocks :: !Bool
+  , cabalConfigOpts :: ![Text]
+  , buildHaddocks :: !Bool
+    -- ^ Should Haddock documentation be built for this package?
   }
 
 -- | Flag showing if package comes from a snapshot needed to ignore dependency
@@ -59,21 +64,21 @@ data FromSnapshot
 
 -- | A view of a dependency package, specified in stack.yaml
 data DepPackage = DepPackage
-  { dpCommon :: !CommonPackage
-  , dpLocation :: !PackageLocation
-  , dpHidden :: !Bool
+  { depCommon :: !CommonPackage
+  , location :: !PackageLocation
+  , hidden :: !Bool
     -- ^ Should the package be hidden after registering? Affects the script
     -- interpreter's module name import parser.
-  , dpFromSnapshot :: !FromSnapshot
+  , fromSnapshot :: !FromSnapshot
     -- ^ Needed to ignore bounds between snapshot packages
     -- See https://github.com/commercialhaskell/stackage/issues/3185
   }
 
 -- | A view of a project package needed for resolving components
 data ProjectPackage = ProjectPackage
-  { ppCommon :: !CommonPackage
-  , ppCabalFP    :: !(Path Abs File)
-  , ppResolvedDir :: !(ResolvedPath Dir)
+  { projectCommon :: !CommonPackage
+  , cabalFP :: !(Path Abs File)
+  , resolvedDir :: !(ResolvedPath Dir)
   }
 
 -- | A view of a package installed in the global package database also could
@@ -97,10 +102,10 @@ isReplacedGlobal (GlobalPackage _) = False
 -- Invariant: a @PackageName@ appears in either 'smwProject' or 'smwDeps', but
 -- not both.
 data SMWanted = SMWanted
-  { smwCompiler :: !WantedCompiler
-  , smwProject :: !(Map PackageName ProjectPackage)
-  , smwDeps :: !(Map PackageName DepPackage)
-  , smwSnapshotLocation :: !RawSnapshotLocation
+  { compiler :: !WantedCompiler
+  , project :: !(Map PackageName ProjectPackage)
+  , deps :: !(Map PackageName DepPackage)
+  , snapshotLocation :: !RawSnapshotLocation
     -- ^ Where this snapshot is loaded from.
   }
 
@@ -109,10 +114,10 @@ data SMWanted = SMWanted
 --
 -- Invariant: a @PackageName@ appears in only one of the @Map@s.
 data SMActual global = SMActual
-  { smaCompiler :: !ActualCompiler
-  , smaProject :: !(Map PackageName ProjectPackage)
-  , smaDeps :: !(Map PackageName DepPackage)
-  , smaGlobal :: !(Map PackageName global)
+  { compiler :: !ActualCompiler
+  , project :: !(Map PackageName ProjectPackage)
+  , deps :: !(Map PackageName DepPackage)
+  , globals :: !(Map PackageName global)
   }
 
 newtype GlobalPackageVersion
@@ -131,27 +136,27 @@ data PackageType = PTProject | PTDependency
 -- | Builds on an 'SMActual' by resolving the targets specified on the command
 -- line, potentially adding in new dependency packages in the process.
 data SMTargets = SMTargets
-  { smtTargets :: !(Map PackageName Target)
-  , smtDeps :: !(Map PackageName DepPackage)
+  { targets :: !(Map PackageName Target)
+  , deps :: !(Map PackageName DepPackage)
   }
 
 -- | The final source map, taking an 'SMTargets' and applying all command line
 -- flags and GHC options.
 data SourceMap = SourceMap
-  { smTargets :: !SMTargets
+  { targets :: !SMTargets
     -- ^ Doesn't need to be included in the hash, does not affect the source
     -- map.
-  , smCompiler :: !ActualCompiler
+  , compiler :: !ActualCompiler
     -- ^ Need to hash the compiler version _and_ its installation path. Ideally
     -- there would be some kind of output from GHC telling us some unique ID for
     -- the compiler itself.
-  , smProject :: !(Map PackageName ProjectPackage)
+  , project :: !(Map PackageName ProjectPackage)
     -- ^ Doesn't need to be included in hash, doesn't affect any of the packages
     -- that get stored in the snapshot database.
-  , smDeps :: !(Map PackageName DepPackage)
+  , deps :: !(Map PackageName DepPackage)
     -- ^ Need to hash all of the immutable dependencies, can ignore the mutable
     -- dependencies.
-  , smGlobal :: !(Map PackageName GlobalPackage)
+  , globalPkgs :: !(Map PackageName GlobalPackage)
     -- ^ Doesn't actually need to be hashed, implicitly captured by smCompiler.
     -- Can be broken if someone installs new global packages. We can document
     -- that as not supported, _or_ we could actually include all of this in the
@@ -167,11 +172,11 @@ smRelDir :: (MonadThrow m) => SourceMapHash -> m (Path Rel Dir)
 smRelDir (SourceMapHash smh) = parseRelDir $ T.unpack $ SHA256.toHexText smh
 
 ppGPD :: MonadIO m => ProjectPackage -> m GenericPackageDescription
-ppGPD = liftIO . cpGPD . ppCommon
+ppGPD = liftIO . (.projectCommon.gpd)
 
 -- | Root directory for the given 'ProjectPackage'
 ppRoot :: ProjectPackage -> Path Abs Dir
-ppRoot = parent . ppCabalFP
+ppRoot = parent . (.cabalFP)
 
 -- | All components available in the given 'ProjectPackage'
 ppComponents :: MonadIO m => ProjectPackage -> m (Set NamedComponent)

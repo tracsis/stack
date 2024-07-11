@@ -1,4 +1,5 @@
 {-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings   #-}
 
 -- | Types and functions related to Stack's @list@ command.
@@ -34,7 +35,7 @@ instance Exception ListPrettyException
 -- | Function underlying the @stack list@ command. List packages.
 listCmd :: [String] -> RIO Runner ()
 listCmd names = withConfig NoReexec $ do
-  mresolver <- view $ globalOptsL.to globalResolver
+  mresolver <- view $ globalOptsL . to (.resolver)
   mSnapshot <- forM mresolver $ \resolver -> do
     concrete <- makeConcreteResolver resolver
     loc <- completeSnapshotLocation concrete
@@ -57,7 +58,7 @@ listPackages mSnapshot input = do
   case errs1 ++ errs2 of
     [] -> pure ()
     errs -> prettyThrowM $ CouldNotParsePackageSelectors errs
-  mapM_ (Lazy.putStrLn . fromString . packageIdentifierString) locs
+  mapM_ (Lazy.putStrLn . fromPackageId) locs
  where
   toLoc | Just snapshot <- mSnapshot = toLocSnapshot snapshot
         | otherwise = toLocNoSnapshot
@@ -73,7 +74,7 @@ listPackages mSnapshot input = do
           updated <-
             updateHackageIndex $ Just $
                  "Could not find package "
-              <> fromString (packageNameString name)
+              <> fromPackageName name
               <> ", updating"
           case updated of
             UpdateOccurred ->
@@ -87,14 +88,14 @@ listPackages mSnapshot input = do
         candidates <- getHackageTypoCorrections name
         pure $ Left $ fillSep
           [ flow "Could not find package"
-          , style Current (fromString $ packageNameString name)
+          , style Current (fromPackageName name)
           , flow "on Hackage."
           , if null candidates
               then mempty
               else fillSep $
                   flow "Perhaps you meant one of:"
                 : mkNarrativeList (Just Good) False
-                    (map (fromString . packageNameString) candidates :: [StyleDoc])
+                    (map fromPackageName candidates :: [StyleDoc])
           ]
       Just loc -> pure $ Right (packageLocationIdent loc)
 
@@ -107,7 +108,7 @@ listPackages mSnapshot input = do
       Nothing ->
         pure $ Left $ fillSep
           [ flow "Package does not appear in snapshot:"
-          , style Current (fromString $ packageNameString name) <> "."
+          , style Current (fromPackageName name) <> "."
           ]
       Just sp -> do
         loc <- cplComplete <$> completePackageLocation (rspLocation sp)

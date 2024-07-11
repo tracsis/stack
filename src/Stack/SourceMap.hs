@@ -1,5 +1,7 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE NoImplicitPrelude     #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE OverloadedRecordDot   #-}
+{-# LANGUAGE OverloadedStrings     #-}
 
 module Stack.SourceMap
   ( mkProjectPackage
@@ -56,21 +58,22 @@ mkProjectPackage ::
   => PrintWarnings
   -> ResolvedPath Dir
   -> Bool
+     -- ^ Should Haddock documentation be built for the package?
   -> RIO env ProjectPackage
-mkProjectPackage printWarnings dir buildHaddocks = do
-  (gpd, name, cabalfp) <-
-    loadCabalFilePath (Just stackProgName') (resolvedAbsolute dir)
+mkProjectPackage printWarnings resolvedDir buildHaddocks = do
+  (gpd, name, cabalFP) <-
+    loadCabalFilePath (Just stackProgName') (resolvedAbsolute resolvedDir)
   pure ProjectPackage
-    { ppCabalFP = cabalfp
-    , ppResolvedDir = dir
-    , ppCommon =
+    { cabalFP
+    , resolvedDir
+    , projectCommon =
         CommonPackage
-          { cpGPD = gpd printWarnings
-          , cpName = name
-          , cpFlags = mempty
-          , cpGhcOptions = mempty
-          , cpCabalConfigOpts = mempty
-          , cpHaddocks = buildHaddocks
+          { gpd = gpd printWarnings
+          , name
+          , flags = mempty
+          , ghcOptions = mempty
+          , cabalConfigOpts = mempty
+          , buildHaddocks
           }
     }
 
@@ -79,60 +82,62 @@ mkProjectPackage printWarnings dir buildHaddocks = do
 additionalDepPackage ::
      forall env. (HasPantryConfig env, HasLogFunc env, HasProcessContext env)
   => Bool
+     -- ^ Should Haddock documentation be built for the package?
   -> PackageLocation
   -> RIO env DepPackage
-additionalDepPackage buildHaddocks pl = do
-  (name, gpdio) <-
-    case pl of
+additionalDepPackage buildHaddocks location = do
+  (name, gpd) <-
+    case location of
       PLMutable dir -> do
-        (gpdio, name, _cabalfp) <-
+        (gpd, name, _cabalfp) <-
           loadCabalFilePath (Just stackProgName') (resolvedAbsolute dir)
-        pure (name, gpdio NoPrintWarnings)
+        pure (name, gpd NoPrintWarnings)
       PLImmutable pli -> do
         let PackageIdentifier name _ = packageLocationIdent pli
         run <- askRunInIO
         pure (name, run $ loadCabalFileImmutable pli)
   pure DepPackage
-    { dpLocation = pl
-    , dpHidden = False
-    , dpFromSnapshot = NotFromSnapshot
-    , dpCommon =
+    { location
+    , hidden = False
+    , fromSnapshot = NotFromSnapshot
+    , depCommon =
         CommonPackage
-          { cpGPD = gpdio
-          , cpName = name
-          , cpFlags = mempty
-          , cpGhcOptions = mempty
-          , cpCabalConfigOpts = mempty
-          , cpHaddocks = buildHaddocks
+          { gpd
+          , name
+          , flags = mempty
+          , ghcOptions = mempty
+          , cabalConfigOpts = mempty
+          , buildHaddocks
           }
     }
 
 snapToDepPackage ::
      forall env. (HasPantryConfig env, HasLogFunc env, HasProcessContext env)
   => Bool
+     -- ^ Should Haddock documentation be built for the package?
   -> PackageName
   -> SnapshotPackage
   -> RIO env DepPackage
-snapToDepPackage buildHaddocks name SnapshotPackage{..} = do
+snapToDepPackage buildHaddocks name sp = do
   run <- askRunInIO
   pure DepPackage
-    { dpLocation = PLImmutable spLocation
-    , dpHidden = spHidden
-    , dpFromSnapshot = FromSnapshot
-    , dpCommon =
+    { location = PLImmutable sp.spLocation
+    , hidden = sp.spHidden
+    , fromSnapshot = FromSnapshot
+    , depCommon =
         CommonPackage
-          { cpGPD = run $ loadCabalFileImmutable spLocation
-          , cpName = name
-          , cpFlags = spFlags
-          , cpGhcOptions = spGhcOptions
-          , cpCabalConfigOpts = [] -- No spCabalConfigOpts, not present in snapshots
-          , cpHaddocks = buildHaddocks
+          { gpd = run $ loadCabalFileImmutable sp.spLocation
+          , name
+          , flags = sp.spFlags
+          , ghcOptions = sp.spGhcOptions
+          , cabalConfigOpts = [] -- No spCabalConfigOpts, not present in snapshots
+          , buildHaddocks
           }
     }
 
 loadVersion :: MonadIO m => CommonPackage -> m Version
 loadVersion common = do
-  gpd <- liftIO $ cpGPD common
+  gpd <- liftIO common.gpd
   pure (pkgVersion $ PD.package $ PD.packageDescription gpd)
 
 getPLIVersion :: PackageLocationImmutable -> Version
@@ -146,9 +151,9 @@ globalsFromDump ::
   -> RIO env (Map PackageName DumpedGlobalPackage)
 globalsFromDump pkgexe = do
   let pkgConduit =    conduitDumpPackage
-                   .| CL.foldMap (\dp -> Map.singleton (dpGhcPkgId dp) dp)
+                   .| CL.foldMap (\dp -> Map.singleton dp.ghcPkgId dp)
       toGlobals ds =
-        Map.fromList $ map (pkgName . dpPackageIdent &&& id) $ Map.elems ds
+        Map.fromList $ map (pkgName . (.packageIdent) &&& id) $ Map.elems ds
   toGlobals <$> ghcPkgDump pkgexe [] pkgConduit
 
 globalsFromHints ::
@@ -173,14 +178,14 @@ actualFromGhc ::
   => SMWanted
   -> ActualCompiler
   -> RIO env (SMActual DumpedGlobalPackage)
-actualFromGhc smw ac = do
-  globals <- view $ compilerPathsL.to cpGlobalDump
+actualFromGhc smw compiler = do
+  globals <- view $ compilerPathsL . to (.globalDump)
   pure
     SMActual
-      { smaCompiler = ac
-      , smaProject = smwProject smw
-      , smaDeps = smwDeps smw
-      , smaGlobal = globals
+      { compiler
+      , project = smw.project
+      , deps = smw.deps
+      , globals
       }
 
 actualFromHints ::
@@ -188,14 +193,14 @@ actualFromHints ::
   => SMWanted
   -> ActualCompiler
   -> RIO env (SMActual GlobalPackageVersion)
-actualFromHints smw ac = do
-  globals <- globalsFromHints (actualToWanted ac)
+actualFromHints smw compiler = do
+  globals <- globalsFromHints (actualToWanted compiler)
   pure
     SMActual
-      { smaCompiler = ac
-      , smaProject = smwProject smw
-      , smaDeps = smwDeps smw
-      , smaGlobal = Map.map GlobalPackageVersion globals
+      { compiler
+      , project = smw.project
+      , deps = smw.deps
+      , globals = Map.map GlobalPackageVersion globals
       }
 
 -- | Simple cond check for boot packages - checks only OS and Arch
@@ -232,15 +237,15 @@ getUnusedPackageFlags ::
   -> Map PackageName DepPackage
   -> m (Maybe UnusedFlags)
 getUnusedPackageFlags (name, userFlags) source prj deps =
-  let maybeCommon =     fmap ppCommon (Map.lookup name prj)
-                    <|> fmap dpCommon (Map.lookup name deps)
+  let maybeCommon =     fmap (.projectCommon) (Map.lookup name prj)
+                    <|> fmap (.depCommon) (Map.lookup name deps)
   in  case maybeCommon of
         -- Package is not available as project or dependency
         Nothing ->
           pure $ Just $ UFNoPackage source name
         -- Package exists, let's check if the flags are defined
         Just common -> do
-          gpd <- liftIO $ cpGPD common
+          gpd <- liftIO common.gpd
           let pname = pkgName $ PD.package $ PD.packageDescription gpd
               pkgFlags = Set.fromList $ map PD.flagName $ PD.genPackageFlags gpd
               unused = Map.keysSet $ Map.withoutKeys userFlags pkgFlags
@@ -256,13 +261,13 @@ pruneGlobals ::
   -> Map PackageName GlobalPackage
 pruneGlobals globals deps =
   let (prunedGlobals, keptGlobals) =
-        partitionReplacedDependencies globals (pkgName . dpPackageIdent)
-          dpGhcPkgId dpDepends deps
-  in  Map.map (GlobalPackage . pkgVersion . dpPackageIdent) keptGlobals <>
+        partitionReplacedDependencies globals (pkgName . (.packageIdent))
+          (.ghcPkgId) (.depends) deps
+  in  Map.map (GlobalPackage . pkgVersion . (.packageIdent)) keptGlobals <>
       Map.map ReplacedGlobalPackage prunedGlobals
 
 getCompilerInfo :: (HasConfig env, HasCompiler env) => RIO env Builder
-getCompilerInfo = view $ compilerPathsL.to (byteString . cpGhcInfo)
+getCompilerInfo = view $ compilerPathsL . to (byteString . (.ghcInfo))
 
 immutableLocSha :: PackageLocationImmutable -> Builder
 immutableLocSha = byteString . treeKeyToBs . locationTreeKey
@@ -280,22 +285,25 @@ loadProjectSnapshotCandidate ::
   => RawSnapshotLocation
   -> PrintWarnings
   -> Bool
+     -- ^ Should Haddock documentation be build for the package?
   -> RIO env (SnapshotCandidate env)
 loadProjectSnapshotCandidate loc printWarnings buildHaddocks = do
   debugRSL <- view rslInLogL
-  (snapshot, _, _) <- loadAndCompleteSnapshotRaw' debugRSL loc Map.empty Map.empty
-  deps <- Map.traverseWithKey (snapToDepPackage False) (snapshotPackages snapshot)
+  (snapshot, _, _) <-
+    loadAndCompleteSnapshotRaw' debugRSL loc Map.empty Map.empty
+  deps <-
+    Map.traverseWithKey (snapToDepPackage False) (snapshotPackages snapshot)
   let wc = snapshotCompiler snapshot
   globals <- Map.map GlobalPackageVersion <$> globalsFromHints wc
   pure $ \projectPackages -> do
-    prjPkgs <- fmap Map.fromList . for projectPackages $ \resolved -> do
+    project <- fmap Map.fromList . for projectPackages $ \resolved -> do
       pp <- mkProjectPackage printWarnings resolved buildHaddocks
-      pure (cpName $ ppCommon pp, pp)
+      pure (pp.projectCommon.name, pp)
     compiler <- either throwIO pure $ wantedToActual $ snapshotCompiler snapshot
     pure
       SMActual
-        { smaCompiler = compiler
-        , smaProject = prjPkgs
-        , smaDeps = Map.difference deps prjPkgs
-        , smaGlobal = globals
+        { compiler
+        , project
+        , deps = Map.difference deps project
+        , globals
         }

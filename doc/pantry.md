@@ -6,7 +6,9 @@
 
 This document describes:
 
-* the specification of a snapshot location (in the `resolver` key)
+* the specification of a snapshot location (in the
+  [`snapshot`](yaml_configuration.md#snapshot) or
+  [`resolver`](yaml_configuration.md#resolver) key)
 * the specification of a package location (in the `extra-deps` key and in a
   snapshot)
 
@@ -25,20 +27,20 @@ There are essentially four different ways of specifying a snapshot location:
     for example:
 
     ~~~yaml
-    resolver: ghc-8.6.5`
+    snapshot: ghc-8.6.5
     ~~~
 
 2.  Via a URL pointing to a snapshot configuration file, for example:
 
     ~~~yaml
-    resolver: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/nightly/2018/8/21.yaml`
+    snapshot: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/nightly/2018/8/21.yaml`
     ~~~
 
 3.  Via a local file path pointing to a snapshot configuration file, for
     example:
 
     ~~~yaml
-    resolver: my-local-snapshot.yaml
+    snapshot: my-local-snapshot.yaml
     ~~~
 
 4.  Via a _convenience synonym_, which provides a short form for some common
@@ -74,7 +76,7 @@ For safer, more reproducible builds, you can optionally specify a URL
 together with a cryptographic hash of its content. For example:
 
 ~~~yaml
-resolver:
+snapshot:
   url: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/lts/12/0.yaml
   size: 499143
   sha256: 781ea577595dff08b9c8794761ba1321020e3e1ec3297fb833fe951cce1bee11
@@ -165,11 +167,11 @@ repository's submodules. For example:
 ~~~yaml
 extra-deps:
 - git: git@github.com:commercialhaskell/stack.git
-  commit: 6a86ee32e5b869a877151f74064572225e1a0398
+  commit: '6a86ee32e5b869a877151f74064572225e1a0398'
 - git: git@github.com:snoyberg/http-client.git
-  commit: "a5f4f3"
+  commit: 'a5f4f3'
 - hg: https://example.com/hg/repo
-  commit: da39a3ee5e6b4b0d3255bfef95601890afd80709
+  commit: 'da39a3ee5e6b4b0d3255bfef95601890afd80709'
 ~~~
 
 !!! note
@@ -180,6 +182,12 @@ extra-deps:
     automatically pull to update to new versions). Another problem with this is
     that your build will not be deterministic, because when someone else tries
     to build the project they can get a different checkout of the package.
+
+!!! note
+
+    The `commit:` key expects a YAML string. A commit hash, or partial hash,
+    comprised only of digits represents a YAML number, unless it is enclosed in
+    quotation marks.
 
 !!! warning
 
@@ -203,7 +211,7 @@ support this, you may also specify `subdirs` for repositories. For example:
 ~~~yaml
 extra-deps:
 - git: git@github.com:yesodweb/wai
-  commit: 2f8a8e1b771829f4a8a77c0111352ce45a14c30f
+  commit: '2f8a8e1b771829f4a8a77c0111352ce45a14c30f'
   subdirs:
   - auto-update
   - wai
@@ -242,6 +250,12 @@ referring to remote archive files, either tarballs or ZIP files.
 
 !!! note
 
+    An example of a remote archive file is a Hackage package candidate, usually
+    located at (for example)
+    https://hackage.haskell.org/package/my-package-1.0.0/candidate/my-package-1.0.0.tar.gz.
+
+!!! warning
+
     Stack assumes that these archive files never change after downloading to
     avoid needing to make an HTTP request on each build.
 
@@ -272,7 +286,7 @@ history. For example:
 ~~~yaml
 extra-deps:
 - github: snoyberg/http-client
-  commit: a5f4f30f01366738f913968163d856366d7e0342
+  commit: 'a5f4f30f01366738f913968163d856366d7e0342'
 ~~~
 
 !!! note
