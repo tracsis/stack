@@ -1,5 +1,4 @@
-resolver: ghc-9.4.7
+snapshot: ghc-9.6.5
 name: custom1
 packages:
-- stm-2.5.0.0
 - acme-missiles-0.3

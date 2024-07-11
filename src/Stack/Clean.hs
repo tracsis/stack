@@ -1,5 +1,6 @@
-{-# LANGUAGE NoImplicitPrelude  #-}
-{-# LANGUAGE OverloadedStrings  #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings   #-}
 
 -- | Types and functions related to Stack's @clean@ and @purge@ commands.
 module Stack.Clean
@@ -55,8 +56,8 @@ data CleanOpts
 
 -- | Type representing Stack's cleaning commands.
 data CleanCommand
-    = Clean
-    | Purge
+  = Clean
+  | Purge
 
 -- | Function underlying the @stack clean@ command.
 cleanCmd :: CleanOpts -> RIO Runner ()
@@ -80,7 +81,7 @@ cleanDir dir = do
 
 dirsToDelete :: CleanOpts -> RIO BuildConfig [Path Abs Dir]
 dirsToDelete cleanOpts = do
-  packages <- view $ buildConfigL.to (smwProject . bcSMWanted)
+  packages <- view $ buildConfigL . to (.smWanted.project)
   case cleanOpts of
     CleanShallow [] ->
       -- Filter out packages listed as extra-deps

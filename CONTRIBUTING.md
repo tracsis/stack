@@ -285,21 +285,21 @@ compatibility with a range of versions of GHC that a library package (such as
 Stack aims to depend on well-known packages. The specific versions on which it
 depends at any time are specified by `package.yaml` and `stack.yaml`. It does
 not aim to be compatible with more than one version of the `Cabal` package at
-any time. At the time of writing (August 2023) the package versions are
-primarily ones in Stackage snapshot LTS Haskell 21.8 (for GHC 9.4.5), together
-with extra-deps to depend on the latest versions of `ansi-terminal`, `crypton`
-(instead of `cryptonite`), `hpack`, `pantry` and `tar-conduit`.
+any time. At the time of writing (May 2024) the package versions are primarily
+ones in Stackage snapshot LTS Haskell 22.21 (for GHC 9.6.5).
 
 A Stack executable makes use of Cabal (the library) through a small 'Setup'
 executable that it compiles from Haskell source code. The executable compiles
 that code with a dependency on the version of Cabal that ships with the
-specified GHC compiler. Each release of Stack will aim to support all versions
-of GHC and the Cabal package in Stackage snapshots published within seven years
-of the release. For example, snapshot LTS Haskell 8.0, published on
-12 February 2017, was the first LTS Haskell snapshot to provide GHC 8.0.2 which
-comes with `base-4.9.1.0` and `Cabal-1.24.2.0`. Until, at least,
-13 February 2024, Stack releases would aim to support the immediate
-predecessor, GHC 8.0.1 and `base-4.9.0.0` and `Cabal-1.24.0.0`.
+specified GHC compiler. Each release of Stack will normally aim to support all
+versions of GHC and the Cabal package in Stackage snapshots published within
+seven years of the release. For example, snapshot LTS Haskell 10.0, published on
+19 December 2017, was the first LTS Haskell snapshot to provide GHC 8.2.2 which
+comes with `base-4.10.1.0` and `Cabal-2.0.1.1`. Normally, until, at least,
+19 December 2024, Stack releases would aim to support the immediate
+predecessor, GHC 8.0.2 and `base-4.9.1.0`, `Cabal-1.24.2.0` and Haddock 2.17.4.
+However, the next version of Stack will drop support for versions of Cabal
+before 2.2. `Cabal-2.2.0.0` was released with GHC 8.4.1 on 8 March 2018.
 
 When a version of the Stack executable actually ceases to support a version of
 GHC and `Cabal`, that should be recorded in Stack's
@@ -348,6 +348,43 @@ Once installed, you can check your changes with command:
 
 ~~~text
 stack exec -- sh ./etc/scripts/hlint.sh
+~~~
+
+## Code syntax
+
+Stack makes use of GHC's `GHC2021` collection of language extensions, which is
+set using the `language` key in the `package.yaml` file.
+
+Stack makes use of single-constructor types where the constructor has a large
+number of fields. Some of those fields have similar types, and so on. Given
+that, Stack makes use of `OverloadedRecordDot`, introduced in GHC 9.2.1. It also
+makes use of `NoFieldSelectors`, also introduced in GHC 9.2.1, and, where
+necessary, `DuplicateRecordFields`. Together, these language extensions enable
+the removal from the names of fields of the prefixes that were used historically
+to indicate the type and make field names unique. This is because the names of
+fields no longer need to be unique in situations where the intended field is
+unambiguous. This allows for a terser syntax without loss of expressiveness.
+For example:
+
+~~~haskell
+let cliTargets = (boptsCLITargets . bcoBuildOptsCLI) bco
+~~~
+
+can become:
+
+~~~haskell
+let cliTargets = bco.buildOptsCLI.targets
+~~~
+
+The intended field is unambiguous in almost all cases. In the case of a few
+record updates it is ambiguous. The name of the field needs to be qualified in
+those cases. For example:
+
+~~~haskell
+import qualified  Stack.Types.Build as ConfigCache ( ConfigCache (..) )
+...
+let ignoreComponents :: ConfigCache -> ConfigCache
+    ignoreComponents cc = cc { ConfigCache.components = Set.empty }
 ~~~
 
 ## Code Style
@@ -490,6 +527,7 @@ The current active workflows are:
 ### Linting - `lint.yml`
 
 This workflow will run if:
+
 * there is a pull request
 * commits are pushed to these branches: `master`, `stable` and `rc/**`
 
@@ -499,6 +537,7 @@ yamllint and Hlint.
 ### Test suite - `unit-tests.yml`
 
 This workflow will run if:
+
 * there is a pull request
 * commits are pushed to these branches: `master`, `stable` and `rc/**`.
 * requested
@@ -509,8 +548,8 @@ The `pedantic` job runs on `ubuntu` only and builds Stack with the
 `--pedantic` flag.
 
 The `unit-tests` job runs on a matrix of operating systems and Stack
-project-level YAML configuration files (`stack.yaml`). It builds and tests Stack
-with the following flags: `--haddock --no-haddock-deps`.
+project-level YAML configuration files (`stack.yaml`, by default). It builds and
+tests Stack with the following flags: `--haddock --no-haddock-deps`.
 
 Its approach to creating a cache depends on the operating system. Its 'Cache
 dependencies on Unix-like OS' step caches the Stack root on Unix-like operating
@@ -521,6 +560,7 @@ of the Stack root.
 ### Integration-based - `integration-tests.yml`
 
 This workflow will run if:
+
 * there is a pull request
 * commits are pushed to these branches: `master`, `stable` and `rc/**`
 * any tag is created
@@ -562,11 +602,16 @@ variable contains the private key for the GPG key with ID 0x575159689BEFB442.
 That key is imported into GPG and then used by GPG to create a detached signature
 for each file.
 
-### Inactive - `stan.yml`
+### Stan tool - `stan.yml`
 
-Stan is a Haskell static analysis tool. As of 29 August 2022, it does not
-support GHC >= 9.0.1 and Stack is built with GHC >= 9.2.4. Consequently, this
-workflow does not run. Its intent is to apply Stan to Stack.
+[Stan](https://hackage.haskell.org/package/stan) is a Haskell static analysis
+tool. As of `stan-0.1.0.1`, it supports GHC >= 9.6.3 and Stack is built with
+GHC 9.6.5. The tool is configured by the contents of the `.stan.toml` file.
+
+This workflow will run if:
+
+* there is a pull request
+* requested
 
 ## Haskell Language Server
 
@@ -714,3 +759,9 @@ If you're making deep changes and real-time communication with the Stack team
 would be helpful, we have a `#stack-collaborators` Slack channel in the
 Haskell Foundation workspace. To join the workspace, follow this
 [link](https://haskell-foundation.slack.com/join/shared_invite/zt-z45o9x38-8L55P27r12YO0YeEufcO2w#/shared-invite/email).
+
+## Matrix room
+
+There is also a
+[Haskell Stack room](https://matrix.to/#/#haskell-stack:matrix.org)
+at address `#haskell-stack:matrix.org` on [Matrix](https://matrix.org/).

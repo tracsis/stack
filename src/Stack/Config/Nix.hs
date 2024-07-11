@@ -1,6 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude  #-}
-{-# LANGUAGE OverloadedStrings  #-}
-{-# LANGUAGE RecordWildCards    #-}
+{-# LANGUAGE NoImplicitPrelude     #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE OverloadedRecordDot   #-}
+{-# LANGUAGE OverloadedStrings     #-}
 
 -- | Nix configuration
 module Stack.Config.Nix
@@ -46,22 +47,23 @@ nixOptsFromMonoid ::
   => NixOptsMonoid
   -> OS
   -> RIO env NixOpts
-nixOptsFromMonoid NixOptsMonoid{..} os = do
+nixOptsFromMonoid nixMonoid os = do
   let defaultPure = case os of
         OSX -> False
         _ -> True
-      nixPureShell = fromFirst defaultPure nixMonoidPureShell
-      nixPackages = fromFirst [] nixMonoidPackages
-      nixInitFile = getFirst nixMonoidInitFile
-      nixShellOptions = fromFirst [] nixMonoidShellOptions
-                        ++ prefixAll (T.pack "-I") (fromFirst [] nixMonoidPath)
-      nixAddGCRoots   = fromFirstFalse nixMonoidAddGCRoots
+      pureShell = fromFirst defaultPure nixMonoid.pureShell
+      packages = fromFirst [] nixMonoid.packages
+      initFile = getFirst nixMonoid.initFile
+      shellOptions =
+           fromFirst [] nixMonoid.shellOptions
+        ++ prefixAll (T.pack "-I") (fromFirst [] nixMonoid.path)
+      addGCRoots   = fromFirstFalse nixMonoid.addGCRoots
 
   -- Enable Nix-mode by default on NixOS, unless Docker-mode was specified
   osIsNixOS <- isNixOS
-  let nixEnable0 = fromFirst osIsNixOS nixMonoidEnable
+  let nixEnable0 = fromFirst osIsNixOS nixMonoid.enable
 
-  nixEnable <-
+  enable <-
     if nixEnable0 && osIsWindows
       then do
         prettyNoteS
@@ -69,9 +71,16 @@ nixOptsFromMonoid NixOptsMonoid{..} os = do
         pure False
       else pure nixEnable0
 
-  when (not (null nixPackages) && isJust nixInitFile) $
+  when (not (null packages) && isJust initFile) $
     throwIO NixCannotUseShellFileAndPackagesException
-  pure NixOpts{..}
+  pure NixOpts
+    { enable
+    , pureShell
+    , packages
+    , initFile
+    , shellOptions
+    , addGCRoots
+    }
  where
   prefixAll p (x:xs) = p : x : prefixAll p xs
   prefixAll _ _      = []

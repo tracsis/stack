@@ -1,6 +1,4 @@
-resolver: lts-21.13
-packages:
-- .
+snapshot: lts-22.21
 
 ghc-options:
   "$locals": -j8 +RTS -s -A128M

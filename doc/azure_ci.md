@@ -28,7 +28,7 @@ We provide two fully baked configuration ready to be used on your projects:
 * The complex Azure configuration is intended for projects that need to support
   multiple GHC versions and multiple operating systems, such as open source
   libraries to be released to Hackage. It tests against Stack for different
-  resolvers on Linux, macOS and Windows. These are the files for the complex
+  snapshots on Linux, macOS and Windows. These are the files for the complex
   configuration:
   - [azure-pipelines.yml](https://raw.githubusercontent.com/commercialhaskell/stack/stable/doc/azure/azure-pipelines.yml)
     : This is the starter file used by the Azure CI.
@@ -131,26 +131,26 @@ But we only use the first method of using Stack to download GHC.
 ### Multiple GHC - parametrised builds
 
 For different GHC versions, you probably want to use different project-level
-configuration files (`stack.yaml`). If you don't want to put a specific
-`stack.yaml` for a particular resolver and still want to test it, you have
-specify your resolver argument in `ARGS` environment variable (you will see an
-example below).
+configuration files (`stack.yaml`, by default). If you don't want to put a
+specific `stack.yaml` for a particular snapshot and still want to test it, you
+have specify your snapshot argument in `ARGS` environment variable (you will see
+an example below).
 
 ~~~yaml
 strategy:
   matrix:
     GHC 8.0:
-      ARGS: "--resolver lts-9"
+      ARGS: "--snapshot lts-9"
     GHC 8.2:
-      ARGS: "--resolver lts-11"
+      ARGS: "--snapshot lts-11"
     GHC 8.4:
-      ARGS: "--resolver lts-12"
+      ARGS: "--snapshot lts-12"
     GHC 8.6:
-      ARGS: "--resolver lts-14"
+      ARGS: "--snapshot lts-14"
     GHC 8.8:
-      ARGS: "--resolver lts-15"
+      ARGS: "--snapsht lts-15"
     nightly:
-      ARGS: "--resolver nightly"
+      ARGS: "--snapshot nightly"
 ~~~
 
 ## Running tests

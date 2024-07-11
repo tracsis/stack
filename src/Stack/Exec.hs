@@ -1,6 +1,6 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings   #-}
 
 -- | Types and function related to Stack's @exec@, @ghc@, @run@, @runghc@ and
 -- @runhaskell@ commands.
@@ -15,23 +15,26 @@ import qualified Data.List as L
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as T
+import           Distribution.Types.PackageName ( unPackageName )
+import           RIO.NonEmpty ( head, nonEmpty )
 import           RIO.Process ( exec )
 import           Stack.Build ( build )
-import           Stack.Build.Target ( NeedTargets (..) )
+import           Stack.Build.Target
+                   ( NeedTargets (..), RawTarget (..), parseRawTarget )
 import           Stack.GhcPkg ( findGhcPkgField )
 import           Stack.Setup ( withNewLocalBuildTargets )
-import           Stack.Types.NamedComponent ( NamedComponent (..), isCExe )
 import           Stack.Prelude
 import           Stack.Runners ( ShouldReexec (..), withConfig, withEnvConfig )
 import           Stack.Types.BuildConfig
                    ( BuildConfig (..), HasBuildConfig (..) )
-import           Stack.Types.BuildOpts
+import           Stack.Types.BuildOptsCLI
                    ( BuildOptsCLI (..), defaultBuildOptsCLI )
 import           Stack.Types.CompilerPaths
                    ( CompilerPaths (..), HasCompiler (..), getGhcPkgExe )
 import           Stack.Types.Config ( Config (..), HasConfig (..) )
 import           Stack.Types.EnvConfig ( EnvConfig )
 import           Stack.Types.EnvSettings ( EnvSettings (..) )
+import           Stack.Types.NamedComponent ( NamedComponent (..), isCExe )
 import           Stack.Types.Runner ( Runner )
 import           Stack.Types.SourceMap ( SMWanted (..), ppComponents )
 import           System.Directory ( withCurrentDirectory )
@@ -56,17 +59,36 @@ instance Exception ExecException where
 data ExecPrettyException
   = PackageIdNotFoundBug !String
   | ExecutableToRunNotFound
+  | NoPackageIdReportedBug
+  | InvalidExecTargets ![Text]
   deriving (Show, Typeable)
 
 instance Pretty ExecPrettyException where
   pretty (PackageIdNotFoundBug name) = bugPrettyReport "[S-8251]" $
-    "Could not find the package id of the package" <+>
-      style Target (fromString name)
-    <> "."
+    fillSep
+      [ flow "Could not find the package id of the package"
+      , style Target (fromString name) <> "."
+      ]
   pretty ExecutableToRunNotFound =
        "[S-2483]"
     <> line
     <> flow "No executables found."
+  pretty NoPackageIdReportedBug = bugPrettyReport "S-8600" $
+    flow "execCmd: findGhcPkgField returned Just \"\"."
+  pretty (InvalidExecTargets targets) =
+       "[S-7371]"
+    <> line
+    <> fillSep
+         [ flow "The following are invalid"
+         , style Shell "--package"
+         , "values for"
+         , style Shell (flow "stack ghc") <> ","
+         , style Shell (flow "stack runghc") <> ","
+         , "or"
+         , style Shell (flow "stack runhaskell") <> ":"
+         ]
+    <> line
+    <> bulletedList (map (style Target . string . T.unpack) targets )
 
 instance Exception ExecPrettyException
 
@@ -79,56 +101,76 @@ data SpecialExecCmd
   deriving (Eq, Show)
 
 data ExecOptsExtra = ExecOptsExtra
-  { eoEnvSettings :: !EnvSettings
-  , eoPackages :: ![String]
-  , eoRtsOptions :: ![String]
-  , eoCwd :: !(Maybe FilePath)
+  { envSettings :: !EnvSettings
+  , packages :: ![String]
+  , rtsOptions :: ![String]
+  , cwd :: !(Maybe FilePath)
   }
   deriving Show
 
 -- Type representing options for Stack's execution commands.
 data ExecOpts = ExecOpts
-  { eoCmd :: !SpecialExecCmd
-  , eoArgs :: ![String]
-  , eoExtra :: !ExecOptsExtra
+  { cmd :: !SpecialExecCmd
+  , args :: ![String]
+  , extra :: !ExecOptsExtra
   }
   deriving Show
+
+-- Type representing valid targets for --package option.
+data ExecTarget = ExecTarget PackageName (Maybe Version)
 
 -- | The function underlying Stack's @exec@, @ghc@, @run@, @runghc@ and
 -- @runhaskell@ commands. Execute a command.
 execCmd :: ExecOpts -> RIO Runner ()
-execCmd ExecOpts {..} =
+execCmd opts =
   withConfig YesReexec $ withEnvConfig AllowNoTargets boptsCLI $ do
-    unless (null targets) $ build Nothing
+    let (errs, execTargets) = partitionEithers $ map fromTarget targets
+    unless (null errs) $ prettyThrowM $ InvalidExecTargets errs
+    unless (null execTargets) $ build Nothing
 
     config <- view configL
-    menv <- liftIO $ configProcessContextSettings config eoEnvSettings
+    menv <- liftIO $ config.processContextSettings eo.envSettings
     withProcessContext menv $ do
       -- Add RTS options to arguments
-      let argsWithRts args = if null eoRtsOptions
+      let argsWithRts args = if null eo.rtsOptions
                   then args :: [String]
-                  else args ++ ["+RTS"] ++ eoRtsOptions ++ ["-RTS"]
-      (cmd, args) <- case (eoCmd, argsWithRts eoArgs) of
+                  else args ++ ["+RTS"] ++ eo.rtsOptions ++ ["-RTS"]
+      (cmd, args) <- case (opts.cmd, argsWithRts opts.args) of
         (ExecCmd cmd, args) -> pure (cmd, args)
         (ExecRun, args) -> getRunCmd args
-        (ExecGhc, args) -> getGhcCmd eoPackages args
-        (ExecRunGhc, args) -> getRunGhcCmd eoPackages args
+        (ExecGhc, args) -> getGhcCmd execTargets args
+        (ExecRunGhc, args) -> getRunGhcCmd execTargets args
 
-      runWithPath eoCwd $ exec cmd args
+      runWithPath eo.cwd $ exec cmd args
  where
-  ExecOptsExtra {..} = eoExtra
+  eo = opts.extra
 
-  targets = concatMap words eoPackages
-  boptsCLI = defaultBuildOptsCLI
-             { boptsCLITargets = map T.pack targets
-             }
+  targets = concatMap (T.words . T.pack) eo.packages
+  boptsCLI = defaultBuildOptsCLI { targetsCLI = targets }
+
+  fromTarget :: Text -> Either Text ExecTarget
+  fromTarget target =
+    case parseRawTarget target >>= toExecTarget of
+      Nothing -> Left target
+      Just execTarget -> Right execTarget
+
+  toExecTarget :: RawTarget -> Maybe ExecTarget
+  toExecTarget (RTPackageComponent _ _) = Nothing
+  toExecTarget (RTComponent _) = Nothing
+  toExecTarget (RTPackage name) = Just $ ExecTarget name Nothing
+  toExecTarget (RTPackageIdentifier (PackageIdentifier name pkgId)) =
+    Just $ ExecTarget name (Just pkgId)
 
   -- return the package-id of the first package in GHC_PACKAGE_PATH
-  getPkgId name = do
+  getPkgId (ExecTarget pkgName _) = do
+    let name = unPackageName pkgName
     pkg <- getGhcPkgExe
     mId <- findGhcPkgField pkg [] name "id"
     case mId of
-      Just i -> pure (L.head $ words (T.unpack i))
+      Just i -> maybe
+        (prettyThrowIO NoPackageIdReportedBug)
+        (pure . head)
+        (nonEmpty $ words $ T.unpack i)
       -- should never happen as we have already installed the packages
       _      -> prettyThrowIO (PackageIdNotFoundBug name)
 
@@ -136,16 +178,16 @@ execCmd ExecOpts {..} =
     map ("-package-id=" ++) <$> mapM getPkgId pkgs
 
   getRunCmd args = do
-    packages <- view $ buildConfigL.to (smwProject . bcSMWanted)
+    packages <- view $ buildConfigL . to (.smWanted.project)
     pkgComponents <- for (Map.elems packages) ppComponents
     let executables = concatMap (filter isCExe . Set.toList) pkgComponents
     let (exe, args') = case args of
-                       []   -> (firstExe, args)
-                       x:xs -> case L.find (\y -> y == CExe (T.pack x)) executables of
-                               Nothing -> (firstExe, args)
-                               argExe -> (argExe, xs)
-                       where
-                          firstExe = listToMaybe executables
+          [] -> (firstExe, args)
+          x:xs -> case L.find (\y -> y == CExe (T.pack x)) executables of
+            Nothing -> (firstExe, args)
+            argExe -> (argExe, xs)
+         where
+          firstExe = listToMaybe executables
     case exe of
       Just (CExe exe') -> do
         withNewLocalBuildTargets [T.cons ':' exe'] $ build Nothing
@@ -154,12 +196,12 @@ execCmd ExecOpts {..} =
 
   getGhcCmd pkgs args = do
     pkgopts <- getPkgOpts pkgs
-    compiler <- view $ compilerPathsL.to cpCompiler
+    compiler <- view $ compilerPathsL . to (.compiler)
     pure (toFilePath compiler, pkgopts ++ args)
 
   getRunGhcCmd pkgs args = do
     pkgopts <- getPkgOpts pkgs
-    interpret <- view $ compilerPathsL.to cpInterpreter
+    interpret <- view $ compilerPathsL . to (.interpreter)
     pure (toFilePath interpret, pkgopts ++ args)
 
   runWithPath :: Maybe FilePath -> RIO EnvConfig () -> RIO EnvConfig ()

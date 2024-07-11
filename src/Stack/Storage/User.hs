@@ -1,13 +1,14 @@
-{-# LANGUAGE NoImplicitPrelude          #-}
-{-# LANGUAGE DataKinds                  #-}
-{-# LANGUAGE DerivingStrategies         #-}
-{-# LANGUAGE GADTs                      #-}
-{-# LANGUAGE OverloadedStrings          #-}
-{-# LANGUAGE QuasiQuotes                #-}
-{-# LANGUAGE RecordWildCards            #-}
-{-# LANGUAGE TemplateHaskell            #-}
-{-# LANGUAGE TypeFamilies               #-}
-{-# LANGUAGE UndecidableInstances       #-}
+{-# LANGUAGE NoImplicitPrelude     #-}
+{-# LANGUAGE DataKinds             #-}
+{-# LANGUAGE DerivingStrategies    #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GADTs                 #-}
+{-# LANGUAGE OverloadedRecordDot   #-}
+{-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE QuasiQuotes           #-}
+{-# LANGUAGE TemplateHaskell       #-}
+{-# LANGUAGE TypeFamilies          #-}
+{-# LANGUAGE UndecidableInstances  #-}
 {-# OPTIONS_GHC -Wno-unused-top-binds -Wno-identities #-}
 
 -- | Work with SQLite database used for caches across an entire user account.
@@ -167,7 +168,7 @@ withUserStorage ::
   => ReaderT SqlBackend (RIO env) a
   -> RIO env a
 withUserStorage inner = do
-  storage <- view (configL . to configUserStorage . to unUserStorage)
+  storage <- view (configL . to (.userStorage.userStorage))
   withStorage_ storage inner
 
 -- | Key used to retrieve the precompiled cache
@@ -196,15 +197,23 @@ readPrecompiledCache ::
                                          , PrecompiledCache Rel))
 readPrecompiledCache key = do
   mparent <- getBy key
-  forM mparent $ \(Entity parentId PrecompiledCacheParent {..}) -> do
-    pcLibrary <- mapM parseRelFile precompiledCacheParentLibrary
-    pcSubLibs <-
-      mapM (parseRelFile . precompiledCacheSubLibValue . entityVal) =<<
+  forM mparent $ \(Entity parentId precompiledCacheParent) -> do
+    library <-
+      mapM parseRelFile precompiledCacheParent.precompiledCacheParentLibrary
+    subLibs <-
+      mapM (parseRelFile . (.precompiledCacheSubLibValue) . entityVal) =<<
       selectList [PrecompiledCacheSubLibParent ==. parentId] []
-    pcExes <-
-      mapM (parseRelFile . precompiledCacheExeValue . entityVal) =<<
+    exes <-
+      mapM (parseRelFile . (.precompiledCacheExeValue) . entityVal) =<<
       selectList [PrecompiledCacheExeParent ==. parentId] []
-    pure (parentId, PrecompiledCache {..})
+    pure
+      ( parentId
+      , PrecompiledCache
+          { library
+          , subLibs
+          , exes
+          }
+      )
 
 -- | Load 'PrecompiledCache' from the database.
 loadPrecompiledCache ::
@@ -231,11 +240,19 @@ savePrecompiledCache
       )
   new
   = withUserStorage $ do
-      let precompiledCacheParentLibrary = fmap toFilePath (pcLibrary new)
+      let precompiledCacheParentLibrary = fmap toFilePath new.library
       mIdOld <- readPrecompiledCache key
       (parentId, mold) <-
         case mIdOld of
-          Nothing -> (, Nothing) <$> insert PrecompiledCacheParent {..}
+          Nothing -> (, Nothing) <$> insert PrecompiledCacheParent
+            { precompiledCacheParentPlatformGhcDir
+            , precompiledCacheParentCompiler
+            , precompiledCacheParentCabalVersion
+            , precompiledCacheParentPackageKey
+            , precompiledCacheParentOptionsHash
+            , precompiledCacheParentHaddock
+            , precompiledCacheParentLibrary
+            }
           Just (parentId, old) -> do
             update
               parentId
@@ -248,15 +265,15 @@ savePrecompiledCache
         PrecompiledCacheSubLibParent
         parentId
         PrecompiledCacheSubLibValue
-        (maybe Set.empty (toFilePathSet . pcSubLibs) mold)
-        (toFilePathSet $ pcSubLibs new)
+        (maybe Set.empty (toFilePathSet . (.subLibs)) mold)
+        (toFilePathSet new.subLibs)
       updateSet
         PrecompiledCacheExe
         PrecompiledCacheExeParent
         parentId
         PrecompiledCacheExeValue
-        (maybe Set.empty (toFilePathSet . pcExes) mold)
-        (toFilePathSet $ pcExes new)
+        (maybe Set.empty (toFilePathSet . (.exes)) mold)
+        (toFilePathSet new.exes)
  where
   toFilePathSet = Set.fromList . map toFilePath
 
@@ -268,7 +285,7 @@ loadDockerImageExeCache ::
   -> UTCTime
   -> RIO env (Maybe Bool)
 loadDockerImageExeCache imageId exePath exeTimestamp = withUserStorage $
-  fmap (dockerImageExeCacheCompatible . entityVal) <$>
+  fmap ((.dockerImageExeCacheCompatible) . entityVal) <$>
   getBy (DockerImageExeCacheUnique imageId (toFilePath exePath) exeTimestamp)
 
 -- | Sets the record of whether an executable is compatible with a Docker image
@@ -310,19 +327,21 @@ loadCompilerPaths ::
   -> RIO env (Maybe CompilerPaths)
 loadCompilerPaths compiler build sandboxed = do
   mres <- withUserStorage $ getBy $ UniqueCompilerInfo $ toFilePath compiler
-  for mres $ \(Entity _ CompilerCache {..}) -> do
+  for mres $ \(Entity _ compilerCache) -> do
     compilerStatus <- liftIO $ getFileStatus $ toFilePath compiler
     when
-      (  compilerCacheGhcSize /= sizeToInt64 (fileSize compilerStatus)
-      || compilerCacheGhcModified /=
+      (  compilerCache.compilerCacheGhcSize /=
+           sizeToInt64 (fileSize compilerStatus)
+      || compilerCache.compilerCacheGhcModified /=
            timeToInt64 (modificationTime compilerStatus)
       )
       (throwIO CompilerFileMetadataMismatch)
-    globalDbStatus <-
-      liftIO $ getFileStatus $ compilerCacheGlobalDb FP.</> "package.cache"
+    globalDbStatus <- liftIO $
+      getFileStatus $ compilerCache.compilerCacheGlobalDb FP.</> "package.cache"
     when
-      (  compilerCacheGlobalDbCacheSize /= sizeToInt64 (fileSize globalDbStatus)
-      || compilerCacheGlobalDbCacheModified /=
+      (  compilerCache.compilerCacheGlobalDbCacheSize /=
+           sizeToInt64 (fileSize globalDbStatus)
+      || compilerCache.compilerCacheGlobalDbCacheModified /=
            timeToInt64 (modificationTime globalDbStatus)
       )
       (throwIO GlobalPackageCacheFileMetadataMismatch)
@@ -330,34 +349,35 @@ loadCompilerPaths compiler build sandboxed = do
     -- We could use parseAbsFile instead of resolveFile' below to bypass some
     -- system calls, at the cost of some really wonky error messages in case
     -- someone screws up their GHC installation
-    pkgexe <- resolveFile' compilerCacheGhcPkgPath
-    runghc <- resolveFile' compilerCacheRunghcPath
-    haddock <- resolveFile' compilerCacheHaddockPath
-    globaldb <- resolveDir' compilerCacheGlobalDb
+    pkg <- GhcPkgExe <$> resolveFile' compilerCache.compilerCacheGhcPkgPath
+    interpreter <- resolveFile' compilerCache.compilerCacheRunghcPath
+    haddock <- resolveFile' compilerCache.compilerCacheHaddockPath
+    globalDB <- resolveDir' compilerCache.compilerCacheGlobalDb
 
-    cabalVersion <- parseVersionThrowing $ T.unpack compilerCacheCabalVersion
+    cabalVersion <- parseVersionThrowing $
+      T.unpack compilerCache.compilerCacheCabalVersion
     globalDump <-
-      case readMaybe $ T.unpack compilerCacheGlobalDump of
+      case readMaybe $ T.unpack compilerCache.compilerCacheGlobalDump of
         Nothing -> throwIO GlobalDumpParseFailure
         Just globalDump -> pure globalDump
     arch <-
-      case simpleParse $ T.unpack compilerCacheArch of
-        Nothing -> throwIO $ CompilerCacheArchitectureInvalid compilerCacheArch
+      case simpleParse $ T.unpack compilerCache.compilerCacheArch of
+        Nothing -> throwIO $
+          CompilerCacheArchitectureInvalid compilerCache.compilerCacheArch
         Just arch -> pure arch
-
     pure CompilerPaths
-      { cpCompiler = compiler
-      , cpCompilerVersion = compilerCacheActualVersion
-      , cpArch = arch
-      , cpBuild = build
-      , cpPkg = GhcPkgExe pkgexe
-      , cpInterpreter = runghc
-      , cpHaddock = haddock
-      , cpSandboxed = sandboxed
-      , cpCabalVersion = cabalVersion
-      , cpGlobalDB = globaldb
-      , cpGhcInfo = compilerCacheInfo
-      , cpGlobalDump = globalDump
+      { compiler
+      , compilerVersion = compilerCache.compilerCacheActualVersion
+      , arch
+      , build
+      , pkg
+      , interpreter
+      , haddock
+      , sandboxed
+      , cabalVersion
+      , globalDB
+      , ghcInfo = compilerCache.compilerCacheInfo
+      , globalDump
       }
 
 -- | Save compiler information. May throw exceptions!
@@ -365,29 +385,28 @@ saveCompilerPaths ::
      HasConfig env
   => CompilerPaths
   -> RIO env ()
-saveCompilerPaths CompilerPaths {..} = withUserStorage $ do
-  deleteBy $ UniqueCompilerInfo $ toFilePath cpCompiler
-  compilerStatus <- liftIO $ getFileStatus $ toFilePath cpCompiler
-  globalDbStatus <-
-    liftIO $
-      getFileStatus $ toFilePath $ cpGlobalDB </> $(mkRelFile "package.cache")
-  let GhcPkgExe pkgexe = cpPkg
+saveCompilerPaths cp = withUserStorage $ do
+  deleteBy $ UniqueCompilerInfo $ toFilePath cp.compiler
+  compilerStatus <- liftIO $ getFileStatus $ toFilePath cp.compiler
+  globalDbStatus <- liftIO $
+    getFileStatus $ toFilePath $ cp.globalDB </> $(mkRelFile "package.cache")
+  let GhcPkgExe pkgexe = cp.pkg
   insert_ CompilerCache
-    { compilerCacheActualVersion = cpCompilerVersion
-    , compilerCacheGhcPath = toFilePath cpCompiler
+    { compilerCacheActualVersion = cp.compilerVersion
+    , compilerCacheGhcPath = toFilePath cp.compiler
     , compilerCacheGhcSize = sizeToInt64 $ fileSize compilerStatus
     , compilerCacheGhcModified = timeToInt64 $ modificationTime compilerStatus
     , compilerCacheGhcPkgPath = toFilePath pkgexe
-    , compilerCacheRunghcPath = toFilePath cpInterpreter
-    , compilerCacheHaddockPath = toFilePath cpHaddock
-    , compilerCacheCabalVersion = T.pack $ versionString cpCabalVersion
-    , compilerCacheGlobalDb = toFilePath cpGlobalDB
+    , compilerCacheRunghcPath = toFilePath cp.interpreter
+    , compilerCacheHaddockPath = toFilePath cp.haddock
+    , compilerCacheCabalVersion = T.pack $ versionString cp.cabalVersion
+    , compilerCacheGlobalDb = toFilePath cp.globalDB
     , compilerCacheGlobalDbCacheSize = sizeToInt64 $ fileSize globalDbStatus
     , compilerCacheGlobalDbCacheModified =
         timeToInt64 $ modificationTime globalDbStatus
-    , compilerCacheInfo = cpGhcInfo
-    , compilerCacheGlobalDump = tshow cpGlobalDump
-    , compilerCacheArch = T.pack $ Distribution.Text.display cpArch
+    , compilerCacheInfo = cp.ghcInfo
+    , compilerCacheGlobalDump = tshow cp.globalDump
+    , compilerCacheArch = T.pack $ Distribution.Text.display cp.arch
     }
 
 -- | How many upgrade checks have occurred since the given timestamp?

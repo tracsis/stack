@@ -6,7 +6,7 @@
 stack init [DIR(S)] [--omit-packages] [--force] [--ignore-subdirs]
 ~~~
 
-`stack init` initialises Stack's project-level YAML configuration file
+`stack init` initialises Stack's default project-level YAML configuration file
 (`stack.yaml`) for an existing project, based on the Cabal file or
 `package.yaml` file for each of its packages.
 
@@ -24,3 +24,19 @@ By default:
 * Stack will not initialise if there are conflicting or incompatable user
   packages. Pass the flag `--omit-packages` to cause Stack to ignore such
   matters while initialising.
+
+If a snapshot is specified at the command line, `stack init` will try to use it.
+For further information, see the documentation for the
+[`--snapshot`](global_flags.md#-snapshot-option) and
+[`--resolver`](global_flags.md#-resolver-option) options.
+
+Otherwise, `stack init` will try to use the following Stackage snapshots in
+order of preference, using the first that is compatable: the most recent LTS
+Haskell, the most recent Stackage Nightly, and other LTS Haskell (most recent
+first).
+
+!!! note
+
+    If Cabal (the tool) has been used in the directory, consider commanding
+    `cabal clean` before applying `stack init`, in case Cabal has created any
+    unintended Cabal files.

@@ -57,16 +57,25 @@
   # the GHC2021 set. Other extensions can be added, if need be.
   - name:
     - NoImplicitPrelude
+    - ConstraintKinds
     - DataKinds
     - DefaultSignatures
+    - DeriveDataTypeable
+    - DeriveGeneric
     - DerivingStrategies
+    - DisambiguateRecordFields
+    - DuplicateRecordFields
+    - FlexibleContexts
     - GADTs
+    - GeneralizedNewtypeDeriving
     - LambdaCase
     - MultiWayIf
+    - NoFieldSelectors
     - OverloadedLists
+    # Provided from GHC 9.2.1 (base-4.16.0.0):
+    - OverloadedRecordDot
     - OverloadedStrings
     - QuasiQuotes
-    - RecordWildCards
     - ScopedTypeVariables
     - TypeFamilies
     - UndecidableInstances

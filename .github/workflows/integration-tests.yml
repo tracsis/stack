@@ -16,12 +16,13 @@ on:
 env:
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-# As of 21 August 2023, ubuntu-latest, windows-latest and macos-latest come
-# with Stack 2.11.1 (2.9.3 on macos-latest) and GHC 9.6.2. windows-latest comes
-# with NSIS 3.08, for which the default value of the 'Unicode' installer
-# attribute is 'true'. However, that is not the 'large strings' build of NSIS
-# and creates installers that corrupt the PATH environment variable if the
-# default string length of 1024 characters is exceeded.
+# As of 6 May 2024, ubuntu-latest and windows-latest come with Stack 2.15.5 and
+# GHC 9.8.2. However, macos-13 and macos-latest do not come with Haskell tools.
+# windows-latest comes with NSIS 3.08, for which the default value of the
+# 'Unicode' installer attribute is 'true'. However, that is not the 'large
+# strings' build of NSIS and creates installers that corrupt the PATH
+# environment variable if the default string length of 1024 characters is
+# exceeded.
 
 jobs:
   integration-tests:
@@ -33,35 +34,45 @@ jobs:
         include:
         - os: ubuntu-latest
           release-args: "--alpine"
-          cache-bust: ""
+          cache-bust: "2024-01-20"
         - os: windows-latest
           release-args: ""
-          cache-bust: "13"
+          cache-bust: "2024-01-20"
+        - os: macos-13
+          release-args: ""
+          cache-bust: "2024-01-20"
+        # macos-latest provides macOS/AArch64 (M1)
         - os: macos-latest
           release-args: ""
-          cache-bust: "23"
+          cache-bust: "2024-02-02"
     steps:
     - name: Clone project
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
     - name: Cache dependencies on Unix-like OS
       if: startsWith(runner.os, 'Linux') || startsWith(runner.os, 'macOS')
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ~/.stack
-        key: ${{ runner.os }}-${{ hashFiles('stack.yaml') }}-${{ matrix.cache-bust }}
+        key: ${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('stack.yaml') }}-${{ matrix.cache-bust }}
     - name: Cache dependencies on Windows
       if: startsWith(runner.os, 'Windows')
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: |
           ~\AppData\Roaming\stack
           ~\AppData\Local\Programs\stack
-        key: ${{ runner.os }}-${{ hashFiles('stack.yaml') }}-${{ matrix.cache-bust }}
+        key: ${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('stack.yaml') }}-${{ matrix.cache-bust }}
 
     - name: Install deps and run checks
       shell: bash
       run: |
         set -ex
+
+        if [[ "${{ matrix.os }}" == "macos-13" || "${{ matrix.os }}" == "macos-latest" ]]
+        then
+          # macos-13 and macos-latest do not include Haskell tools as at 2024-05-06.
+          curl -sSL https://get.haskellstack.org/ | sh
+        fi
 
         if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]
         then
@@ -126,8 +137,15 @@ jobs:
             rm -Rf $(stack path --stack-root)/hooks
         fi
 
+        # Report the file system disk space usage before checks, for
+        # information.
+        df -h
+
         # Do this in the same step as installing deps to get relevant env var modifications
         stack etc/scripts/release.hs check ${{ matrix.release-args }}
+
+        # Report the file system disk space usage after checks, for information.
+        df -h
 
         set +ex
 
@@ -137,9 +155,9 @@ jobs:
         stack etc/scripts/release.hs build ${{ matrix.release-args }}
 
     - name: Upload bindist
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
-        name: ${{ runner.os }}
+        name: ${{ runner.os }}-${{ runner.arch }}
         path: _release/stack-*
 
   configuration:
@@ -179,17 +197,11 @@ jobs:
         echo '::notice title=ARM64 skipped::To build ARM64, a self-hosted runner needs to be configured and the SELF_HOSTED_RUNNERS secret must contain arm64'
     - name: Clone project
       if: needs.configuration.outputs.test-arm64 == 'true'
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
     - name: Install deps
       shell: bash
       run: |
         set -ex
-
-        # The release.hs script depends on digest, and digest requires
-        # pkg-config. TO DO: Perhaps the self-hosted runner's software should
-        # include pkg-config.
-        sudo apt-get update
-        sudo apt-get install -y pkg-config
 
         # As of 19 August 2023, the self-hosted runner comes with Stack 2.11.1,
         # but it is not on the PATH. Logging the version for information.
@@ -210,7 +222,7 @@ jobs:
 
     - name: Upload bindist
       if: needs.configuration.outputs.test-arm64 == 'true'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: Linux-ARM64
         path: _release/stack-*
@@ -226,24 +238,29 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
-    - name: Download Linux artifact
-      uses: actions/download-artifact@v3
+    - name: Download Linux/x86_64 artifact
+      uses: actions/download-artifact@v4
       with:
-        name: Linux
+        name: Linux-X64
         path: _release
-    - name: Download macOS artifact
-      uses: actions/download-artifact@v3
+    - name: Download macOS/x86_64 artifact
+      uses: actions/download-artifact@v4
       with:
-        name: macOS
+        name: macOS-X64
         path: _release
-    - name: Download Windows artifact
-      uses: actions/download-artifact@v3
+    - name: Download macOS/AArch64 artifact
+      uses: actions/download-artifact@v4
       with:
-        name: Windows
+        name: macOS-ARM64
         path: _release
-    - name: Download Linux-ARM64 artifact
+    - name: Download Windows/x86_64 artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: Windows-X64
+        path: _release
+    - name: Download Linux/AArch64 artifact
       if: needs.configuration.outputs.test-arm64 == 'true'
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: Linux-ARM64
         path: _release
@@ -263,7 +280,7 @@ jobs:
     - name: Create GitHub release (final)
       id: github_release_final
       if: "!startsWith(github.ref, 'refs/tags/rc/')"
-      uses: ncipollo/release-action@v1.10.0
+      uses: ncipollo/release-action@v1.13.0
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
@@ -282,7 +299,7 @@ jobs:
     - name: Create GitHub release (release candidate)
       id: github_release_rc
       if: "startsWith(github.ref, 'refs/tags/rc/')"
-      uses: ncipollo/release-action@v1.10.0
+      uses: ncipollo/release-action@v1.13.0
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:

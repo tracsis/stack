@@ -1,4 +1,6 @@
 {-# LANGUAGE NoImplicitPrelude     #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE OverloadedRecordDot   #-}
 {-# LANGUAGE OverloadedStrings     #-}
 
 -- | Types and functions related to Stack's @upgrade@ command.
@@ -25,10 +27,9 @@ import           Stack.Setup
                    ( downloadStackExe, downloadStackReleaseInfo
                    , getDownloadVersion, preferredPlatforms, stackVersion
                    )
-import           Stack.Types.BuildOpts
-                   ( BuildOptsCLI (..), buildOptsInstallExesL
-                   , defaultBuildOptsCLI
-                   )
+import           Stack.Types.BuildOpts ( buildOptsInstallExesL )
+import           Stack.Types.BuildOptsCLI
+                   ( BuildOptsCLI (..), defaultBuildOptsCLI )
 import           Stack.Types.Config ( Config (..), HasConfig (..), buildOptsL )
 import           Stack.Types.GlobalOpts ( GlobalOpts (..) )
 import           Stack.Types.Runner ( Runner, globalOptsL )
@@ -88,16 +89,16 @@ instance Exception UpgradePrettyException
 -- | Type representing options for upgrading Stack with a binary executable
 -- file.
 data BinaryOpts = BinaryOpts
-  { _boPlatform :: !(Maybe String)
-  , _boForce :: !Bool
+  { platform :: !(Maybe String)
+  , force :: !Bool
     -- ^ Force a download, even if the downloaded version is older than what we
     -- are.
-  , _boOnlyLocalBin :: !Bool
+  , onlyLocalBin :: !Bool
     -- ^ Only download to Stack's local binary directory.
-  , _boVersion :: !(Maybe String)
+  , version :: !(Maybe String)
     -- ^ Specific version to download
-  , _boGitHubOrg :: !(Maybe String)
-  , _boGitHubRepo :: !(Maybe String)
+  , gitHubOrg :: !(Maybe String)
+  , gitHubRepo :: !(Maybe String)
   }
   deriving Show
 
@@ -108,8 +109,8 @@ newtype SourceOpts
 
 -- | Type representing command line options for the @stack upgrade@ command.
 data UpgradeOpts = UpgradeOpts
-  { _uoBinary :: !(Maybe BinaryOpts)
-  , _uoSource :: !(Maybe SourceOpts)
+  { binary :: !(Maybe BinaryOpts)
+  , source :: !(Maybe SourceOpts)
   }
   deriving Show
 
@@ -117,7 +118,7 @@ data UpgradeOpts = UpgradeOpts
 upgradeCmd :: UpgradeOpts -> RIO Runner ()
 upgradeCmd upgradeOpts = do
   go <- view globalOptsL
-  case globalResolver go of
+  case go.resolver of
     Just _ -> prettyThrowIO ResolverOptionInvalid
     Nothing -> withGlobalProject $ upgrade maybeGitHash upgradeOpts
 
@@ -197,7 +198,7 @@ binaryUpgrade (BinaryOpts mplatform force' onlyLocalBin mver morg mrepo) =
     when toUpgrade $ do
       config <- view configL
       downloadStackExe
-        platforms0 archiveInfo (configLocalBin config) (not onlyLocalBin) $
+        platforms0 archiveInfo config.localBin (not onlyLocalBin) $
           \tmpFile -> do
             -- Sanity check!
             ec <- rawSystem (toFilePath tmpFile) ["--version"]
@@ -282,16 +283,14 @@ sourceUpgrade builtHash (SourceOpts gitRepo) =
                 pure $ Just dir
 
     let modifyGO dir go = go
-          { globalResolver = Nothing -- always use the resolver settings in the
+          { resolver = Nothing -- always use the resolver settings in the
                                      -- stack.yaml file
-          , globalStackYaml = SYLOverride $ dir </> stackDotYaml
+          , stackYaml = SYLOverride $ dir </> stackDotYaml
           }
-        boptsCLI = defaultBuildOptsCLI
-          { boptsCLITargets = ["stack"]
-          }
+        boptsCLI = defaultBuildOptsCLI { targetsCLI = ["stack"] }
     forM_ mdir $ \dir ->
       local (over globalOptsL (modifyGO dir))
         $ withConfig NoReexec
         $ withEnvConfig AllowNoTargets boptsCLI
-        $ local (set (buildOptsL.buildOptsInstallExesL) True)
+        $ local (set (buildOptsL . buildOptsInstallExesL) True)
         $ build Nothing

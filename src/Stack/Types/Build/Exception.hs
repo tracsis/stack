@@ -1,6 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude          #-}
-{-# LANGUAGE DataKinds                  #-}
-{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE DataKinds           #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings   #-}
 
 module Stack.Types.Build.Exception
   ( BuildException (..)
@@ -24,6 +25,7 @@ import qualified Distribution.Text as C
 import           Distribution.Types.PackageName ( mkPackageName )
 import           Distribution.Types.TestSuiteInterface ( TestSuiteInterface )
 import qualified Distribution.Version as C
+import           RIO.NonEmpty ( nonEmpty )
 import           RIO.Process ( showProcessArgDebug )
 import           Stack.Constants
                    ( defaultUserConfigPath, wiredInPackages )
@@ -44,14 +46,6 @@ import           Stack.Types.Version ( VersionCheck (..), VersionRange )
 -- names beginning @Stack.Build@.
 data BuildException
   = Couldn'tFindPkgId PackageName
-  | CompilerVersionMismatch
-      (Maybe (ActualCompiler, Arch)) -- found
-      (WantedCompiler, Arch) -- expected
-      GHCVariant -- expected
-      CompilerBuild -- expected
-      VersionCheck
-      (Maybe (Path Abs File)) -- Path to the stack.yaml file
-      Text -- recommended resolution
   | Couldn'tParseTargets [Text]
   | UnknownTargets
       (Set PackageName) -- no known version
@@ -81,6 +75,7 @@ data BuildException
   | TemplateHaskellNotFoundBug
   | HaddockIndexNotFound
   | ShowBuildErrorBug
+  | CallStackEmptyBug
   deriving (Show, Typeable)
 
 instance Exception BuildException where
@@ -90,34 +85,6 @@ instance Exception BuildException where
     ,", the package id couldn't be found (via ghc-pkg describe "
     , packageNameString name
     , ")."
-    ]
-  displayException (CompilerVersionMismatch mactual (expected, eArch) ghcVariant ghcBuild check mstack resolution) = concat
-    [ "Error: [S-6362]\n"
-    , case mactual of
-        Nothing -> "No compiler found, expected "
-        Just (actual, arch) -> concat
-          [ "Compiler version mismatched, found "
-          , compilerVersionString actual
-          , " ("
-          , C.display arch
-          , ")"
-          , ", but expected "
-          ]
-    , case check of
-        MatchMinor -> "minor version match with "
-        MatchExact -> "exact version "
-        NewerMinor -> "minor version match or newer with "
-    , T.unpack $ utf8BuilderToText $ display expected
-    , " ("
-    , C.display eArch
-    , ghcVariantSuffix ghcVariant
-    , compilerBuildSuffix ghcBuild
-    , ") (based on "
-    , case mstack of
-        Nothing -> "command line arguments"
-        Just stack -> "resolver setting in " ++ toFilePath stack
-    , ").\n"
-    , T.unpack resolution
     ]
   displayException (Couldn'tParseTargets targets) = unlines
     $ "Error: [S-3127]"
@@ -251,6 +218,8 @@ instance Exception BuildException where
     ++ "No local or snapshot doc index found to open."
   displayException ShowBuildErrorBug = bugReport "[S-5452]"
     "Unexpected case in showBuildError."
+  displayException CallStackEmptyBug = bugReport "[S-2696]"
+    "addDep: call stack is empty."
 
 data BuildPrettyException
   = ConstructPlanFailed
@@ -281,6 +250,15 @@ data BuildPrettyException
   | SomeTargetsNotBuildable [(PackageName, NamedComponent)]
   | InvalidFlagSpecification (Set UnusedFlags)
   | GHCProfOptionInvalid
+  | NotOnlyLocal [PackageName] [Text]
+  | CompilerVersionMismatch
+      (Maybe (ActualCompiler, Arch)) -- found
+      (WantedCompiler, Arch) -- expected
+      GHCVariant -- expected
+      CompilerBuild -- expected
+      VersionCheck
+      (Maybe (Path Abs File)) -- Path to the stack.yaml file
+      StyleDoc -- recommended resolution
   deriving (Show, Typeable)
 
 instance Pretty BuildPrettyException where
@@ -342,7 +320,7 @@ instance Pretty BuildPrettyException where
     go :: UnusedFlags -> StyleDoc
     go (UFNoPackage src name) = fillSep
       [ "Package"
-      , style Error (fromString $ packageNameString name)
+      , style Error (fromPackageName name)
       , flow "not found"
       , showFlagSrc src
       ]
@@ -372,7 +350,7 @@ instance Pretty BuildPrettyException where
       name = packageNameString pname
     go (UFSnapshot name) = fillSep
       [ flow "Attempted to set flag on snapshot package"
-      , style Current (fromString $ packageNameString name) <> ","
+      , style Current (fromPackageName name) <> ","
       , flow "please add the package to"
       , style Shell "extra-deps" <> "."
       ]
@@ -389,6 +367,66 @@ instance Pretty BuildPrettyException where
          , flow "flags. See:"
          , style Url "https://github.com/commercialhaskell/stack/issues/1015" <> "."
          ]
+  pretty (NotOnlyLocal packages exes) =
+    "[S-1727]"
+    <> line
+    <> flow "Specified only-locals, but Stack needs to build snapshot contents:"
+    <> line
+    <> if null packages
+         then mempty
+         else
+              fillSep
+                ( "Packages:"
+                : mkNarrativeList Nothing False
+                    (map fromPackageName packages :: [StyleDoc])
+                )
+           <> line
+    <> if null exes
+         then mempty
+         else
+              fillSep
+                ( "Executables:"
+                : mkNarrativeList Nothing False
+                    (map (fromString . T.unpack) exes :: [StyleDoc])
+                )
+           <> line
+  pretty (CompilerVersionMismatch mactual (expected, eArch) ghcVariant ghcBuild check mstack resolution) =
+    "[S-6362]"
+    <> line
+    <> fillSep
+         [ case mactual of
+             Nothing -> flow "No compiler found, expected"
+             Just (actual, arch) -> fillSep
+               [ flow "Compiler version mismatched, found"
+               , fromString $ compilerVersionString actual
+               , parens (pretty arch) <> ","
+               , flow "but expected"
+               ]
+         , case check of
+             MatchMinor -> flow "minor version match with"
+             MatchExact -> flow "exact version"
+             NewerMinor -> flow "minor version match or newer with"
+         , fromString $ T.unpack $ utf8BuilderToText $ display expected
+         , parens $ mconcat
+             [ pretty eArch
+             , fromString $ ghcVariantSuffix ghcVariant
+             , fromString $ compilerBuildSuffix ghcBuild
+             ]
+         ,    parens
+                ( fillSep
+                    [ flow "based on"
+                    , case mstack of
+                        Nothing -> flow "command line arguments"
+                        Just stack -> fillSep
+                          [ flow "resolver setting in"
+                          , pretty stack
+                          ]
+                    ]
+                )
+          <> "."
+         ]
+    <> blankLine
+    <> resolution
 
 instance Exception BuildPrettyException
 
@@ -466,7 +504,7 @@ pprintExceptions exceptions stackYaml stackRoot isImplicitGlobal parentMap wante
            : flow "add these package names under"
            : style Shell "allow-newer-deps" <> ":"
            : mkNarrativeList (Just Shell) False
-               (map (fromString . packageNameString) (Set.elems pkgsWithMismatches) :: [StyleDoc])
+               (map fromPackageName (Set.elems pkgsWithMismatches) :: [StyleDoc])
        | not $ Set.null pkgsWithMismatches
        ]
     <> addExtraDepsRecommendations
@@ -556,12 +594,12 @@ pprintExceptions exceptions stackYaml stackRoot isImplicitGlobal parentMap wante
     , Set.Set PackageName
       -- ^ Set of names of packages with one or more DependencyMismatch errors.
     )
-  filterExceptions = L.foldl go acc0 exceptions'
+  filterExceptions = L.foldl' go acc0 exceptions'
    where
     acc0 = (True, False, Map.empty, Set.empty)
     go acc (DependencyPlanFailures pkg m) = Map.foldrWithKey go' acc m
      where
-      pkgName = packageName pkg
+      pkgName = pkg.name
       go' name (_, Just extra, NotInBuildPlan) (_, _, m', s) =
         (False, True, Map.insert name extra m', s)
       go' _ (_, _, NotInBuildPlan) (_, _, m', s) = (False, True, m', s)
@@ -577,58 +615,54 @@ pprintExceptions exceptions stackYaml stackRoot isImplicitGlobal parentMap wante
        flow "Dependency cycle detected in packages:"
     <> line
     <> indent 4
-         ( encloseSep "[" "]" ","
-             (map (style Error . fromString . packageNameString) pNames)
-         )
+         (encloseSep "[" "]" "," (map (style Error . fromPackageName) pNames))
   pprintException (DependencyPlanFailures pkg pDeps) =
     case mapMaybe pprintDep (Map.toList pDeps) of
       [] -> Nothing
       depErrors -> Just $
            fillSep
              [ flow "In the dependencies for"
-             , pkgIdent <> pprintFlags (packageFlags pkg) <> ":"
+             , pkgIdent <> pprintFlags pkg.flags <> ":"
              ]
         <> line
         <> indent 2 (bulletedList depErrors)
-        <> case getShortestDepsPath parentMap wanted' (packageName pkg) of
-             Nothing ->
-                  line
-               <> flow "needed for unknown reason - Stack invariant violated."
-             Just [] ->
-                  line
-               <> fillSep
-                    [ flow "needed since"
-                    , pkgName'
-                    , flow "is a build target."
-                    ]
-             Just (target:path) ->
-                  line
-               <> flow "needed due to" <+> encloseSep "" "" " -> " pathElems
-              where
-               pathElems =
-                    [style Target . fromString . packageIdentifierString $ target]
-                 <> map (fromString . packageIdentifierString) path
-                 <> [pkgIdent]
+        <> line
+        <> fillSep
+             ( flow "The above is/are needed"
+             : case getShortestDepsPath parentMap wanted' pkg.name of
+                 Nothing ->
+                   [flow "for unknown reason - Stack invariant violated."]
+                 Just [] ->
+                   [ "since"
+                   , pkgName'
+                   , flow "is a build target."
+                   ]
+                 Just (target:path) ->
+                   [ flow "due to"
+                   , encloseSep "" "" " -> " pathElems
+                   ]
+                  where
+                   pathElems =
+                        [style Target . fromPackageId $ target]
+                     <> map fromPackageId path
+                     <> [pkgIdent]
+             )
        where
-        pkgName' =
-          style Current . fromString . packageNameString $ packageName pkg
-        pkgIdent =
-          style
-            Current
-            (fromString . packageIdentifierString $ packageIdentifier pkg)
+        pkgName' = style Current (fromPackageName pkg.name)
+        pkgIdent = style Current (fromPackageId $ packageIdentifier pkg)
   -- Skip these when they are redundant with 'NotInBuildPlan' info.
   pprintException (UnknownPackage name)
     | name `Set.member` allNotInBuildPlan = Nothing
     | name `Set.member` wiredInPackages = Just $ fillSep
         [ flow "Can't build a package with same name as a wired-in-package:"
-        , style Current . fromString . packageNameString $ name
+        , style Current . fromPackageName $ name
         ]
     | Just pruned <- Map.lookup name prunedGlobalDeps =
         let prunedDeps =
-              map (style Current . fromString . packageNameString) pruned
+              map (style Current . fromPackageName) pruned
         in  Just $ fillSep
               [ flow "Can't use GHC boot package"
-              , style Current . fromString . packageNameString $ name
+              , style Current . fromPackageName $ name
               , flow "when it depends on a replaced boot package. You need to \
                      \add the following as explicit dependencies to the \
                      \project:"
@@ -637,7 +671,7 @@ pprintExceptions exceptions stackYaml stackRoot isImplicitGlobal parentMap wante
               ]
     | otherwise = Just $ fillSep
         [ flow "Unknown package:"
-        , style Current . fromString . packageNameString $ name
+        , style Current . fromPackageName $ name
         ]
 
   pprintFlags flags
@@ -670,7 +704,7 @@ pprintExceptions exceptions stackYaml stackRoot isImplicitGlobal parentMap wante
              ++ L.intercalate ", " (map packageNameString names)
       ]
    where
-    errorName = style Error . fromString . packageNameString $ name
+    errorName = style Error . fromPackageName $ name
     goodRange = style Good (fromString (C.display range))
     rangeMsg = if range == C.anyVersion
       then "needed,"
@@ -688,7 +722,7 @@ pprintExceptions exceptions stackYaml stackRoot isImplicitGlobal parentMap wante
     inconsistentMsg mVersion = fillSep
       [ style Error $ maybe
           ( flow "no version" )
-          ( fromString . packageIdentifierString . PackageIdentifier name )
+          ( fromPackageId . PackageIdentifier name )
           mVersion
       , flow "is in the Stack configuration"
       ]
@@ -833,7 +867,7 @@ getShortestDepsPath (MonoidMap parentsMap) wanted' name =
     then Just []
     else case M.lookup name parentsMap of
       Nothing -> Nothing
-      Just (_, parents) -> Just $ findShortest 256 paths0
+      Just parents -> Just $ findShortest 256 paths0
        where
         paths0 = M.fromList $
           map (\(ident, _) -> (pkgName ident, startDepsPath ident)) parents
@@ -849,10 +883,12 @@ getShortestDepsPath (MonoidMap parentsMap) wanted' name =
     ]
   findShortest _ paths | M.null paths = []
   findShortest fuel paths =
-    case targets of
-      [] -> findShortest (fuel - 1) $ M.fromListWith chooseBest $
+    case nonEmpty targets of
+      Nothing -> findShortest (fuel - 1) $ M.fromListWith chooseBest $
               concatMap extendPath recurses
-      _ -> let (DepsPath _ _ path) = L.minimum (map snd targets) in path
+      Just targets' ->
+        let (DepsPath _ _ path) = minimum (snd <$> targets')
+        in  path
    where
     (targets, recurses) =
       L.partition (\(n, _) -> n `Set.member` wanted') (M.toList paths)
@@ -863,7 +899,7 @@ getShortestDepsPath (MonoidMap parentsMap) wanted' name =
   extendPath (n, dp) =
     case M.lookup n parentsMap of
       Nothing -> []
-      Just (_, parents) ->
+      Just parents ->
         map (\(pkgId, _) -> (pkgName pkgId, extendDepsPath pkgId dp)) parents
 
 startDepsPath :: PackageIdentifier -> DepsPath
@@ -875,8 +911,8 @@ startDepsPath ident = DepsPath
 
 extendDepsPath :: PackageIdentifier -> DepsPath -> DepsPath
 extendDepsPath ident dp = DepsPath
-  { dpLength = dpLength dp + 1
-  , dpNameLength = dpNameLength dp + length (packageNameString (pkgName ident))
+  { dpLength = dp.dpLength + 1
+  , dpNameLength = dp.dpNameLength + length (packageNameString (pkgName ident))
   , dpPath = [ident]
   }
 

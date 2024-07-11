@@ -1,13 +1,15 @@
-{-# LANGUAGE NoImplicitPrelude         #-}
-{-# LANGUAGE OverloadedStrings         #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE NoFieldSelectors    #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings   #-}
 
 -- | Types and functions related to Stack's @new@ command.
 module Stack.New
-    ( NewOpts (..)
-    , TemplateName
-    , newCmd
-    , new
-    ) where
+  ( NewOpts (..)
+  , TemplateName
+  , newCmd
+  , new
+  ) where
 
 import           Control.Monad.Trans.Writer.Strict ( execWriterT )
 import           Data.Aeson as A
@@ -182,11 +184,10 @@ instance Pretty NewPrettyException where
     <> fillSep
          ( flow "The names blocked by Stack are:"
          : mkNarrativeList Nothing False
-             (map toStyleDoc (L.sort $ S.toList wiredInPackages))
+             (map fromPackageName sortedWiredInPackages :: [StyleDoc])
          )
    where
-    toStyleDoc :: PackageName -> StyleDoc
-    toStyleDoc = fromString . packageNameString
+    sortedWiredInPackages = L.sort $ S.toList wiredInPackages
   pretty (AttemptedOverwrites name fps) =
     "[S-3113]"
     <> line
@@ -214,14 +215,16 @@ instance Exception NewPrettyException
 -- | Type representing command line options for the @stack new@ command (other
 -- than those applicable also to the @stack init@ command).
 data NewOpts = NewOpts
-  { newOptsProjectName  :: PackageName
-  -- ^ Name of the project to create.
-  , newOptsCreateBare   :: Bool
-  -- ^ Whether to create the project without a directory.
-  , newOptsTemplate     :: Maybe TemplateName
-  -- ^ Name of the template to use.
-  , newOptsNonceParams  :: Map Text Text
-  -- ^ Nonce parameters specified just for this invocation.
+  { projectName  :: PackageName
+    -- ^ Name of the project to create.
+  , createBare   :: Bool
+    -- ^ Whether to create the project without a directory.
+  , init         :: Bool
+    -- ^ Whether to initialise the project for use with Stack.
+  , template     :: Maybe TemplateName
+    -- ^ Name of the template to use.
+  , nonceParams  :: Map Text Text
+    -- ^ Nonce parameters specified just for this invocation.
   }
 
 -- | Function underlying the @stack new@ command. Create a project directory
@@ -229,11 +232,11 @@ data NewOpts = NewOpts
 newCmd :: (NewOpts, InitOpts) -> RIO Runner ()
 newCmd (newOpts, initOpts) =
   withGlobalProject $ withConfig YesReexec $ do
-    dir <- new newOpts (forceOverwrite initOpts)
+    dir <- new newOpts initOpts.forceOverwrite
     exists <- doesFileExist $ dir </> stackDotYaml
-    when (forceOverwrite initOpts || not exists) $ do
+    when (newOpts.init && (initOpts.forceOverwrite || not exists)) $ do
       go <- view globalOptsL
-      initProject dir initOpts (globalResolver go)
+      initProject dir initOpts go.resolver
 
 -- | Create a new project with the given options.
 new :: HasConfig env => NewOpts -> Bool -> RIO env (Path Abs Dir)
@@ -246,7 +249,7 @@ new opts forceOverwrite = do
               else do relDir <- parseRelDir (packageNameString project)
                       pure (pwd </> relDir)
   exists <- doesDirExist absDir
-  configTemplate <- view $ configL.to configDefaultTemplate
+  configTemplate <- view $ configL . to (.defaultTemplate)
   let template = fromMaybe defaultTemplateName $ asum [ cliOptionTemplate
                                                       , configTemplate
                                                       ]
@@ -258,7 +261,7 @@ new opts forceOverwrite = do
         applyTemplate
           project
           template
-          (newOptsNonceParams opts)
+          opts.nonceParams
           absDir
           templateText
       when (not forceOverwrite && bare) $
@@ -267,10 +270,10 @@ new opts forceOverwrite = do
       runTemplateInits absDir
       pure absDir
  where
-  cliOptionTemplate = newOptsTemplate opts
-  project = newOptsProjectName opts
+  cliOptionTemplate = opts.template
+  project = opts.projectName
   projectName = packageNameString project
-  bare = newOptsCreateBare opts
+  bare = opts.createBare
   logUsing absDir template templateFrom =
     let loading = case templateFrom of
                     LocalTemp -> flow "Loading local"
@@ -305,7 +308,7 @@ loadTemplate ::
   -> (TemplateFrom -> RIO env ())
   -> RIO env Text
 loadTemplate name logIt = do
-  templateDir <- view $ configL.to templatesDir
+  templateDir <- view $ configL . to templatesDir
   case templatePath name of
     AbsPath absFile ->
       logIt LocalTemp >> loadLocalFile absFile eitherByteStringToText
@@ -319,9 +322,9 @@ loadTemplate name logIt = do
             pure f)
         ( \(e :: PrettyException) -> do
             settings <- fromMaybe (throwM e) (relSettings rawParam)
-            let url = tplDownloadUrl settings
-                mBasicAuth = tplBasicAuth settings
-                extract = tplExtract settings
+            let url = settings.downloadUrl
+                mBasicAuth = settings.basicAuth
+                extract = settings.extract
             downloadTemplate url mBasicAuth extract (templateDir </> relFile)
         )
     RepoPath rtp -> do
@@ -354,10 +357,10 @@ loadTemplate name logIt = do
 
   downloadFromUrl :: TemplateDownloadSettings -> Path Abs Dir -> RIO env Text
   downloadFromUrl settings templateDir = do
-    let url = tplDownloadUrl settings
-        mBasicAuth = tplBasicAuth settings
+    let url =  settings.downloadUrl
+        mBasicAuth = settings.basicAuth
         rel = fromMaybe backupUrlRelPath (parseRelFile url)
-    downloadTemplate url mBasicAuth (tplExtract settings) (templateDir </> rel)
+    downloadTemplate url mBasicAuth settings.extract (templateDir </> rel)
 
   downloadTemplate ::
        String
@@ -401,10 +404,10 @@ loadTemplate name logIt = do
 
 -- | Type representing settings for the download of Stack project templates.
 data TemplateDownloadSettings = TemplateDownloadSettings
-  { tplDownloadUrl :: String
-  , tplBasicAuth :: Maybe (ByteString, ByteString)
+  { downloadUrl :: String
+  , basicAuth :: Maybe (ByteString, ByteString)
     -- ^ Optional HTTP 'Basic' authentication (type, credentials)
-  , tplExtract :: ByteString -> Either String Text
+  , extract :: ByteString -> Either String Text
   }
 
 eitherByteStringToText :: ByteString -> Either String Text
@@ -412,9 +415,9 @@ eitherByteStringToText = mapLeft show . decodeUtf8'
 
 asIsFromUrl :: String -> TemplateDownloadSettings
 asIsFromUrl url = TemplateDownloadSettings
-  { tplDownloadUrl = url
-  , tplBasicAuth = Nothing
-  , tplExtract = eitherByteStringToText
+  { downloadUrl = url
+  , basicAuth = Nothing
+  , extract = eitherByteStringToText
   }
 
 -- | Construct settings for downloading a Stack project template from a
@@ -443,15 +446,15 @@ settingsFromRepoTemplatePath (RepoTemplatePath GitHub user name) = do
           basicAuthMsg altGitHubTokenEnvVar
           pure $ Just (gitHubBasicAuthType, fromString wantAltGitHubToken)
         else pure Nothing
-  pure $ TemplateDownloadSettings
-    { tplDownloadUrl = concat
+  pure TemplateDownloadSettings
+    { downloadUrl = concat
         [ "https://api.github.com/repos/"
         , T.unpack user
         , "/stack-templates/contents/"
         , T.unpack name
         ]
-    , tplBasicAuth = mBasicAuth
-    , tplExtract = \bs -> do
+    , basicAuth = mBasicAuth
+    , extract = \bs -> do
         decodedJson <- eitherDecode (LB.fromStrict bs)
         case decodedJson of
           Object o | Just (String content) <- KeyMap.lookup "content" o -> do
@@ -502,7 +505,7 @@ applyTemplate project template nonceParams dir templateText = do
         nameParams = M.fromList [ ("name", T.pack $ packageNameString project)
                                 , ("name-as-varid", nameAsVarId)
                                 , ("name-as-module", nameAsModule) ]
-        configParams = configTemplateParams config
+        configParams = config.templateParams
         yearParam = M.singleton "year" currentYear
   files :: Map FilePath LB.ByteString <-
     catch
@@ -518,7 +521,7 @@ applyTemplate project template nonceParams dir templateText = do
       template
       (flow "the template does not contain any files.")
 
-  let isPkgSpec f = ".cabal" `L.isSuffixOf` f || f == "package.yaml"
+  let isPkgSpec f = ".cabal" `L.isSuffixOf` f || "package.yaml" `L.isSuffixOf` f
   unless (any isPkgSpec . M.keys $ files) $
     prettyThrowM $ TemplateInvalid
       template
@@ -567,7 +570,7 @@ applyTemplate project template nonceParams dir templateText = do
     prettyNote $
       missingParameters
         missingKeys
-        (configUserConfigPath config)
+        config.userConfigPath
   pure $ M.fromList results
  where
   onlyMissingKeys (Mustache.VariableNotFound ks) = map T.unpack ks
@@ -612,7 +615,7 @@ applyTemplate project template nonceParams dir templateText = do
     <> style Shell
          ( fillSep
              [ flow "stack new"
-             , fromString (packageNameString project)
+             , fromPackageName project
              , fromString $ T.unpack (templateName template)
              , hsep $
                  map
@@ -657,7 +660,7 @@ writeTemplateFiles files =
 runTemplateInits :: HasConfig env => Path Abs Dir -> RIO env ()
 runTemplateInits dir = do
   config <- view configL
-  case configScmInit config of
+  case config.scmInit of
     Nothing -> pure ()
     Just Git -> withWorkingDir (toFilePath dir) $
       catchAny

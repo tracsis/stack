@@ -1,6 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE NoImplicitPrelude     #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE OverloadedRecordDot   #-}
+{-# LANGUAGE OverloadedStrings     #-}
 
 module Stack.ConfigSpec
   ( sampleConfig
@@ -28,9 +29,10 @@ import           Stack.Prelude
 import           Stack.Runners ( withBuildConfig, withRunnerGlobal )
 import           Stack.Types.BuildConfig ( BuildConfig (..), projectRootL )
 import           Stack.Types.BuildOpts
-                   ( BenchmarkOpts (..), BuildOpts (..), CabalVerbosity (..)
+                   ( BenchmarkOpts (..), BuildOpts (..), HaddockOpts (..)
                    , TestOpts (..)
                    )
+import           Stack.Types.BuildOptsMonoid ( CabalVerbosity (..), ProgressBarFormat (NoBar) )
 import           Stack.Types.Config ( Config (..) )
 import           Stack.Types.ConfigMonoid
                    ( ConfigMonoid (..), parseConfigMonoid )
@@ -51,23 +53,33 @@ import           Test.Hspec
 
 sampleConfig :: String
 sampleConfig =
-  "resolver: lts-19.22\n" ++
+  "snapshot: lts-22.21\n" ++
   "packages: ['.']\n"
 
 buildOptsConfig :: String
 buildOptsConfig =
-  "resolver: lts-19.22\n" ++
+  "snapshot: lts-22.21\n" ++
   "packages: ['.']\n" ++
   "build:\n" ++
   "  library-profiling: true\n" ++
   "  executable-profiling: true\n" ++
+  "  library-stripping: false\n" ++
+  "  executable-stripping: false\n" ++
   "  haddock: true\n" ++
+  "  haddock-arguments:\n" ++
+  "    haddock-args:\n" ++
+  "    - \"--css=/home/user/my-css\"\n" ++
+  "  open-haddocks: true\n" ++
   "  haddock-deps: true\n" ++
+  "  haddock-internal: true\n" ++
+  "  haddock-hyperlink-source: false\n" ++
+  "  haddock-for-hackage: false\n" ++
   "  copy-bins: true\n" ++
+  "  copy-compiler-tool: true\n" ++
   "  prefetch: true\n" ++
-  "  force-dirty: true\n" ++
   "  keep-going: true\n" ++
   "  keep-tmp-files: true\n" ++
+  "  force-dirty: true\n" ++
   "  test: true\n" ++
   "  test-arguments:\n" ++
   "    rerun-tests: true\n" ++
@@ -79,28 +91,47 @@ buildOptsConfig =
   "    benchmark-arguments: -O2\n" ++
   "    no-run-benchmarks: true\n" ++
   "  reconfigure: true\n" ++
-  "  cabal-verbose: true\n"
+  "  cabal-verbosity: verbose\n" ++
+  "  cabal-verbose: true\n" ++
+  "  split-objs: true\n" ++
+  "  skip-components: ['my-test']\n" ++
+  "  interleaved-output: false\n" ++
+  "  progress-bar: none\n" ++
+  "  ddump-dir: my-ddump-dir\n"
+
+buildOptsHaddockForHackageConfig :: String
+buildOptsHaddockForHackageConfig =
+  "snapshot: lts-22.21\n" ++
+  "packages: ['.']\n" ++
+  "build:\n" ++
+  "  haddock: true\n" ++
+  "  open-haddocks: true\n" ++
+  "  haddock-deps: true\n" ++
+  "  haddock-internal: true\n" ++
+  "  haddock-hyperlink-source: false\n" ++
+  "  haddock-for-hackage: true\n" ++
+  "  force-dirty: false\n"
 
 hpackConfig :: String
 hpackConfig =
-  "resolver: lts-19.22\n" ++
+  "snapshot: lts-22.21\n" ++
   "with-hpack: /usr/local/bin/hpack\n" ++
   "packages: ['.']\n"
 
 resolverConfig :: String
 resolverConfig =
-  "resolver: lts-19.22\n" ++
+  "resolver: lts-22.21\n" ++
   "packages: ['.']\n"
 
 snapshotConfig :: String
 snapshotConfig =
-  "snapshot: lts-19.22\n" ++
+  "snapshot: lts-22.21\n" ++
   "packages: ['.']\n"
 
 resolverSnapshotConfig :: String
 resolverSnapshotConfig =
-  "resolver: lts-19.22\n" ++
-  "snapshot: lts-19.22\n" ++
+  "resolver: lts-22.21\n" ++
+  "snapshot: lts-22.21\n" ++
   "packages: ['.']\n"
 
 stackDotYaml :: Path Rel File
@@ -132,7 +163,7 @@ spec = beforeAll setup $ do
   describe "parseProjectAndConfigMonoid" $ do
     let loadProject' fp inner = do
           globalOpts <- globalOptsFromMonoid False mempty
-          withRunnerGlobal globalOpts { globalLogLevel = logLevel } $ do
+          withRunnerGlobal globalOpts { logLevel = logLevel } $ do
               iopc <- loadConfigYaml (
                 parseProjectAndConfigMonoid (parent fp)
                 ) fp
@@ -149,12 +180,12 @@ spec = beforeAll setup $ do
           loadProject' yamlAbs inner
 
     it "parses snapshot using 'resolver'" $ inTempDir $ do
-      loadProject resolverConfig $ \Project{..} ->
-        projectResolver `shouldBe` RSLSynonym (LTS 19 22)
+      loadProject resolverConfig $ \project ->
+        project.resolver `shouldBe` RSLSynonym (LTS 22 21)
 
     it "parses snapshot using 'snapshot'" $ inTempDir $ do
-      loadProject snapshotConfig $ \Project{..} ->
-        projectResolver `shouldBe` RSLSynonym (LTS 19 22)
+      loadProject snapshotConfig $ \project ->
+        project.resolver `shouldBe` RSLSynonym (LTS 22 21)
 
     it "throws if both 'resolver' and 'snapshot' are present" $ inTempDir $ do
       loadProject resolverSnapshotConfig (const (pure ()))
@@ -163,7 +194,7 @@ spec = beforeAll setup $ do
   describe "loadConfig" $ do
     let loadConfig' inner = do
           globalOpts <- globalOptsFromMonoid False mempty
-          withRunnerGlobal globalOpts { globalLogLevel = logLevel } $
+          withRunnerGlobal globalOpts { logLevel = logLevel } $
             loadConfig inner
     -- TODO(danburton): make sure parent dirs also don't have config file
     it "works even if no config file exists" $ example $
@@ -188,32 +219,61 @@ spec = beforeAll setup $ do
         liftIO $ configOverrideHpack config `shouldBe` HpackBundled
 
     it "parses build config options" $ inTempDir $ do
-     writeFile (toFilePath stackDotYaml) buildOptsConfig
-     loadConfig' $ \config -> liftIO $ do
-      let BuildOpts{..} = configBuild  config
-      boptsLibProfile `shouldBe` True
-      boptsExeProfile `shouldBe` True
-      boptsHaddock `shouldBe` True
-      boptsHaddockDeps `shouldBe` Just True
-      boptsInstallExes `shouldBe` True
-      boptsPreFetch `shouldBe` True
-      boptsKeepGoing `shouldBe` Just True
-      boptsKeepTmpFiles `shouldBe` True
-      boptsForceDirty `shouldBe` True
-      boptsTests `shouldBe` True
-      boptsTestOpts `shouldBe` TestOpts { toRerunTests = True
-                                        , toAdditionalArgs = ["-fprof"]
-                                        , toCoverage = True
-                                        , toDisableRun = True
-                                        , toMaximumTimeSeconds = Nothing
-                                        , toAllowStdin = True
-                                        }
-      boptsBenchmarks `shouldBe` True
-      boptsBenchmarkOpts `shouldBe` BenchmarkOpts { beoAdditionalArgs = Just "-O2"
-                                                  , beoDisableRun = True
-                                                  }
-      boptsReconfigure `shouldBe` True
-      boptsCabalVerbose `shouldBe` CabalVerbosity verbose
+      writeFile (toFilePath stackDotYaml) buildOptsConfig
+      loadConfig' $ \config -> liftIO $ do
+        let bopts = config.build
+        bopts.libProfile `shouldBe` True
+        bopts.exeProfile `shouldBe` True
+        bopts.libStrip `shouldBe` False
+        bopts.exeStrip `shouldBe` False
+        bopts.buildHaddocks `shouldBe` True
+        bopts.haddockOpts `shouldBe` HaddockOpts
+          { additionalArgs = ["--css=/home/user/my-css"]
+          }
+        bopts.openHaddocks `shouldBe` True
+        bopts.haddockDeps `shouldBe` Just True
+        bopts.haddockInternal `shouldBe` True
+        bopts.haddockHyperlinkSource `shouldBe` False
+        bopts.haddockForHackage `shouldBe` False
+        bopts.installExes `shouldBe` True
+        bopts.installCompilerTool `shouldBe` True
+        bopts.preFetch `shouldBe` True
+        bopts.keepGoing `shouldBe` Just True
+        bopts.keepTmpFiles `shouldBe` True
+        bopts.forceDirty `shouldBe` True
+        bopts.tests `shouldBe` True
+        bopts.testOpts `shouldBe` TestOpts
+          { rerunTests = True
+          , additionalArgs = ["-fprof"]
+          , coverage = True
+          , disableRun = True
+          , maximumTimeSeconds = Nothing
+          , allowStdin = True
+          }
+        bopts.benchmarks `shouldBe` True
+        bopts.benchmarkOpts `shouldBe` BenchmarkOpts
+           { additionalArgs = Just "-O2"
+           , disableRun = True
+           }
+        bopts.reconfigure `shouldBe` True
+        bopts.cabalVerbose `shouldBe` CabalVerbosity verbose
+        bopts.splitObjs `shouldBe` True
+        bopts.skipComponents `shouldBe` ["my-test"]
+        bopts.interleavedOutput `shouldBe` False
+        bopts.progressBar `shouldBe` NoBar
+        bopts.ddumpDir `shouldBe` Just "my-ddump-dir"
+
+    it "parses build config options with haddock-for-hackage" $ inTempDir $ do
+      writeFile (toFilePath stackDotYaml) buildOptsHaddockForHackageConfig
+      loadConfig' $ \config -> liftIO $ do
+        let bopts = config.build
+        bopts.buildHaddocks `shouldBe` True
+        bopts.openHaddocks `shouldBe` False
+        bopts.haddockDeps `shouldBe` Nothing
+        bopts.haddockInternal `shouldBe` False
+        bopts.haddockHyperlinkSource `shouldBe` True
+        bopts.haddockForHackage `shouldBe` True
+        bopts.forceDirty `shouldBe` True
 
     it "finds the config file in a parent directory" $ inTempDir $ do
       writeFile "package.yaml" "name: foo"
@@ -231,29 +291,34 @@ spec = beforeAll setup $ do
         let stackYamlFp = toFilePath (dir </> stackDotYaml)
         writeFile stackYamlFp sampleConfig
         writeFile (toFilePath dir ++ "/package.yaml") "name: foo"
-        withEnvVar "STACK_YAML" stackYamlFp $ loadConfig' $ \config -> liftIO $ do
-          BuildConfig{..} <- runRIO config $ withBuildConfig ask
-          bcStackYaml `shouldBe` dir </> stackDotYaml
-          parent bcStackYaml `shouldBe` dir
+        withEnvVar "STACK_YAML" stackYamlFp $
+          loadConfig' $ \config -> liftIO $ do
+            bc <- runRIO config $ withBuildConfig ask
+            bc.stackYaml `shouldBe` dir </> stackDotYaml
+            parent bc.stackYaml `shouldBe` dir
 
     it "STACK_YAML can be relative" $ inTempDir $ do
         parentDir <- getCurrentDirectory >>= parseAbsDir
         let childRel = either impureThrow id (parseRelDir "child")
-            yamlRel = childRel </> either impureThrow id (parseRelFile "some-other-name.config")
+            yamlRel =
+              childRel </> either impureThrow id (parseRelFile "some-other-name.config")
             yamlAbs = parentDir </> yamlRel
-            packageYaml = childRel </> either impureThrow id (parseRelFile "package.yaml")
+            packageYaml =
+              childRel </> either impureThrow id (parseRelFile "package.yaml")
         createDirectoryIfMissing True $ toFilePath $ parent yamlAbs
-        writeFile (toFilePath yamlAbs) "resolver: ghc-9.0"
+        writeFile (toFilePath yamlAbs) "snapshot: ghc-9.6.5"
         writeFile (toFilePath packageYaml) "name: foo"
-        withEnvVar "STACK_YAML" (toFilePath yamlRel) $ loadConfig' $ \config -> liftIO $ do
-            BuildConfig{..} <- runRIO config $ withBuildConfig ask
-            bcStackYaml `shouldBe` yamlAbs
+        withEnvVar "STACK_YAML" (toFilePath yamlRel) $
+          loadConfig' $ \config -> liftIO $ do
+            bc <- runRIO config $ withBuildConfig ask
+            bc.stackYaml `shouldBe` yamlAbs
 
   describe "defaultConfigYaml" $
     it "is parseable" $ \_ -> do
-        curDir <- getCurrentDir
-        let parsed :: Either String (Either String (WithJSONWarnings ConfigMonoid))
-            parsed = parseEither (parseConfigMonoid curDir) <$> left show (decodeEither' defaultConfigYaml)
-        case parsed of
-            Right (Right _) -> pure () :: IO ()
-            _ -> fail "Failed to parse default config yaml"
+      curDir <- getCurrentDir
+      let parsed :: Either String (Either String (WithJSONWarnings ConfigMonoid))
+          parsed = parseEither
+            (parseConfigMonoid curDir) <$> left show (decodeEither' defaultConfigYaml)
+      case parsed of
+        Right (Right _) -> pure () :: IO ()
+        _ -> fail "Failed to parse default config yaml"

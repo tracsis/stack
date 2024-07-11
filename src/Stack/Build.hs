@@ -1,6 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude   #-}
-{-# LANGUAGE LambdaCase          #-}
-{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE NoImplicitPrelude     #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE OverloadedRecordDot   #-}
+{-# LANGUAGE OverloadedStrings     #-}
 
 -- | Build the project.
 
@@ -16,33 +17,37 @@ module Stack.Build
 import           Data.Attoparsec.Args ( EscapingMode (Escaping), parseArgs )
 import           Data.List ( (\\) )
 import           Data.List.Extra ( groupSort )
-import qualified Data.List.NonEmpty as NE
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified Data.Text as T
-import qualified Distribution.PackageDescription as C
-import           Distribution.Types.Dependency ( Dependency (..), depLibraries )
+-- import qualified Distribution.PackageDescription as C
+-- import           Distribution.Types.Dependency ( Dependency (..), depLibraries )
 import           Distribution.Version ( mkVersion )
+import           RIO.NonEmpty ( nonEmpty )
+import qualified RIO.NonEmpty as NE
 import           Stack.Build.ConstructPlan ( constructPlan )
 import           Stack.Build.Execute ( executePlan, preFetch, printPlan )
 import           Stack.Build.Installed ( getInstalled, toInstallMap )
 import           Stack.Build.Source ( localDependencies, projectLocalPackages )
 import           Stack.Build.Target ( NeedTargets (..) )
 import           Stack.FileWatch ( fileWatch, fileWatchPoll )
-import           Stack.Package ( resolvePackage )
+import           Stack.Package ( buildableExes, resolvePackage )
 import           Stack.Prelude hiding ( loadPackage )
 import           Stack.Runners ( ShouldReexec (..), withConfig, withEnvConfig )
 import           Stack.Setup ( withNewLocalBuildTargets )
 import           Stack.Types.Build
-                   ( Plan (..), Task (..), TaskType (..), taskLocation )
+                   ( Plan (..), Task (..), TaskType (..), taskLocation
+                   , taskProvides
+                   )
 import           Stack.Types.Build.Exception
                    ( BuildException (..), BuildPrettyException (..) )
 import           Stack.Types.BuildConfig ( HasBuildConfig, stackYamlL )
-import           Stack.Types.BuildOpts
-                   ( BuildCommand (..), BuildOpts (..), BuildOptsCLI (..)
-                   , FileWatchOpts (..), buildOptsMonoidBenchmarksL
-                   , buildOptsMonoidHaddockL, buildOptsMonoidInstallExesL
-                   , buildOptsMonoidTestsL
+import           Stack.Types.BuildOpts ( BuildOpts (..) )
+import           Stack.Types.BuildOptsCLI
+                   ( BuildCommand (..), BuildOptsCLI (..), FileWatchOpts (..) )
+import           Stack.Types.BuildOptsMonoid
+                   ( buildOptsMonoidBenchmarksL, buildOptsMonoidHaddockL
+                   , buildOptsMonoidInstallExesL, buildOptsMonoidTestsL
                    )
 import           Stack.Types.Compiler ( getGhcVersion )
 import           Stack.Types.CompilerPaths ( cabalVersionL )
@@ -60,11 +65,12 @@ import           Stack.Types.GlobalOpts ( globalOptsBuildOptsMonoidL )
 import           Stack.Types.NamedComponent ( exeComponents )
 import           Stack.Types.Package
                    ( InstallLocation (..), LocalPackage (..), Package (..)
-                   , PackageConfig (..), lpFiles, lpFilesForComponents )
+                   , PackageConfig (..), lpFiles, lpFilesForComponents
+                   )
 import           Stack.Types.Platform ( HasPlatform (..) )
 import           Stack.Types.Runner ( Runner, globalOptsL )
 import           Stack.Types.SourceMap
-                   ( CommonPackage (..), ProjectPackage (..), SMTargets (..)
+                   ( SMTargets (..)
                    , SourceMap (..), Target (..) )
 import           System.Terminal ( fixCodePage )
 
@@ -92,10 +98,10 @@ instance Exception CabalVersionPrettyException
 -- | Helper for build and install commands
 buildCmd :: BuildOptsCLI -> RIO Runner ()
 buildCmd opts = do
-  when (any (("-prof" `elem`) . fromRight [] . parseArgs Escaping) (boptsCLIGhcOptions opts)) $
+  when (any (("-prof" `elem`) . fromRight [] . parseArgs Escaping) opts.ghcOptions) $
     prettyThrowIO GHCProfOptionInvalid
   local (over globalOptsL modifyGO) $
-    case boptsCLIFileWatch opts of
+    case opts.fileWatch of
       FileWatchPoll -> fileWatchPoll (inner . Just)
       FileWatch -> fileWatch (inner . Just)
       NoFileWatch -> inner Nothing
@@ -107,14 +113,19 @@ buildCmd opts = do
       Stack.Build.build setLocalFiles
   -- Read the build command from the CLI and enable it to run
   modifyGO =
-    case boptsCLICommand opts of
-      Test -> set (globalOptsBuildOptsMonoidL.buildOptsMonoidTestsL) (Just True)
-      Haddock ->
-        set (globalOptsBuildOptsMonoidL.buildOptsMonoidHaddockL) (Just True)
-      Bench ->
-        set (globalOptsBuildOptsMonoidL.buildOptsMonoidBenchmarksL) (Just True)
-      Install ->
-        set (globalOptsBuildOptsMonoidL.buildOptsMonoidInstallExesL) (Just True)
+    case opts.command of
+      Test -> set
+        (globalOptsBuildOptsMonoidL . buildOptsMonoidTestsL)
+        (Just True)
+      Haddock -> set
+        (globalOptsBuildOptsMonoidL . buildOptsMonoidHaddockL)
+        (Just True)
+      Bench -> set
+        (globalOptsBuildOptsMonoidL . buildOptsMonoidBenchmarksL)
+        (Just True)
+      Install -> set
+        (globalOptsBuildOptsMonoidL . buildOptsMonoidInstallExesL)
+        (Just True)
       Build -> id -- Default case is just Build
 
 -- | Build.
@@ -126,27 +137,25 @@ build :: HasEnvConfig env
       => Maybe (Set (Path Abs File) -> IO ()) -- ^ callback after discovering all local files
       -> RIO env ()
 build msetLocalFiles = do
-  mcp <- view $ configL.to configModifyCodePage
-  ghcVersion <- view $ actualCompilerVersionL.to getGhcVersion
+  mcp <- view $ configL . to (.modifyCodePage)
+  ghcVersion <- view $ actualCompilerVersionL . to getGhcVersion
   fixCodePage mcp ghcVersion $ do
     bopts <- view buildOptsL
-    sourceMap <- view $ envConfigL.to envConfigSourceMap
+    sourceMap <- view $ envConfigL . to (.sourceMap)
     locals <- projectLocalPackages
     depsLocals <- localDependencies
     let allLocals = locals <> depsLocals
 
-    checkSubLibraryDependencies (Map.elems $ smProject sourceMap)
-
-    boptsCli <- view $ envConfigL.to envConfigBuildOptsCLI
+    boptsCli <- view $ envConfigL . to (.buildOptsCLI)
     -- Set local files, necessary for file watching
     stackYaml <- view stackYamlL
     for_ msetLocalFiles $ \setLocalFiles -> do
       files <-
-        if boptsCLIWatchAll boptsCli
+        if boptsCli.watchAll
         then sequence [lpFiles lp | lp <- allLocals]
         else forM allLocals $ \lp -> do
-          let pn = packageName (lpPackage lp)
-          case Map.lookup pn (smtTargets $ smTargets sourceMap) of
+          let pn = lp.package.name
+          case Map.lookup pn sourceMap.targets.targets of
             Nothing ->
               pure Set.empty
             Just (TargetAll _) ->
@@ -162,9 +171,15 @@ build msetLocalFiles = do
         getInstalled installMap
 
     baseConfigOpts <- mkBaseConfigOpts boptsCli
-    plan <- constructPlan baseConfigOpts localDumpPkgs loadPackage sourceMap installedMap (boptsCLIInitialBuildSteps boptsCli)
+    plan <- constructPlan
+              baseConfigOpts
+              localDumpPkgs
+              loadPackage
+              sourceMap
+              installedMap
+              boptsCli.initialBuildSteps
 
-    allowLocals <- view $ configL.to configAllowLocals
+    allowLocals <- view $ configL . to (.allowLocals)
     unless allowLocals $ case justLocals plan of
       [] -> pure ()
       localsIdents -> throwM $ LocalPackagesPresent localsIdents
@@ -173,10 +188,10 @@ build msetLocalFiles = do
     warnAboutSplitObjs bopts
     warnIfExecutablesWithSameNameCouldBeOverwritten locals plan
 
-    when (boptsPreFetch bopts) $
+    when bopts.preFetch $
         preFetch plan
 
-    if boptsCLIDryrun boptsCli
+    if boptsCli.dryrun
       then printPlan plan
       else executePlan
              boptsCli
@@ -186,7 +201,7 @@ build msetLocalFiles = do
              snapshotDumpPkgs
              localDumpPkgs
              installedMap
-             (smtTargets $ smTargets sourceMap)
+             sourceMap.targets.targets
              plan
 
 buildLocalTargets ::
@@ -201,7 +216,7 @@ justLocals =
   map taskProvides .
   filter ((== Local) . taskLocation) .
   Map.elems .
-  planTasks
+  (.tasks)
 
 checkCabalVersion :: HasEnvConfig env => RIO env ()
 checkCabalVersion = do
@@ -258,14 +273,14 @@ warnIfExecutablesWithSameNameCouldBeOverwritten locals plan = do
   warnings :: Map Text ([PackageName],[PackageName])
   warnings =
     Map.mapMaybe
-      (\(pkgsToBuild,localPkgs) ->
-        case (pkgsToBuild,NE.toList localPkgs \\ NE.toList pkgsToBuild) of
-          (_ :| [],[]) ->
+      (\(pkgsToBuild, localPkgs) ->
+        case (pkgsToBuild, NE.toList localPkgs \\ NE.toList pkgsToBuild) of
+          (_ :| [], []) ->
             -- We want to build the executable of single local package
             -- and there are no other local packages with an executable of
             -- the same name. Nothing to warn about, ignore.
             Nothing
-          (_,otherLocals) ->
+          (_, otherLocals) ->
             -- We could be here for two reasons (or their combination):
             -- 1) We are building two or more executables with the same
             --    name that will end up overwriting each other.
@@ -273,28 +288,28 @@ warnIfExecutablesWithSameNameCouldBeOverwritten locals plan = do
             --    there are other local packages with an executable of the
             --    same name that might get overwritten.
             -- Both cases warrant a warning.
-            Just (NE.toList pkgsToBuild,otherLocals))
+            Just (NE.toList pkgsToBuild, otherLocals))
       (Map.intersectionWith (,) exesToBuild localExes)
   exesToBuild :: Map Text (NonEmpty PackageName)
   exesToBuild =
     collect
-      [ (exe,pkgName')
-      | (pkgName',task) <- Map.toList (planTasks plan)
-      , TTLocalMutable lp <- [taskType task]
-      , exe <- (Set.toList . exeComponents . lpComponents) lp
+      [ (exe, pkgName')
+      | (pkgName', task) <- Map.toList plan.tasks
+      , TTLocalMutable lp <- [task.taskType]
+      , exe <- (Set.toList . exeComponents . (.components)) lp
       ]
   localExes :: Map Text (NonEmpty PackageName)
   localExes =
     collect
-      [ (exe,packageName pkg)
-      | pkg <- map lpPackage locals
-      , exe <- Set.toList (packageExes pkg)
+      [ (exe, pkg.name)
+      | pkg <- map (.package) locals
+      , exe <- Set.toList (buildableExes pkg)
       ]
-  collect :: Ord k => [(k,v)] -> Map k (NonEmpty v)
-  collect = Map.map NE.fromList . Map.fromDistinctAscList . groupSort
+  collect :: Ord k => [(k, v)] -> Map k (NonEmpty v)
+  collect = Map.mapMaybe nonEmpty . Map.fromDistinctAscList . groupSort
 
 warnAboutSplitObjs :: HasTerm env => BuildOpts -> RIO env ()
-warnAboutSplitObjs bopts | boptsSplitObjs bopts =
+warnAboutSplitObjs bopts |  bopts.splitObjs =
   prettyWarnL
     [ flow "Building with"
     , style Shell "--split-objs"
@@ -313,21 +328,21 @@ splitObjsWarning =
 -- | Get the @BaseConfigOpts@ necessary for constructing configure options
 mkBaseConfigOpts :: (HasEnvConfig env)
                  => BuildOptsCLI -> RIO env BaseConfigOpts
-mkBaseConfigOpts boptsCli = do
-  bopts <- view buildOptsL
-  snapDBPath <- packageDatabaseDeps
-  localDBPath <- packageDatabaseLocal
+mkBaseConfigOpts buildOptsCLI = do
+  buildOpts <- view buildOptsL
+  snapDB <- packageDatabaseDeps
+  localDB <- packageDatabaseLocal
   snapInstallRoot <- installationRootDeps
   localInstallRoot <- installationRootLocal
-  packageExtraDBs <- packageDatabaseExtra
+  extraDBs <- packageDatabaseExtra
   pure BaseConfigOpts
-    { bcoSnapDB = snapDBPath
-    , bcoLocalDB = localDBPath
-    , bcoSnapInstallRoot = snapInstallRoot
-    , bcoLocalInstallRoot = localInstallRoot
-    , bcoBuildOpts = bopts
-    , bcoBuildOptsCLI = boptsCli
-    , bcoExtraDBs = packageExtraDBs
+    { snapDB
+    , localDB
+    , snapInstallRoot
+    , localInstallRoot
+    , buildOpts
+    , buildOptsCLI
+    , extraDBs
     }
 
 -- | Provide a function for loading package information from the package index
@@ -339,16 +354,16 @@ loadPackage ::
   -> [Text] -- ^ Cabal configure options
   -> RIO env Package
 loadPackage loc flags ghcOptions cabalConfigOpts = do
-  compiler <- view actualCompilerVersionL
+  compilerVersion <- view actualCompilerVersionL
   platform <- view platformL
   let pkgConfig = PackageConfig
-        { packageConfigEnableTests = False
-        , packageConfigEnableBenchmarks = False
-        , packageConfigFlags = flags
-        , packageConfigGhcOptions = ghcOptions
-        , packageConfigCabalConfigOpts = cabalConfigOpts
-        , packageConfigCompilerVersion = compiler
-        , packageConfigPlatform = platform
+        { enableTests = False
+        , enableBenchmarks = False
+        , flags
+        , ghcOptions
+        , cabalConfigOpts
+        , compilerVersion
+        , platform
         }
   resolvePackage pkgConfig <$> loadCabalFileImmutable loc
 
@@ -358,38 +373,7 @@ checkComponentsBuildable lps =
     prettyThrowM $ SomeTargetsNotBuildable unbuildable
  where
   unbuildable =
-    [ (packageName (lpPackage lp), c)
+    [ (lp.package.name, c)
     | lp <- lps
-    , c <- Set.toList (lpUnbuildable lp)
+    , c <- Set.toList lp.unbuildable
     ]
-
--- | Find if any sublibrary dependency (other than internal libraries) exists in
--- each project package.
-checkSubLibraryDependencies :: HasTerm env => [ProjectPackage] -> RIO env ()
-checkSubLibraryDependencies projectPackages =
-  forM_ projectPackages $ \projectPackage -> do
-    C.GenericPackageDescription pkgDesc _ _ lib subLibs foreignLibs exes tests benches <-
-      liftIO $ cpGPD . ppCommon $ projectPackage
-
-    let pName = pkgName . C.package $ pkgDesc
-        dependencies = concatMap getDeps subLibs <>
-                       concatMap getDeps foreignLibs <>
-                       concatMap getDeps exes <>
-                       concatMap getDeps tests <>
-                       concatMap getDeps benches <>
-                       maybe [] C.condTreeConstraints lib
-        notInternal (Dependency pName' _ _) = pName' /= pName
-        publicDependencies = filter notInternal dependencies
-        publicLibraries = concatMap (toList . depLibraries) publicDependencies
-
-    when (subLibDepExist publicLibraries) $
-      prettyWarnS
-        "Sublibrary dependency is not supported, this will almost certainly \
-        \fail."
- where
-  getDeps (_, C.CondNode _ dep _) = dep
-  subLibDepExist = any
-    ( \case
-        C.LSubLibName _ -> True
-        C.LMainLibName  -> False
-    )

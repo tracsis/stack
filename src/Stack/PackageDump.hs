@@ -1,5 +1,6 @@
-{-# LANGUAGE NoImplicitPrelude  #-}
-{-# LANGUAGE OverloadedStrings  #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings   #-}
 
 module Stack.PackageDump
   ( Line
@@ -21,13 +22,17 @@ import qualified Data.Conduit.Text as CT
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified Distribution.Text as C
+import           Distribution.Types.MungedPackageName
+                   ( decodeCompatPackageName )
 import           Path.Extra ( toFilePathNoTrailingSep )
 import           RIO.Process ( HasProcessContext )
 import qualified RIO.Text as T
+import           Stack.Component ( fromCabalName )
 import           Stack.GhcPkg ( createDatabase )
 import           Stack.Prelude
 import           Stack.Types.CompilerPaths ( GhcPkgExe (..), HasCompiler (..) )
-import           Stack.Types.DumpPackage ( DumpPackage (..) )
+import           Stack.Types.Component ( StackUnqualCompName(..) )
+import           Stack.Types.DumpPackage ( DumpPackage (..), SublibDump (..) )
 import           Stack.Types.GhcPkgId ( GhcPkgId, parseGhcPkgId )
 
 -- | Type representing exceptions thrown by functions exported by the
@@ -55,35 +60,48 @@ instance Exception PackageDumpException where
     , "."
     ]
 
--- | Call ghc-pkg dump with appropriate flags and stream to the given @Sink@,
--- for a single database
+-- | Call @ghc-pkg dump@ with appropriate flags and stream to the given sink,
+-- using either the global package database or the given package databases.
 ghcPkgDump ::
      (HasProcessContext env, HasTerm env)
   => GhcPkgExe
-  -> [Path Abs Dir] -- ^ if empty, use global
+  -> [Path Abs Dir]
+     -- ^ A list of package databases. If empty, use the global package
+     -- database.
   -> ConduitM Text Void (RIO env) a
+     -- ^ Sink.
   -> RIO env a
 ghcPkgDump pkgexe = ghcPkgCmdArgs pkgexe ["dump"]
 
--- | Call ghc-pkg describe with appropriate flags and stream to the given
--- @Sink@, for a single database
+-- | Call @ghc-pkg describe@ with appropriate flags and stream to the given
+-- sink, using either the global package database or the given package
+-- databases.
 ghcPkgDescribe ::
      (HasCompiler env, HasProcessContext env, HasTerm env)
   => GhcPkgExe
   -> PackageName
-  -> [Path Abs Dir] -- ^ if empty, use global
+  -> [Path Abs Dir]
+     -- ^ A list of package databases. If empty, use the global package
+     -- database.
   -> ConduitM Text Void (RIO env) a
+     -- ^ Sink.
   -> RIO env a
 ghcPkgDescribe pkgexe pkgName' = ghcPkgCmdArgs
-  pkgexe ["describe", "--simple-output", packageNameString pkgName']
+  pkgexe
+  ["describe", "--simple-output", packageNameString pkgName']
 
--- | Call ghc-pkg and stream to the given @Sink@, for a single database
+-- | Call @ghc-pkg@ and stream to the given sink, using the either the global
+-- package database or the given package databases.
 ghcPkgCmdArgs ::
      (HasProcessContext env, HasTerm env)
   => GhcPkgExe
   -> [String]
-  -> [Path Abs Dir] -- ^ if empty, use global
+     -- ^ A list of commands.
+  -> [Path Abs Dir]
+     -- ^ A list of package databases. If empty, use the global package
+     -- database.
   -> ConduitM Text Void (RIO env) a
+     -- ^ Sink.
   -> RIO env a
 ghcPkgCmdArgs pkgexe@(GhcPkgExe pkgPath) cmd mpkgDbs sink = do
   case reverse mpkgDbs of
@@ -95,8 +113,11 @@ ghcPkgCmdArgs pkgexe@(GhcPkgExe pkgPath) cmd mpkgDbs sink = do
   args = concat
     [ case mpkgDbs of
           [] -> ["--global", "--no-user-package-db"]
-          _ -> ["--user", "--no-user-package-db"] ++
-              concatMap (\pkgDb -> ["--package-db", toFilePathNoTrailingSep pkgDb]) mpkgDbs
+          _ ->   "--user"
+               : "--no-user-package-db"
+               : concatMap
+                   (\pkgDb -> ["--package-db", toFilePathNoTrailingSep pkgDb])
+                   mpkgDbs
     , cmd
     , ["--expand-pkgroot"]
     ]
@@ -149,14 +170,14 @@ sinkMatching :: Monad m
              -> ConduitM DumpPackage o m (Map PackageName DumpPackage)
 sinkMatching allowed =
     Map.fromList
-  . map (pkgName . dpPackageIdent &&& id)
+  . map (pkgName . (.packageIdent) &&& id)
   . Map.elems
   . pruneDeps
       id
-      dpGhcPkgId
-      dpDepends
+      (.ghcPkgId)
+      (.depends)
       const -- Could consider a better comparison in the future
-  <$> (CL.filter (isAllowed . dpPackageIdent) .| CL.consume)
+  <$> (CL.filter (isAllowed . (.packageIdent)) .| CL.consume)
  where
   isAllowed (PackageIdentifier name version) =
     case Map.lookup name allowed of
@@ -206,43 +227,46 @@ conduitDumpPackage = (.| CL.catMaybes) $ eachSection $ do
               _ -> Nothing
       depends <- mapMaybeM parseDepend $ concatMap T.words $ parseM "depends"
 
-      -- Handle sublibs by recording the name of the parent library
-      -- If name of parent library is missing, this is not a sublib.
-      let mkParentLib n = PackageIdentifier n version
-          parentLib = mkParentLib <$> (parseS "package-name" >>=
-                                       parsePackageNameThrowing . T.unpack)
-
-      let parseQuoted key =
+      -- Handle sub-libraries by recording the name of the parent library
+      -- If name of parent library is missing, this is not a sub-library.
+      let maybePackageName :: Maybe PackageName =
+            parseS "package-name" >>= parsePackageNameThrowing . T.unpack
+          maybeLibName = parseS "lib-name"
+          getLibNameFromLegacyName = case decodeCompatPackageName name of
+            MungedPackageName _parentPackageName (LSubLibName libName') ->
+              fromCabalName libName'
+            MungedPackageName _parentPackageName _ -> ""
+          libName =
+            maybe getLibNameFromLegacyName StackUnqualCompName maybeLibName
+          sublib = flip SublibDump libName <$> maybePackageName
+          parseQuoted key =
             case mapM (P.parseOnly (argsParser NoEscaping)) val of
               Left{} -> throwM (Couldn'tParseField key val)
               Right dirs -> pure (concat dirs)
            where
             val = parseM key
-      libDirPaths <- parseQuoted libDirKey
+      libDirs <- parseQuoted libDirKey
       haddockInterfaces <- parseQuoted "haddock-interfaces"
-      haddockHtml <- parseQuoted "haddock-html"
-
+      haddockHtml <- listToMaybe <$> parseQuoted "haddock-html"
       pure $ Just DumpPackage
-        { dpGhcPkgId = ghcPkgId
-        , dpPackageIdent = PackageIdentifier name version
-        , dpParentLibIdent = parentLib
-        , dpLicense = license
-        , dpLibDirs = libDirPaths
-        , dpLibraries = T.words $ T.unwords libraries
-        , dpHasExposedModules = not (null libraries || null exposedModules)
-
-        -- Strip trailing commas from ghc package exposed-modules (looks buggy to me...).
-        -- Then try to parse the module names.
-        , dpExposedModules =
+        { ghcPkgId
+        , packageIdent = PackageIdentifier name version
+        , sublib
+        , license
+        , libDirs
+        , libraries = T.words $ T.unwords libraries
+        , hasExposedModules = not (null libraries || null exposedModules)
+        -- Strip trailing commas from ghc package exposed-modules (looks buggy
+        -- to me...). Then try to parse the module names.
+        , exposedModules =
               Set.fromList
             $ mapMaybe (C.simpleParse . T.unpack . T.dropSuffix ",")
             $ T.words
             $ T.unwords exposedModules
-
-        , dpDepends = depends
-        , dpHaddockInterfaces = haddockInterfaces
-        , dpHaddockHtml = listToMaybe haddockHtml
-        , dpIsExposed = exposed == ["True"]
+        , depends
+        , haddockInterfaces
+        , haddockHtml
+        , isExposed = exposed == ["True"]
         }
 
 stripPrefixText :: Text -> Text -> Maybe Text

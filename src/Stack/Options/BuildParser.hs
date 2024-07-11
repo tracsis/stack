@@ -20,7 +20,7 @@ import           Stack.Options.Completion
                    ( flagCompleter, ghcOptsCompleter, targetCompleter )
 import           Stack.Options.PackageParser ( readFlag )
 import           Stack.Prelude
-import           Stack.Types.BuildOpts
+import           Stack.Types.BuildOptsCLI
                    ( ApplyCLIFlag, BuildCommand, BuildOptsCLI (..)
                    , BuildSubset (..), FileWatchOpts (..)
                    )
@@ -38,19 +38,24 @@ buildOptsParser cmd = BuildOptsCLI
             []
             ["-Wall", "-Werror"]
             (  long "pedantic"
-            <> help "Turn on -Wall and -Werror."
+            <> help "Pass the -Wall and -Werror flags to GHC, turning on all \
+                    \warnings that indicate potentially suspicious code and \
+                    \making all warnings into fatal errors. Can be overridden \
+                    \using Stack's --ghc-options option."
             )
       <*> flag
             []
             ["-O0"]
             (  long "fast"
-            <> help "Turn off optimizations (-O0)."
+            <> help "Pass a -O0 flag to GHC, turning off any GHC \
+                    \optimsations that have been set. Can be overridden using \
+                    \Stack's --ghc-options option."
             )
       <*> many (textOption
             (  long "ghc-options"
             <> metavar "OPTIONS"
             <> completer ghcOptsCompleter
-            <> help "Additional options passed to GHC (can be specified \
+            <> help "Additional options to be passed to GHC (can be specified \
                     \multiple times)."
             ))
       )
@@ -158,7 +163,7 @@ progsOptionsParser =
     , "alex"
     , "c2hs"
     , "cpphs"
---  , "doctest -- Not present in Cabal-1.22.5.0.
+    , "doctest"
     , "greencard"
     , "happy"
     , "hsc2hs"

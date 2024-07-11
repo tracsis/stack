@@ -1,5 +1,6 @@
-{-# LANGUAGE NoImplicitPrelude     #-}
-{-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings   #-}
 
 -- | Generate haddocks
 module Stack.Build.Haddock
@@ -9,15 +10,22 @@ module Stack.Build.Haddock
   , openHaddocksInBrowser
   , shouldHaddockDeps
   , shouldHaddockPackage
+  , generateLocalHaddockForHackageArchives
   ) where
 
+import qualified Codec.Archive.Tar as Tar
+import qualified Codec.Compression.GZip as GZip
 import qualified Data.Foldable as F
 import qualified Data.HashSet as HS
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import           Data.Time ( UTCTime )
-import           Path ( (</>), parent, parseRelDir )
+import           Distribution.Text ( display )
+import           Path
+                   ( (</>), addExtension, fromAbsDir, fromAbsFile, fromRelDir
+                   , parent, parseRelDir, parseRelFile
+                   )
 import           Path.Extra
                    ( parseCollapsedAbsFile, toFilePathNoTrailingSep
                    , tryGetModificationTime
@@ -26,17 +34,21 @@ import           Path.IO
                    ( copyDirRecur', doesFileExist, ensureDir, ignoringAbsence
                    , removeDirRecur
                    )
+import qualified RIO.ByteString.Lazy as BL
 import           RIO.List ( intercalate )
 import           RIO.Process ( HasProcessContext, withWorkingDir )
-import           Stack.Constants ( docDirSuffix, relDirAll, relFileIndexHtml )
-import           Stack.Prelude
+import           Stack.Constants
+                   ( docDirSuffix, htmlDirSuffix, relDirAll, relFileIndexHtml )
+import           Stack.Constants.Config ( distDirFromDir )
+import           Stack.Prelude hiding ( Display (..) )
 import           Stack.Types.Build.Exception ( BuildException (..) )
 import           Stack.Types.CompilerPaths
                    ( CompilerPaths (..), HasCompiler (..) )
 import           Stack.Types.ConfigureOpts ( BaseConfigOpts (..) )
-import           Stack.Types.BuildOpts
-                   ( BuildOpts (..), BuildOptsCLI (..), HaddockOpts (..) )
+import           Stack.Types.BuildOpts ( BuildOpts (..), HaddockOpts (..) )
+import           Stack.Types.BuildOptsCLI ( BuildOptsCLI (..) )
 import           Stack.Types.DumpPackage ( DumpPackage (..) )
+import           Stack.Types.EnvConfig ( HasEnvConfig (..) )
 import           Stack.Types.GhcPkgId ( GhcPkgId )
 import           Stack.Types.Package
                    ( InstallLocation (..), LocalPackage (..), Package (..) )
@@ -52,7 +64,7 @@ openHaddocksInBrowser ::
   -- ^ Build targets as determined by 'Stack.Build.Source.loadSourceMap'
   -> RIO env ()
 openHaddocksInBrowser bco pkgLocations buildTargets = do
-  let cliTargets = (boptsCLITargets . bcoBuildOptsCLI) bco
+  let cliTargets = bco.buildOptsCLI.targetsCLI
       getDocIndex = do
         let localDocs = haddockIndexFile (localDepsDocDir bco)
         localExists <- doesFileExist localDocs
@@ -98,13 +110,12 @@ shouldHaddockPackage ::
   -> Bool
 shouldHaddockPackage bopts wanted name =
   if Set.member name wanted
-    then boptsHaddock bopts
+    then bopts.buildHaddocks
     else shouldHaddockDeps bopts
 
 -- | Determine whether to build haddocks for dependencies.
 shouldHaddockDeps :: BuildOpts -> Bool
-shouldHaddockDeps bopts =
-  fromMaybe (boptsHaddock bopts) (boptsHaddockDeps bopts)
+shouldHaddockDeps bopts = fromMaybe bopts.buildHaddocks bopts.haddockDeps
 
 -- | Generate Haddock index and contents for local packages.
 generateLocalHaddockIndex ::
@@ -116,10 +127,10 @@ generateLocalHaddockIndex ::
 generateLocalHaddockIndex bco localDumpPkgs locals = do
   let dumpPackages =
         mapMaybe
-          ( \LocalPackage{lpPackage = Package{packageName, packageVersion}} ->
+          ( \LocalPackage {package = Package {name, version}} ->
               F.find
-                ( \dp -> dpPackageIdent dp ==
-                         PackageIdentifier packageName packageVersion
+                ( \dp -> dp.packageIdent ==
+                         PackageIdentifier name version
                 )
                 localDumpPkgs
           )
@@ -157,10 +168,10 @@ generateDepsHaddockIndex bco globalDumpPkgs snapshotDumpPkgs localDumpPkgs local
     depDocDir
  where
   getGhcPkgId :: LocalPackage -> Maybe GhcPkgId
-  getGhcPkgId LocalPackage{lpPackage = Package{packageName, packageVersion}} =
-    let pkgId = PackageIdentifier packageName packageVersion
-        mdpPkg = F.find (\dp -> dpPackageIdent dp == pkgId) localDumpPkgs
-    in  fmap dpGhcPkgId mdpPkg
+  getGhcPkgId LocalPackage {package = Package {name, version}} =
+    let pkgId = PackageIdentifier name version
+        mdpPkg = F.find (\dp -> dp.packageIdent == pkgId) localDumpPkgs
+    in  fmap (.ghcPkgId) mdpPkg
   findTransitiveDepends :: [GhcPkgId] -> [GhcPkgId]
   findTransitiveDepends = (`go` HS.empty) . HS.fromList
    where
@@ -170,7 +181,7 @@ generateDepsHaddockIndex bco globalDumpPkgs snapshotDumpPkgs localDumpPkgs local
         (ghcPkgId:_) ->
           let deps = case lookupDumpPackage ghcPkgId allDumpPkgs of
                        Nothing -> HS.empty
-                       Just pkgDP -> HS.fromList (dpDepends pkgDP)
+                       Just pkgDP -> HS.fromList pkgDP.depends
               deps' = deps `HS.difference` checked
               todo' = HS.delete ghcPkgId (deps' `HS.union` todo)
               checked' = HS.insert ghcPkgId checked
@@ -213,48 +224,53 @@ generateHaddockIndex descr bco dumpPackages docRelFP destDir = do
             Left _ -> True
             Right indexModTime ->
               or [mt > indexModTime | (_, mt, _, _) <- interfaceOpts]
+        prettyDescr = style Current (fromString $ T.unpack descr)
     if needUpdate
       then do
-        prettyInfoL
-          [ flow "Updating Haddock index for"
-          , style Current (fromString $ T.unpack descr)
-          , "in"
-          , pretty destIndexFile <> "."
-          ]
+        prettyInfo $
+             fillSep
+               [ flow "Updating Haddock index for"
+               , prettyDescr
+               , "in:"
+               ]
+          <> line
+          <> pretty destIndexFile
         liftIO (mapM_ copyPkgDocs interfaceOpts)
-        haddockExeName <- view $ compilerPathsL.to (toFilePath . cpHaddock)
+        haddockExeName <- view $ compilerPathsL . to (toFilePath . (.haddock))
         withWorkingDir (toFilePath destDir) $ readProcessNull
           haddockExeName
           ( map
               (("--optghc=-package-db=" ++ ) . toFilePathNoTrailingSep)
-                 [bcoSnapDB bco, bcoLocalDB bco]
-              ++ hoAdditionalArgs (boptsHaddockOpts (bcoBuildOpts bco))
+                 [bco.snapDB, bco.localDB]
+              ++ bco.buildOpts.haddockOpts.additionalArgs
               ++ ["--gen-contents", "--gen-index"]
               ++ [x | (xs, _, _, _) <- interfaceOpts, x <- xs]
           )
       else
-        prettyInfoL
-          [ flow "Haddock index for"
-          , style Current (fromString $ T.unpack descr)
-          , flow "already up to date at"
-          , pretty destIndexFile <> "."
-          ]
+        prettyInfo $
+             fillSep
+               [ flow "Haddock index for"
+               , prettyDescr
+               , flow "already up to date at:"
+               ]
+          <> line
+          <> pretty destIndexFile
  where
   toInterfaceOpt ::
        DumpPackage
     -> IO (Maybe ([String], UTCTime, Path Abs File, Path Abs File))
-  toInterfaceOpt DumpPackage {dpHaddockInterfaces, dpPackageIdent, dpHaddockHtml} =
-    case dpHaddockInterfaces of
+  toInterfaceOpt DumpPackage {haddockInterfaces, packageIdent, haddockHtml} =
+    case haddockInterfaces of
       [] -> pure Nothing
       srcInterfaceFP:_ -> do
         srcInterfaceAbsFile <- parseCollapsedAbsFile srcInterfaceFP
-        let (PackageIdentifier name _) = dpPackageIdent
+        let (PackageIdentifier name _) = packageIdent
             destInterfaceRelFP =
               docRelFP FP.</>
-              packageIdentifierString dpPackageIdent FP.</>
+              packageIdentifierString packageIdent FP.</>
               (packageNameString name FP.<.> "haddock")
             docPathRelFP =
-              fmap ((docRelFP FP.</>) . FP.takeFileName) dpHaddockHtml
+              fmap ((docRelFP FP.</>) . FP.takeFileName) haddockHtml
             interfaces = intercalate "," $ mcons docPathRelFP [srcInterfaceFP]
 
         destInterfaceAbsFile <-
@@ -306,7 +322,7 @@ haddockIndexFile destDir = destDir </> relFileIndexHtml
 
 -- | Path of local packages documentation directory.
 localDocDir :: BaseConfigOpts -> Path Abs Dir
-localDocDir bco = bcoLocalInstallRoot bco </> docDirSuffix
+localDocDir bco = bco.localInstallRoot </> docDirSuffix
 
 -- | Path of documentation directory for the dependencies of local packages
 localDepsDocDir :: BaseConfigOpts -> Path Abs Dir
@@ -314,4 +330,65 @@ localDepsDocDir bco = localDocDir bco </> relDirAll
 
 -- | Path of snapshot packages documentation directory.
 snapDocDir :: BaseConfigOpts -> Path Abs Dir
-snapDocDir bco = bcoSnapInstallRoot bco </> docDirSuffix
+snapDocDir bco = bco.snapInstallRoot </> docDirSuffix
+
+generateLocalHaddockForHackageArchives ::
+     (HasEnvConfig env, HasTerm env)
+  => [LocalPackage]
+  -> RIO env ()
+generateLocalHaddockForHackageArchives =
+  mapM_
+    ( \lp ->
+        let pkg = lp.package
+            pkgId = PackageIdentifier pkg.name pkg.version
+            pkgDir = parent lp.cabalFP
+        in generateLocalHaddockForHackageArchive pkgDir pkgId
+    )
+
+-- | Generate an archive file containing local Haddock documentation for
+-- Hackage, in a form accepted by Hackage.
+generateLocalHaddockForHackageArchive ::
+     (HasEnvConfig env, HasTerm env)
+  => Path Abs Dir
+     -- ^ The package directory.
+  -> PackageIdentifier
+     -- ^ The package name and version.
+  -> RIO env ()
+generateLocalHaddockForHackageArchive pkgDir pkgId = do
+  distDir <- distDirFromDir pkgDir
+  let pkgIdName = display pkgId
+      name = pkgIdName <> "-docs"
+      (nameRelDir, tarGzFileName) = fromMaybe
+        (error "impossible")
+        ( do relDir <- parseRelDir name
+             nameRelFile <- parseRelFile name
+             tarGz <- addExtension ".gz" =<< addExtension ".tar" nameRelFile
+             pure (relDir, tarGz)
+        )
+      tarGzFile = distDir </> tarGzFileName
+      docDir = distDir </> docDirSuffix </> htmlDirSuffix
+  createTarGzFile tarGzFile docDir nameRelDir
+  prettyInfo $
+       fillSep
+         [ flow "Archive of Haddock documentation for Hackage for"
+         , style Current (fromString pkgIdName)
+         , flow "created at:"
+         ]
+    <> line
+    <> pretty tarGzFile
+
+createTarGzFile ::
+     Path Abs File
+     -- ^ Full path to archive file
+  -> Path Abs Dir
+     -- ^ Base directory
+  -> Path Rel Dir
+     -- ^ Directory to archive, relative to base directory
+  -> RIO env ()
+createTarGzFile tar base dir = do
+   entries <- liftIO $ Tar.pack base' [dir']
+   BL.writeFile tar' $ GZip.compress $ Tar.write entries
+ where
+  base' = fromAbsDir base
+  dir' = fromRelDir dir
+  tar' = fromAbsFile tar

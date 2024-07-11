@@ -3,9 +3,9 @@
 # The `stack path` command
 
 ~~~text
-stack path [--stack-root] [--global-config] [--project-root] [--config-location]
-           [--bin-path] [--programs] [--compiler-exe] [--compiler-bin]
-           [--compiler-tools-bin] [--local-bin] [--extra-include-dirs]
+stack path [--stack-root] [--global-config] [--programs] [--local-bin]
+           [--project-root] [--config-location] [--bin-path] [--compiler-exe]
+           [--compiler-bin] [--compiler-tools-bin] [--extra-include-dirs]
            [--extra-library-dirs] [--snapshot-pkg-db] [--local-pkg-db]
            [--global-pkg-db] [--ghc-package-path] [--snapshot-install-root]
            [--local-install-root] [--snapshot-doc-root] [--local-doc-root]
@@ -22,8 +22,8 @@ Pass the following flags for information about specific files or locations:
 |--compiler-bin         |The directory containing the GHC executable.          |
 |--compiler-exe         |The GHC executable.                                   |
 |--compiler-tools-bin   |The directory containing binaries specific to a particular compiler.|
-|--config-location      |Stack's project-level YAML configuration file (`stack.yaml`).|
-|--dist-dir             |The dist working directory, relative to the package directory.|
+|--config-location      |Stack's project-level YAML configuration file (`stack.yaml`, by default).|
+|--dist-dir             |The dist work directory, relative to the package directory.|
 |--extra-include-dirs   |Extra include directories.                            |
 |--extra-library-dirs   |Extra library directories.                            |
 |--ghc-package-path     |The `GHC_PACKAGE_PATH` environment variable.          |
@@ -41,3 +41,9 @@ Pass the following flags for information about specific files or locations:
 |--snapshot-install-root|The root directory for snapshot installation.         |
 |--snapshot-pkg-db      |The snapshot package database.                        |
 |--stack-root           |The Stack root.                                       |
+
+The command also accepts flags and options of the
+[`stack build`](build_command.md#flags-affecting-ghcs-behaviour) command that
+affect the location of the local project installation directory, such as
+`--profile` and `--no-strip`. For further information, see the documentation of
+the [project Stack work directory](stack_work.md#project-stack-work-directory).

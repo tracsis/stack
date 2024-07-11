@@ -1,4 +1,6 @@
-{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE NoFieldSelectors    #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 
 module Stack.Types.EnvConfig
   ( EnvConfig (..)
@@ -45,7 +47,7 @@ import           Stack.Constants
 import           Stack.Prelude
 import           Stack.Types.BuildConfig
                     ( BuildConfig (..), HasBuildConfig (..), getProjectWorkDir )
-import           Stack.Types.BuildOpts ( BuildOptsCLI )
+import           Stack.Types.BuildOptsCLI ( BuildOptsCLI )
 import           Stack.Types.Compiler
                    ( ActualCompiler (..), compilerVersionString, getGhcVersion )
 import           Stack.Types.CompilerBuild ( compilerBuildSuffix )
@@ -62,54 +64,54 @@ import           Stack.Types.SourceMap
 
 -- | Configuration after the environment has been setup.
 data EnvConfig = EnvConfig
-  { envConfigBuildConfig :: !BuildConfig
-  , envConfigBuildOptsCLI :: !BuildOptsCLI
-  , envConfigFileDigestCache :: !FileDigestCache
-  , envConfigSourceMap :: !SourceMap
-  , envConfigSourceMapHash :: !SourceMapHash
-  , envConfigCompilerPaths :: !CompilerPaths
+  { buildConfig :: !BuildConfig
+  , buildOptsCLI :: !BuildOptsCLI
+  , fileDigestCache :: !FileDigestCache
+  , sourceMap :: !SourceMap
+  , sourceMapHash :: !SourceMapHash
+  , compilerPaths :: !CompilerPaths
   }
 
 instance HasConfig EnvConfig where
-  configL = buildConfigL.lens bcConfig (\x y -> x { bcConfig = y })
+  configL = buildConfigL . lens (.config) (\x y -> x { config = y })
   {-# INLINE configL #-}
 
 instance HasBuildConfig EnvConfig where
-  buildConfigL = envConfigL.lens
-    envConfigBuildConfig
-    (\x y -> x { envConfigBuildConfig = y })
+  buildConfigL = envConfigL . lens
+    (.buildConfig)
+    (\x y -> x { buildConfig = y })
 
 instance HasPlatform EnvConfig where
-  platformL = configL.platformL
+  platformL = configL . platformL
   {-# INLINE platformL #-}
-  platformVariantL = configL.platformVariantL
+  platformVariantL = configL . platformVariantL
   {-# INLINE platformVariantL #-}
 
 instance HasGHCVariant EnvConfig where
-  ghcVariantL = configL.ghcVariantL
+  ghcVariantL = configL . ghcVariantL
   {-# INLINE ghcVariantL #-}
 
 instance HasProcessContext EnvConfig where
-  processContextL = configL.processContextL
+  processContextL = configL . processContextL
 
 instance HasPantryConfig EnvConfig where
-  pantryConfigL = configL.pantryConfigL
+  pantryConfigL = configL . pantryConfigL
 
 instance HasCompiler EnvConfig where
-  compilerPathsL = to envConfigCompilerPaths
+  compilerPathsL = to (.compilerPaths)
 
 instance HasRunner EnvConfig where
-  runnerL = configL.runnerL
+  runnerL = configL . runnerL
 
 instance HasLogFunc EnvConfig where
-  logFuncL = runnerL.logFuncL
+  logFuncL = runnerL . logFuncL
 
 instance HasStylesUpdate EnvConfig where
-  stylesUpdateL = runnerL.stylesUpdateL
+  stylesUpdateL = runnerL . stylesUpdateL
 
 instance HasTerm EnvConfig where
-  useColorL = runnerL.useColorL
-  termWidthL = runnerL.termWidthL
+  useColorL = runnerL . useColorL
+  termWidthL = runnerL . termWidthL
 
 class (HasBuildConfig env, HasSourceMap env, HasCompiler env) => HasEnvConfig env where
   envConfigL :: Lens' env EnvConfig
@@ -122,7 +124,7 @@ class HasSourceMap env where
   sourceMapL :: Lens' env SourceMap
 
 instance HasSourceMap EnvConfig where
-  sourceMapL = lens envConfigSourceMap (\x y -> x { envConfigSourceMap = y })
+  sourceMapL = lens (.sourceMap) (\x y -> x { sourceMap = y })
 
 shouldForceGhcColorFlag ::
      (HasEnvConfig env, HasRunner env)
@@ -176,7 +178,7 @@ hoogleDatabasePath = do
 platformSnapAndCompilerRel :: HasEnvConfig env => RIO env (Path Rel Dir)
 platformSnapAndCompilerRel = do
   platform <- platformGhcRelDir
-  smh <- view $ envConfigL.to envConfigSourceMapHash
+  smh <- view $ envConfigL . to (.sourceMapHash)
   name <- smRelDir smh
   ghc <- compilerVersionDir
   useShaPathOnWindows (platform </> name </> ghc)
@@ -187,7 +189,7 @@ platformGhcRelDir ::
   => m (Path Rel Dir)
 platformGhcRelDir = do
   cp <- view compilerPathsL
-  let cbSuffix = compilerBuildSuffix $ cpBuild cp
+  let cbSuffix = compilerBuildSuffix cp.build
   verOnly <- platformGhcVerOnlyRelDirStr
   parseRelDir (mconcat [ verOnly, cbSuffix ])
 
@@ -239,7 +241,7 @@ packageDatabaseLocal = do
 packageDatabaseExtra ::
      (HasEnvConfig env, MonadReader env m)
   => m [Path Abs Dir]
-packageDatabaseExtra = view $ buildConfigL.to bcExtraPackageDBs
+packageDatabaseExtra = view $ buildConfigL . to (.extraPackageDBs)
 
 -- | Where HPC reports and tix files get stored.
 hpcReportDir :: HasEnvConfig env => RIO env (Path Abs Dir)
@@ -263,7 +265,7 @@ extraBinDirs = do
 -- than that specified in the 'SnapshotDef' and returned by
 -- 'wantedCompilerVersionL'.
 actualCompilerVersionL :: HasSourceMap env => SimpleGetter env ActualCompiler
-actualCompilerVersionL = sourceMapL.to smCompiler
+actualCompilerVersionL = sourceMapL . to (.compiler)
 
 -- | Relative directory for the platform and GHC identifier without GHC bindist
 -- build

@@ -54,9 +54,10 @@ further information see `stack --docker-help` or the
 
 Default: Dump warning logs
 
-Enables/disables the dumping of the build output logs for local packages to the
-console. For further information, see the documentation for the corresponding
-non-project specific configuration [option](yaml_configuration.md#dump-logs).
+Enables/disables the dumping of the build output logs for project packages to
+the console. For further information, see the documentation for the
+corresponding non-project specific configuration
+[option](yaml_configuration.md#dump-logs).
 
 ## `--extra-include-dirs` option
 
@@ -172,17 +173,8 @@ it, it is best omitted from the debug output.
 
 ## `--resolver` option
 
-Pass the option `--resolver <snapshot>` to specify the snapshot. For further
-information, see the
-[YAML configuration](yaml_configuration.md#resolver-or-snapshot) documentation.
-
-At the command line (only):
-
-*   `--resolver lts-<major_version>` specifies the latest Stackage LTS Haskell
-    snapshot with the specified major version;
-*   `--resolver lts` specifies, from those with the greatest major version, the
-    latest Stackage LTS Haskell snapshot; and
-*   `--resolver nightly` specifies the most recent Stackage Nightly snapshot.
+A synonym for the [`--snapshot` option](#snapshot-option) to specify the
+snapshot resolver.
 
 ## `--[no-]rsl-in-log` flag
 
@@ -219,9 +211,31 @@ Restrictions: Windows systems only
 
 Default: Disabled
 
-Enables/disables the skipping of installing MSYS2. For further information, see
-the documentation for the corresponding non-project specific configuration
+Enables/disables the skipping of checking for the Stack-supplied MSYS2 (and
+installing that MSYS2, if it is not installed) when Stack is setting up the
+environment. For further information, see the documentation for the
+corresponding non-project specific configuration
 [option](yaml_configuration.md#skip-msys).
+
+## `--snapshot` option
+
+[:octicons-tag-24: 2.15.1](https://github.com/commercialhaskell/stack/releases/tag/v2.15.1)
+
+Pass the option `--snapshot <snapshot>` to specify the snapshot. For further
+information, see the [YAML configuration](yaml_configuration.md#snapshot)
+documentation.
+
+At the command line (only):
+
+*   `--snapshot lts-<major_version>` specifies the latest Stackage LTS Haskell
+    snapshot with the specified major version;
+*   `--snapshot lts` specifies, from those with the greatest major version, the
+    latest Stackage LTS Haskell snapshot;
+*   `--snapshot nightly` specifies the most recent Stackage Nightly snapshot;
+    and
+*   `--snapshot global` specifies the snapshot specified by the project-level
+    configuration file in the `global-project` directory in the
+    [Stack root](stack_root.md#global-project-directory).
 
 ## `--stack-colors` or `--stack-colours` options
 

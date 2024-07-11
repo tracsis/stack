@@ -1,6 +1,7 @@
 {-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE NoFieldSelectors    #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings   #-}
-{-# LANGUAGE RecordWildCards     #-}
 
 -- | Run commands in Docker containers
 module Stack.Docker
@@ -75,7 +76,7 @@ import           Stack.Types.Docker
                   )
 import           Stack.Types.DockerEntrypoint
                    ( DockerEntrypoint (..), DockerUser (..) )
-import           Stack.Types.Runner ( terminalL )
+import           Stack.Types.Runner ( HasDockerEntrypointMVar (..), terminalL )
 import           Stack.Types.Version ( showStackVersion, withinRange )
 import           System.Environment
                    ( getArgs, getEnv, getEnvironment, getExecutablePath
@@ -83,7 +84,6 @@ import           System.Environment
                    )
 import qualified System.FilePath as FP
 import           System.IO.Error ( isDoesNotExistError )
-import           System.IO.Unsafe ( unsafePerformIO )
 import qualified System.Posix.User as User
 import qualified System.PosixCompat.Files as Files
 import           System.Terminal ( hIsTerminalDeviceOrMinTTY )
@@ -98,26 +98,33 @@ getCmdArgs ::
   -> RIO env (FilePath,[String],[(String,String)],[Mount])
 getCmdArgs docker imageInfo isRemoteDocker = do
     config <- view configL
-    deUser <-
-        if fromMaybe (not isRemoteDocker) (dockerSetUser docker)
+    user <-
+        if fromMaybe (not isRemoteDocker) docker.setUser
             then liftIO $ do
-              duUid <- User.getEffectiveUserID
-              duGid <- User.getEffectiveGroupID
-              duGroups <- nubOrd <$> User.getGroups
-              duUmask <- Files.setFileCreationMask 0o022
+              uid <- User.getEffectiveUserID
+              gid <- User.getEffectiveGroupID
+              groups <- nubOrd <$> User.getGroups
+              umask <- Files.setFileCreationMask 0o022
               -- Only way to get old umask seems to be to change it, so set it back afterward
-              _ <- Files.setFileCreationMask duUmask
-              pure (Just DockerUser{..})
+              _ <- Files.setFileCreationMask umask
+              pure $ Just DockerUser
+                { uid
+                , gid
+                , groups
+                , umask
+                }
             else pure Nothing
     args <-
         fmap
-            (["--" ++ reExecArgName ++ "=" ++ showStackVersion
-             ,"--" ++ dockerEntrypointArgName
-             ,show DockerEntrypoint{..}] ++)
-            (liftIO getArgs)
-    case dockerStackExe (configDocker config) of
+          (  [ "--" ++ reExecArgName ++ "=" ++ showStackVersion
+             , "--" ++ dockerEntrypointArgName
+             , show DockerEntrypoint { user }
+             ] ++
+          )
+          (liftIO getArgs)
+    case config.docker.stackExe of
         Just DockerStackExeHost
-          | configPlatform config == dockerContainerPlatform -> do
+          | config.platform == dockerContainerPlatform -> do
               exePath <- resolveFile' =<< liftIO getExecutablePath
               cmdArgs args exePath
           | otherwise -> throwIO UnsupportedStackExeHostPlatformException
@@ -127,13 +134,13 @@ getCmdArgs docker imageInfo isRemoteDocker = do
         Just (DockerStackExePath path) -> cmdArgs args path
         Just DockerStackExeDownload -> exeDownload args
         Nothing
-          | configPlatform config == dockerContainerPlatform -> do
-              (exePath,exeTimestamp,misCompatible) <-
+          | config.platform == dockerContainerPlatform -> do
+              (exePath, exeTimestamp, misCompatible) <-
                   do exePath <- resolveFile' =<< liftIO getExecutablePath
                      exeTimestamp <- getModificationTime exePath
                      isKnown <-
                          loadDockerImageExeCache
-                             (iiId imageInfo)
+                             imageInfo.iiId
                              exePath
                              exeTimestamp
                      pure (exePath, exeTimestamp, isKnown)
@@ -148,7 +155,7 @@ getCmdArgs docker imageInfo isRemoteDocker = do
                               [ "run"
                               , "-v"
                               , toFilePath exePath ++ ":" ++ "/tmp/stack"
-                              , T.unpack (iiId imageInfo)
+                              , T.unpack imageInfo.iiId
                               , "/tmp/stack"
                               , "--version"]
                               sinkNull
@@ -158,7 +165,7 @@ getCmdArgs docker imageInfo isRemoteDocker = do
                                   Left ExitCodeException{} -> False
                                   Right _ -> True
                       saveDockerImageExeCache
-                          (iiId imageInfo)
+                          imageInfo.iiId
                           exePath
                           exeTimestamp
                           compatible
@@ -193,9 +200,9 @@ preventInContainer inner =
 runContainerAndExit :: HasConfig env => RIO env void
 runContainerAndExit = do
   config <- view configL
-  let docker = configDocker config
+  let docker = config.docker
   checkDockerVersion docker
-  (env,isStdinTerminal,isStderrTerminal,homeDir) <- liftIO $
+  (env, isStdinTerminal, isStderrTerminal, homeDir) <- liftIO $
     (,,,)
     <$> getEnvironment
     <*> hIsTerminalDeviceOrMinTTY stdin
@@ -210,17 +217,17 @@ runContainerAndExit = do
       muserEnv = lookup "USER" env
       isRemoteDocker = maybe False (isPrefixOf "tcp://") dockerHost
   mstackYaml <- for (lookup "STACK_YAML" env) RIO.Directory.makeAbsolute
-  image <- either throwIO pure (dockerImage docker)
+  image <- either throwIO pure docker.image
   when
     ( isRemoteDocker && maybe False (isInfixOf "boot2docker") dockerCertPath )
     ( prettyWarnS
         "Using boot2docker is NOT supported, and not likely to perform well."
     )
   maybeImageInfo <- inspect image
-  imageInfo@Inspect{..} <- case maybeImageInfo of
+  imageInfo <- case maybeImageInfo of
     Just ii -> pure ii
     Nothing
-      | dockerAutoPull docker -> do
+      | docker.autoPull -> do
           pullImage docker image
           mii2 <- inspect image
           case mii2 of
@@ -229,16 +236,16 @@ runContainerAndExit = do
       | otherwise -> throwM (NotPulledException image)
   projectRoot <- getProjectRoot
   sandboxDir <- projectDockerSandboxDir projectRoot
-  let ImageConfig {..} = iiConfig
-      imageEnvVars = map (break (== '=')) icEnv
+  let ic = imageInfo.config
+      imageEnvVars = map (break (== '=')) ic.env
       platformVariant = show $ hashRepoName image
       stackRoot = view stackRootL config
       sandboxHomeDir = sandboxDir </> homeDirName
-      isTerm = not (dockerDetach docker) &&
+      isTerm = not docker.detach &&
                isStdinTerminal &&
                isStdoutTerminal &&
                isStderrTerminal
-      keepStdinOpen = not (dockerDetach docker) &&
+      keepStdinOpen = not docker.detach &&
                       -- Workaround for https://github.com/docker/docker/issues/12319
                       -- This is fixed in Docker 1.9.1, but will leave the workaround
                       -- in place for now, for users who haven't upgraded yet.
@@ -271,7 +278,7 @@ runContainerAndExit = do
       (Files.createSymbolicLink
         (toFilePathNoTrailingSep sshDir)
         (toFilePathNoTrailingSep (sandboxHomeDir </> sshRelDir))))
-  let mountSuffix = maybe "" (":" ++) (dockerMountMode docker)
+  let mountSuffix = maybe "" (":" ++) docker.mountMode
   containerID <- withWorkingDir (toFilePath projectRoot) $
     trim . decodeUtf8 <$> readDockerProcess
       ( concat
@@ -296,7 +303,7 @@ runContainerAndExit = do
               toFilePathNoTrailingSep sandboxHomeDir ++ mountSuffix
           , "-w", toFilePathNoTrailingSep pwd
           ]
-        , case dockerNetwork docker of
+        , case docker.network of
             Nothing -> ["--net=host"]
             Just name -> ["--net=" ++ name]
         , case muserEnv of
@@ -317,19 +324,19 @@ runContainerAndExit = do
            -- Disable the deprecated entrypoint in FP Complete-generated images
         , [ "--entrypoint=/usr/bin/env"
           |  isJust (lookupImageEnv oldSandboxIdEnvVar imageEnvVars)
-          && (  icEntrypoint == ["/usr/local/sbin/docker-entrypoint"]
-             || icEntrypoint == ["/root/entrypoint.sh"]
+          && (  ic.entrypoint == ["/usr/local/sbin/docker-entrypoint"]
+             || ic.entrypoint == ["/root/entrypoint.sh"]
              )
           ]
         , concatMap (\(k,v) -> ["-e", k ++ "=" ++ v]) envVars
-        , concatMap (mountArg mountSuffix) (extraMount ++ dockerMount docker)
-        , concatMap (\nv -> ["-e", nv]) (dockerEnv docker)
-        , case dockerContainerName docker of
+        , concatMap (mountArg mountSuffix) (extraMount ++ docker.mount)
+        , concatMap (\nv -> ["-e", nv]) docker.env
+        , case docker.containerName of
             Just name -> ["--name=" ++ name]
             Nothing -> []
         , ["-t" | isTerm]
         , ["-i" | keepStdinOpen]
-        , dockerRunArgs docker
+        , docker.runArgs
         , [image]
         , [cmnd]
         , args
@@ -380,7 +387,7 @@ inspects images = do
       -- containing invalid UTF-8
       case eitherDecode (LBS.pack (filter isAscii (decodeUtf8 inspectOut))) of
         Left msg -> throwIO (InvalidInspectOutputException msg)
-        Right results -> pure (Map.fromList (map (\r -> (iiId r,r)) results))
+        Right results -> pure (Map.fromList (map (\r -> (r.iiId, r)) results))
     Left ece
       | any (`LBS.isPrefixOf` eceStderr ece) missingImagePrefixes ->
           pure Map.empty
@@ -392,9 +399,9 @@ inspects images = do
 pull :: HasConfig env => RIO env ()
 pull = do
   config <- view configL
-  let docker = configDocker config
+  let docker = config.docker
   checkDockerVersion docker
-  either throwIO (pullImage docker) (dockerImage docker)
+  either throwIO (pullImage docker) docker.image
 
 -- | Pull Docker image from registry.
 pullImage :: (HasProcessContext env, HasTerm env)
@@ -406,14 +413,14 @@ pullImage docker image = do
     [ flow "Pulling image from registry:"
     , style Current (fromString image) <> "."
     ]
-  when (dockerRegistryLogin docker) $ do
+  when docker.registryLogin $ do
     prettyInfoS "You may need to log in."
     proc
       "docker"
       ( concat
           [ ["login"]
-          , maybe [] (\n -> ["--username=" ++ n]) (dockerRegistryUsername docker)
-          , maybe [] (\p -> ["--password=" ++ p]) (dockerRegistryPassword docker)
+          , maybe [] (\n -> ["--username=" ++ n]) docker.registryUsername
+          , maybe [] (\p -> ["--password=" ++ p]) docker.registryPassword
           , [takeWhile (/= '/') image]
           ]
       )
@@ -448,8 +455,8 @@ checkDockerVersion docker = do
             throwIO (DockerTooOldException minimumDockerVersion v')
           | v' `elem` prohibitedDockerVersions ->
             throwIO (DockerVersionProhibitedException prohibitedDockerVersions v')
-          | not (v' `withinRange` dockerRequireDockerVersion docker) ->
-            throwIO (BadDockerVersionException (dockerRequireDockerVersion docker) v')
+          | not (v' `withinRange` docker.requireDockerVersion) ->
+            throwIO (BadDockerVersionException docker.requireDockerVersion v')
           | otherwise ->
             pure ()
         _ -> throwIO InvalidVersionOutputException
@@ -476,11 +483,13 @@ reset keepHome = do
 -- | The Docker container "entrypoint": special actions performed when first
 -- entering a container, such as switching the UID/GID to the "outside-Docker"
 -- user's.
-entrypoint :: (HasProcessContext env, HasLogFunc env)
-           => Config
-           -> DockerEntrypoint
-           -> RIO env ()
-entrypoint config@Config{} DockerEntrypoint{..} =
+entrypoint ::
+     (HasDockerEntrypointMVar env, HasProcessContext env, HasLogFunc env)
+  => Config
+  -> DockerEntrypoint
+  -> RIO env ()
+entrypoint config@Config{} de = do
+  entrypointMVar <- view dockerEntrypointMVarL
   modifyMVar_ entrypointMVar $ \alreadyRan -> do
     -- Only run the entrypoint once
     unless alreadyRan $ do
@@ -490,7 +499,7 @@ entrypoint config@Config{} DockerEntrypoint{..} =
       estackUserEntry0 <- liftIO $ tryJust (guard . isDoesNotExistError) $
         User.getUserEntryForName stackUserName
       -- Switch UID/GID if needed, and update user's home directory
-      case deUser of
+      case de.user of
         Nothing -> pure ()
         Just (DockerUser 0 _ _ _) -> pure ()
         Just du -> withProcessContext envOverride $
@@ -515,51 +524,51 @@ entrypoint config@Config{} DockerEntrypoint{..} =
                 copyFile srcBuildPlan destBuildPlan
     pure True
  where
-  updateOrCreateStackUser estackUserEntry homeDir DockerUser{..} = do
+  updateOrCreateStackUser estackUserEntry homeDir du = do
     case estackUserEntry of
       Left _ -> do
         -- If no 'stack' user in image, create one with correct UID/GID and home
         -- directory
         readProcessNull "groupadd"
-          ["-o"
-          ,"--gid",show duGid
-          ,stackUserName]
+          [ "-o"
+          , "--gid",show du.gid
+          , stackUserName
+          ]
         readProcessNull "useradd"
-          ["-oN"
-          ,"--uid",show duUid
-          ,"--gid",show duGid
-          ,"--home",toFilePathNoTrailingSep homeDir
-          ,stackUserName]
+          [ "-oN"
+          , "--uid", show du.uid
+          , "--gid", show du.gid
+          , "--home", toFilePathNoTrailingSep homeDir
+          , stackUserName
+          ]
       Right _ -> do
         -- If there is already a 'stack' user in the image, adjust its UID/GID
         -- and home directory
         readProcessNull "usermod"
-          ["-o"
-          ,"--uid",show duUid
-          ,"--home",toFilePathNoTrailingSep homeDir
-          ,stackUserName]
+          [ "-o"
+          , "--uid", show du.uid
+          , "--home", toFilePathNoTrailingSep homeDir
+          , stackUserName
+          ]
         readProcessNull "groupmod"
-          ["-o"
-          ,"--gid",show duGid
-          ,stackUserName]
-    forM_ duGroups $ \gid ->
+          [ "-o"
+          , "--gid", show du.gid
+          , stackUserName
+          ]
+    forM_ du.groups $ \gid ->
       readProcessNull "groupadd"
-        ["-o"
-        ,"--gid",show gid
-        ,"group" ++ show gid]
+        [ "-o"
+        , "--gid", show gid
+        , "group" ++ show gid
+        ]
     -- 'setuid' to the wanted UID and GID
     liftIO $ do
-      User.setGroupID duGid
-      handleSetGroups duGroups
-      User.setUserID duUid
-      _ <- Files.setFileCreationMask duUmask
+      User.setGroupID du.gid
+      handleSetGroups du.groups
+      User.setUserID du.uid
+      _ <- Files.setFileCreationMask du.umask
       pure ()
   stackUserName = "stack" :: String
-
--- | MVar used to ensure the Docker entrypoint is performed exactly once
-entrypointMVar :: MVar Bool
-{-# NOINLINE entrypointMVar #-}
-entrypointMVar = unsafePerformIO (newMVar False)
 
 -- | Remove the contents of a directory, without removing the directory itself.
 -- This is used instead of 'FS.removeTree' to clear bind-mounted directories,
@@ -609,7 +618,7 @@ decodeUtf8 bs = T.unpack (T.decodeUtf8 bs)
 -- | Fail with friendly error if project root not set.
 getProjectRoot :: HasConfig env => RIO env (Path Abs Dir)
 getProjectRoot = do
-  mroot <- view $ configL.to configProjectRoot
+  mroot <- view $ configL . to configProjectRoot
   maybe (throwIO CannotDetermineProjectRootException) pure mroot
 
 -- | Environment variable that contained the old sandbox ID.
@@ -619,10 +628,10 @@ oldSandboxIdEnvVar = "DOCKER_SANDBOX_ID"
 
 -- | Parsed result of @docker inspect@.
 data Inspect = Inspect
-  { iiConfig      :: ImageConfig
-  , iiCreated     :: UTCTime
-  , iiId          :: Text
-  , iiVirtualSize :: Maybe Integer
+  { config      :: ImageConfig
+  , created     :: UTCTime
+  , iiId        :: Text
+  , virtualSize :: Maybe Integer
   }
   deriving Show
 
@@ -638,8 +647,8 @@ instance FromJSON Inspect where
 
 -- | Parsed @Config@ section of @docker inspect@ output.
 data ImageConfig = ImageConfig
-  { icEnv :: [String]
-  , icEntrypoint :: [String]
+  { env :: [String]
+  , entrypoint :: [String]
   }
   deriving Show
 

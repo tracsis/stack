@@ -1,5 +1,6 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings   #-}
 
 module Stack.Options.Completion
   ( ghcOptsCompleter
@@ -57,12 +58,12 @@ buildConfigCompleter inner = mkCompleter $ \inputRaw -> do
     ('-': _) -> pure []
     _ -> do
       go' <- globalOptsFromMonoid False mempty
-      let go = go' { globalLogLevel = LevelOther "silent" }
+      let go = go' { logLevel = LevelOther "silent" }
       withRunnerGlobal go $ withConfig NoReexec $ withDefaultEnvConfig $ inner input
 
 targetCompleter :: Completer
 targetCompleter = buildConfigCompleter $ \input -> do
-  packages <- view $ buildConfigL.to (smwProject . bcSMWanted)
+  packages <- view $ buildConfigL . to (.smWanted.project)
   comps <- for packages ppComponents
   pure $
     concatMap
@@ -75,7 +76,7 @@ targetCompleter = buildConfigCompleter $ \input -> do
 flagCompleter :: Completer
 flagCompleter = buildConfigCompleter $ \input -> do
   bconfig <- view buildConfigL
-  gpds <- for (smwProject $ bcSMWanted bconfig) ppGPD
+  gpds <- for bconfig.smWanted.project ppGPD
   let wildcardFlags
         = nubOrd
         $ concatMap (\(name, gpd) ->
@@ -90,8 +91,8 @@ flagCompleter = buildConfigCompleter $ \input -> do
         let flname = C.unFlagName $ C.flagName fl
         in  (if flagEnabled name fl then "-" else "") ++ flname
       prjFlags =
-        case configProject (bcConfig bconfig) of
-          PCProject (p, _) -> projectFlags p
+        case bconfig.config.project of
+          PCProject (p, _) -> p.flagsByPkg
           PCGlobalProject -> mempty
           PCNoProject _ -> mempty
       flagEnabled name fl =
@@ -106,7 +107,7 @@ flagCompleter = buildConfigCompleter $ \input -> do
 
 projectExeCompleter :: Completer
 projectExeCompleter = buildConfigCompleter $ \input -> do
-  packages <- view $ buildConfigL.to (smwProject . bcSMWanted)
+  packages <- view $ buildConfigL . to (.smWanted.project)
   gpds <- Map.traverseWithKey (const ppGPD) packages
   pure
     $ filter (input `isPrefixOf`)

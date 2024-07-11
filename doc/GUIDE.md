@@ -37,8 +37,8 @@ learning style.
 
 To build your project, Stack uses a project-level configuration file, named
 `stack.yaml`, in the root directory of your project as a sort of blueprint. That
-file contains a reference, called a __resolver__, to the snapshot which your
-package will be built against.
+file contains a reference to the snapshot (also known as a __resolver__) which
+your package will be built against.
 
 Finally, Stack is __isolated__: it will not make changes outside of specific
 Stack directories. Stack-built files generally go in either the Stack root
@@ -248,22 +248,24 @@ this:
 
 ~~~yaml
 resolver:
-  url: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/lts/21/8.yaml
+  url: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/lts/22/21.yaml
 packages:
 - .
 ~~~
 
-The value of the `resolver` key tells Stack *how* to build your package: which
-GHC version to use, versions of package dependencies, and so on. Our value here
-says to use [LTS Haskell 21.13](https://www.stackage.org/lts-21.13), which
-implies GHC 9.4.7 (which is why `stack build` installs that version of GHC if it
-is not already available to Stack). There are a number of values you can use for
-`resolver`, which we'll cover later.
+The value of the [`resolver`](yaml_configuration.md#resolver) key tells Stack
+*how* to build your package: which GHC version to use, versions of package
+dependencies, and so on. Our value here says to use
+[LTS Haskell 22.21](https://www.stackage.org/lts-22.21), which implies GHC 9.6.5
+(which is why `stack build` installs that version of GHC if it is not already
+available to Stack). There are a number of values you can use for `resolver`,
+which we'll cover later.
 
-The value of the `packages` key tells Stack which local packages to build. In
-our simple example, we have only a single package in our project, located in the
-same directory, so '`.`' suffices. However, Stack has powerful support for
-multi-package projects, which we'll elaborate on as this guide progresses.
+The value of the `packages` key tells Stack which project packages, located
+locally, to build. In our simple example, we have only a single project package,
+located in the same directory, so '`.`' suffices. However, Stack has powerful
+support for multi-package projects, which we'll elaborate on as this guide
+progresses.
 
 Another file important to the build is `package.yaml`.
 
@@ -284,7 +286,7 @@ language pragmas, and so on.
 In this guide, we'll discuss the bare minimum necessary to understand how to
 modify a `package.yaml` file. You can see a full list of the available options
 at the [Hpack documentation](https://github.com/sol/hpack#quick-reference). The
-Cabal User Guide the definitive reference for the
+Cabal User Guide is the definitive reference for the
 [Cabal file format](https://cabal.readthedocs.io/en/stable/cabal-package.html).
 
 ### The location of GHC
@@ -403,9 +405,9 @@ stack build
 ~~~
 
 This output means that the `text` package was downloaded, configured, built, and
-locally installed. Once that was done, we moved on to building our local package
-(`helloworld`). At no point did we need to ask Stack to build dependencies — it
-does so automatically.
+locally installed. Once that was done, we moved on to building our project
+package (`helloworld`). At no point did we need to ask Stack to build
+dependencies — it does so automatically.
 
 ### Listing Dependencies
 
@@ -479,7 +481,7 @@ This brings us to the next major topic in using Stack.
 ## Curated package sets
 
 Remember above when `stack new` selected some
-[LTS resolver](https://github.com/commercialhaskell/lts-haskell#readme) for us?
+[LTS snapshot](https://github.com/commercialhaskell/lts-haskell#readme) for us?
 That defined our build plan and available packages. When we tried using the
 `text` package, it just worked, because it was part of the LTS *package set*.
 
@@ -489,22 +491,21 @@ failed.
 
 To add `acme-missiles` to the available packages, we'll use the `extra-deps` key
 in the `stack.yaml` file. That key defines extra packages, not present in the
-resolver, that will be needed as dependencies. You can add this like so:
+snapshot, that will be needed as dependencies. You can add this like so:
 
 ~~~yaml
 extra-deps:
-- acme-missiles-0.3 # not in the LTS resolver
+- acme-missiles-0.3 # not in the LTS snapshot
 ~~~
 
 Now `stack build` will succeed.
 
 With that out of the way, let's dig a little bit more into these package sets,
-also known as *snapshots*. We mentioned the LTS resolvers, and you can get quite
+also known as *snapshots*. We mentioned the LTS snapshots, and you can get quite
 a bit of information about it at
 [https://www.stackage.org/lts](https://www.stackage.org/lts), including:
 
-* The appropriate resolver value (`resolver: lts-21.13`, as is currently the
-  latest LTS)
+* The appropriate value (`lts-22.13`, as is currently the latest LTS)
 * The GHC version used
 * A full list of all packages available in this snapshot
 * The ability to perform a Hoogle search on the packages in this snapshot
@@ -520,34 +521,34 @@ about them on the
 If you're not sure which to use, start with LTS Haskell (which Stack will lean
 towards by default as well).
 
-## Resolvers and changing your compiler version
+## Snapshots and changing your compiler version
 
-Let's explore package sets a bit further. Instead of `lts-21.13`, let's change
+Let's explore package sets a bit further. Instead of `lts-22.13`, let's change
 our `stack.yaml` file to use the
 [latest nightly](https://www.stackage.org/nightly). Right now, this is currently
-2023-09-24 - please see the resolver from the link above to get the latest.
+2024-03-20 - please see the snapshot from the link above to get the latest.
 
 Then, commanding `stack build` again will produce:
 
 ~~~text
 stack build
-# Downloaded nightly-2023-09-24 build plan.
+# Downloaded nightly-2024-03-20 build plan.
 # build output ...
 ~~~
 
-We can also change resolvers on the command line, which can be useful in a
+We can also change snapshots on the command line, which can be useful in a
 Continuous Integration (CI) setting, like on Travis. For example, command:
 
 ~~~text
-stack --resolver lts-20.26 build
-# Downloaded lts-20.26 build plan.
+stack --snapshot lts-21.25 build
+# Downloaded lts-21.25 build plan.
 # build output ...
 ~~~
 
 When passed on the command line, you also get some additional "short-cut"
-versions of resolvers: `--resolver nightly` will use the newest Nightly resolver
-available, `--resolver lts` will use the newest LTS, and `--resolver lts-21`
-will use the newest LTS in the 21.x series. The reason these are only available
+versions of snapshots: `--snapshot nightly` will use the newest Nightly snapshot
+available, `--snapshot lts` will use the newest LTS, and `--snapshot lts-22`
+will use the newest LTS in the 22.x series. The reason these are only available
 on the command line and not in your `stack.yaml` file is that using them:
 
 1. Will slow down your build (since Stack then needs to download information on
@@ -557,11 +558,11 @@ on the command line and not in your `stack.yaml` file is that using them:
 
 ### Changing GHC versions
 
-Finally, let's try using an older LTS snapshot. We'll use the newest 19.x
+Finally, let's try using an older LTS snapshot. We'll use the newest 21.x
 snapshot with the command:
 
 ~~~text
-stack --resolver lts-19 build
+stack --snapshot lts-21 build
 # build output ...
 ~~~
 
@@ -569,9 +570,9 @@ This succeeds, automatically installing the necessary GHC along the way. So, we
 see that different LTS versions use different GHC versions and Stack can handle
 that.
 
-### Other resolver values
+### Other snapshot values
 
-We've mentioned `nightly-YYYY-MM-DD` and `lts-X.Y` values for the resolver.
+We've mentioned `nightly-YYYY-MM-DD` and `lts-X.Y` values for the snapshot.
 There are actually other options available, and the list will grow over time.
 At the time of writing:
 
@@ -579,7 +580,7 @@ At the time of writing:
 * Experimental custom snapshot support
 
 The most up-to-date information can always be found in the
-[stack.yaml documentation](yaml_configuration.md#resolver).
+[stack.yaml documentation](yaml_configuration.md#snapshot).
 
 ## Existing projects
 
@@ -664,7 +665,7 @@ commented out under the `packages` field. In case wrong packages are excluded
 you can uncomment the right one and comment the other one.
 
 Packages may get excluded due to conflicting requirements among user packages or
-due to conflicting requirements between a user package and the resolver
+due to conflicting requirements between a user package and the snapshot
 compiler. If all of the packages have a conflict with the compiler then all of
 them may get commented out.
 
@@ -672,15 +673,15 @@ When packages are commented out you will see a warning every time you run a
 command which needs the configuration file. The warning can be disabled by
 editing the configuration file and removing it.
 
-#### Using a specific resolver
+#### Using a specific snapshot
 
-Sometimes you may want to use a specific resolver for your project instead of
+Sometimes you may want to use a specific snapshot for your project instead of
 `stack init` picking one for you. You can do that by using
-`stack init --resolver <resolver>`.
+`stack init --snapshot <snapshot>`.
 
-You can also init with a compiler resolver if you do not want to use a snapshot.
-That will result in all of your project's dependencies being put under the
-`extra-deps` section.
+You can also init with a compiler snapshot if you do not want to use a
+Stackage snapshot. That will result in all of your project's dependencies being
+put under the `extra-deps` section.
 
 #### Installing the compiler
 
@@ -943,7 +944,7 @@ different types of arguments:
   version, e.g. `stack build yesod-bin-1.4.14`.
     * This is almost identical to specifying a package name, except it will (1)
       choose the given version instead of latest, and (2) error out if the given
-      version conflicts with the version of a local package.
+      version conflicts with the version of a project package.
 * The most flexibility comes from specifying individual *components*, e.g.
   `stack build helloworld:test:helloworld-test` says "build the test suite
   component named helloworld-test from the helloworld package."
@@ -951,10 +952,10 @@ different types of arguments:
       type of component it is, e.g. `stack build helloworld:helloworld-test`, or
       even skip the package name entirely, e.g. `stack build :helloworld-test`.
 * Finally, you can specify individual *directories* to build to trigger building
-  of any local packages included in those directories or subdirectories.
+  of any project packages included in those directories or subdirectories.
 
 When you give no specific arguments on the command line (e.g., `stack build`),
-it's the same as specifying the names of all of your local packages. If you
+it's the same as specifying the names of all of your project packages. If you
 just want to build the package for the directory you're currently in, you can
 use `stack build .`.
 
@@ -972,88 +973,44 @@ end up including the helloworld-test component as well.
 
 You can bypass this implicit adding of components by being much more explicit,
 and stating the components directly. For example, the following will not build
-the `helloworld-exe` executable once all executables have been successfully
-built:
+the `helloworld-exe` executable:
 
 ~~~text
-stack clean
+stack purge
 stack build :helloworld-test
-Building all executables for `helloworld' once. After a successful build of all of them, only specified executables will be rebuilt.
-helloworld> configure (lib + exe + test)
+helloworld> configure (lib + test)
 Configuring helloworld-0.1.0.0...
-helloworld> build (lib + exe + test)
+helloworld> build (lib + test) with ghc-9.6.5
 Preprocessing library for helloworld-0.1.0.0..
 Building library for helloworld-0.1.0.0..
 [1 of 2] Compiling Lib
 [2 of 2] Compiling Paths_helloworld
-Preprocessing executable 'helloworld-exe' for helloworld-0.1.0.0..
-Building executable 'helloworld-exe' for helloworld-0.1.0.0..
-[1 of 2] Compiling Main
-[2 of 2] Compiling Paths_helloworld
-Linking .stack-work\dist\<hash>\build\helloworld-exe\helloworld-exe.exe ...
 Preprocessing test suite 'helloworld-test' for helloworld-0.1.0.0..
 Building test suite 'helloworld-test' for helloworld-0.1.0.0..
 [1 of 2] Compiling Main
 [2 of 2] Compiling Paths_helloworld
-Linking .stack-work\dist\<hash>\build\helloworld-test\helloworld-test.exe ...
+[3 of 3] Linking .stack-work\dist\<hash>\build\helloworld-test\helloworld-test.exe
 helloworld> copy/register
 Installing library in ...\helloworld\.stack-work\install\...
-Installing executable helloworld-exe in ...\helloworld\.stack-work\install\...\bin
 Registering library for helloworld-0.1.0.0..
 helloworld> test (suite: helloworld-test)
 
 Test suite not yet implemented
 
-helloworld> Test suite helloworld-test passed
-Completed 2 action(s).
-~~~
 
-We first cleaned our project to clear old results so we know exactly what Stack
-is trying to do. Note that it says it is building all executables for
-`helloworld` once, and that after a successful build of all of them, only
-specified executables will be rebuilt. If we change the source code of
-`test/Spec.hs`, say to:
-
-~~~haskell
-main :: IO ()
-main = putStrLn "Test suite still not yet implemented"
-~~~
-
-and command again:
-
-~~~text
-stack build :helloworld-test
-helloworld-0.1.0.0: unregistering (local file changes: test\Spec.hs)
-helloworld> build (lib + test)
-Preprocessing library for helloworld-0.1.0.0..
-Building library for helloworld-0.1.0.0..
-Preprocessing test suite 'helloworld-test' for helloworld-0.1.0.0..
-Building test suite 'helloworld-test' for helloworld-0.1.0.0..
-[2 of 2] Compiling Main
-Linking .stack-work\dist\<hash>\build\helloworld-test\helloworld-test.exe ...
-helloworld> copy/register
-Installing library in ...\helloworld\.stack-work\install\...
-Installing executable helloworld-exe in ...\helloworld\.stack-work\install\...\bin
-Registering library for helloworld-0.1.0.0..
-helloworld> blocking for directory lock on ...\helloworld\.stack-work\dist\<hash>\build-lock
-helloworld> test (suite: helloworld-test)
-
-Test suite still not yet implemented
 
 helloworld> Test suite helloworld-test passed
 Completed 2 action(s).
 ~~~
 
-Notice that this time it builds the `helloworld-test` test suite, and the
-`helloworld` library (since it's used by the test suite), but it does not build
-the `helloworld-exe` executable.
+We first purged our project to clear old results so we know exactly what Stack
+is trying to do.
 
-And now the final point: in both cases, the last line shows that our command
-also *runs* the test suite it just built. This may surprise some people who
-would expect tests to only be run when using `stack test`, but this design
-decision is what allows the `stack build` command to be as composable as it is
-(as described previously). The same rule applies to benchmarks. To spell it out
-completely:
+The last line shows that our command also *runs* the test suite it just built.
+This may surprise some people who would expect tests to only be run when using
+`stack test`, but this design decision is what allows the `stack build` command
+to be as composable as it is (as described previously). The same rule applies to
+benchmarks. To spell it out completely:
 
 * The `--test` and `--bench` flags simply state which components of a package
   should be built, if no explicit set of components is given
@@ -1127,9 +1084,10 @@ modified version of a dependency that hasn't yet been released upstream.
 !!! note
 
     When adding upstream packages directly to your project it is important to
-    distinguish _local packages_ from the upstream _dependency packages_.
-    Otherwise you may have trouble running `stack ghci`. See
-    [stack.yaml documentation](yaml_configuration.md#packages) for more details.
+    distinguish _project packages_ located locally from the upstream
+    _dependency packages_. Otherwise you may have trouble running `stack ghci`.
+    See [stack.yaml documentation](yaml_configuration.md#packages) for more
+    details.
 
 ## Flags and GHC options
 
@@ -1249,7 +1207,7 @@ the output of the command:
 --compiler-exe           Compiler binary (e.g. ghc)
 --compiler-bin           Directory containing the compiler binary (e.g. ghc)
 --compiler-tools-bin     Directory containing binaries specific to a
-                         particular compiler (e.g. intero)
+                         particular compiler
 --local-bin              Directory where Stack installs executables (e.g.
                          ~/.local/bin (Unix-like OSs) or %APPDATA%\local\bin
                          (Windows))
@@ -1340,7 +1298,7 @@ yields output like:
 
 ~~~text
 Run from outside a project, using implicit global project config
-Using latest snapshot resolver: lts-21.13
+Using latest snapshot resolver: lts-22.21
 Writing global (non-project-specific) config file to: /home/michael/.stack/global/stack.yaml
 Note: You can change the snapshot via the resolver field there.
 I installed the stm package via --package stm
@@ -1379,7 +1337,7 @@ followed by the module name.
 !!! note
 
     If you have added packages to your project please make sure to mark them as
-    extra deps for faster and reliable usage of `stack ghci`. Otherwise GHCi may
+    extra-deps for faster and reliable usage of `stack ghci`. Otherwise GHCi may
     have trouble due to conflicts of compilation flags or having to
     unnecessarily interpret too many modules. See Stack's project-level
     [configuration](yaml_configuration.md#extra-deps) to learn how to
@@ -1416,8 +1374,7 @@ specified locations, the *implicit global* logic kicks in. You've probably
 noticed that phrase a few times in the output from commands above. Implicit
 global is essentially a hack to allow Stack to be useful in a non-project
 setting. When no implicit global configuration file exists, Stack creates one
-for you with the latest LTS snapshot as the resolver. This allows you to do
-things like:
+for you with the latest LTS snapshot. This allows you to do things like:
 
 * compile individual files easily with `stack ghc`
 * build executables without starting a project, e.g. `stack install pandoc`
@@ -1467,10 +1424,10 @@ Cabal (the tool), and NixOS. In that sense, we're sharing the same ecosystem.
 ### Curation vs dependency solving
 
 * Stack uses 'curation' (snapshots and Stack's project-level configuration file
-  (`stack.yaml`) define precisely the set of packages available for a project).
-  The Stack team firmly believes that the majority of users want to simply
-  ignore dependency resolution nightmares and get a valid build plan from day
-  one. That's why we've made 'curation' the focus of Stack.
+  (`stack.yaml`, by default) define precisely the set of packages available for
+  a project). The Stack team firmly believes that the majority of users want to
+  simply ignore dependency resolution nightmares and get a valid build plan from
+  day one. That's why we've made 'curation' the focus of Stack.
 
 * Cabal (the tool) can use 'curation' too but its origins are in dependency
   solving.

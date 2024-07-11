@@ -1,13 +1,13 @@
-{-# LANGUAGE NoImplicitPrelude          #-}
-{-# LANGUAGE DataKinds                  #-}
-{-# LANGUAGE DerivingStrategies         #-}
-{-# LANGUAGE GADTs                      #-}
-{-# LANGUAGE OverloadedStrings          #-}
-{-# LANGUAGE QuasiQuotes                #-}
-{-# LANGUAGE RecordWildCards            #-}
-{-# LANGUAGE TemplateHaskell            #-}
-{-# LANGUAGE TypeFamilies               #-}
-{-# LANGUAGE UndecidableInstances       #-}
+{-# LANGUAGE NoImplicitPrelude    #-}
+{-# LANGUAGE DataKinds            #-}
+{-# LANGUAGE DerivingStrategies   #-}
+{-# LANGUAGE GADTs                #-}
+{-# LANGUAGE OverloadedRecordDot  #-}
+{-# LANGUAGE OverloadedStrings    #-}
+{-# LANGUAGE QuasiQuotes          #-}
+{-# LANGUAGE TemplateHaskell      #-}
+{-# LANGUAGE TypeFamilies         #-}
+{-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -Wno-unused-top-binds -Wno-identities #-}
 
 -- | Work with SQLite database used for caches across a single project.
@@ -98,7 +98,7 @@ withProjectStorage ::
   => ReaderT SqlBackend (RIO env) a
   -> RIO env a
 withProjectStorage inner = do
-  storage <- view (buildConfigL . to bcProjectStorage . to unProjectStorage)
+  storage <- view (buildConfigL . to (.projectStorage.projectStorage))
   withStorage_ storage inner
 
 -- | Key used to retrieve configuration or flag cache
@@ -113,28 +113,38 @@ readConfigCache ::
      (HasBuildConfig env, HasLogFunc env)
   => Entity ConfigCacheParent
   -> ReaderT SqlBackend (RIO env) ConfigCache
-readConfigCache (Entity parentId ConfigCacheParent {..}) = do
-  let configCachePkgSrc = configCacheParentPkgSrc
-  coDirs <-
-    map (configCacheDirOptionValue . entityVal) <$>
+readConfigCache (Entity parentId configCacheParent) = do
+  let pkgSrc = configCacheParent.configCacheParentPkgSrc
+  pathRelated <-
+    map ((.configCacheDirOptionValue) . entityVal) <$>
     selectList
       [ConfigCacheDirOptionParent ==. parentId]
       [Asc ConfigCacheDirOptionIndex]
-  coNoDirs <-
-    map (configCacheNoDirOptionValue . entityVal) <$>
+  nonPathRelated <-
+    map ((.configCacheNoDirOptionValue) . entityVal) <$>
     selectList
       [ConfigCacheNoDirOptionParent ==. parentId]
       [Asc ConfigCacheNoDirOptionIndex]
-  let configCacheOpts = ConfigureOpts {..}
-  configCacheDeps <-
-    Set.fromList . map (configCacheDepValue . entityVal) <$>
+  let configureOpts = ConfigureOpts
+        { pathRelated
+        , nonPathRelated
+        }
+  deps <-
+    Set.fromList . map ((.configCacheDepValue) . entityVal) <$>
     selectList [ConfigCacheDepParent ==. parentId] []
-  configCacheComponents <-
-    Set.fromList . map (configCacheComponentValue . entityVal) <$>
+  components <-
+    Set.fromList . map ((.configCacheComponentValue) . entityVal) <$>
     selectList [ConfigCacheComponentParent ==. parentId] []
-  let configCachePathEnvVar = configCacheParentPathEnvVar
-  let configCacheHaddock = configCacheParentHaddock
-  pure ConfigCache {..}
+  let pathEnvVar = configCacheParent.configCacheParentPathEnvVar
+  let buildHaddocks = configCacheParent.configCacheParentHaddock
+  pure ConfigCache
+    { configureOpts
+    , deps
+    , components
+    , buildHaddocks
+    , pkgSrc
+    , pathEnvVar
+    }
 
 -- | Load 'ConfigCache' from the database.
 loadConfigCache ::
@@ -146,8 +156,8 @@ loadConfigCache key =
     mparent <- getBy key
     case mparent of
       Nothing -> pure Nothing
-      Just parentEntity@(Entity _ ConfigCacheParent {..})
-        | configCacheParentActive ->
+      Just parentEntity@(Entity _ configCacheParent)
+        |  configCacheParent.configCacheParentActive ->
             Just <$> readConfigCache parentEntity
         | otherwise -> pure Nothing
 
@@ -168,18 +178,18 @@ saveConfigCache key@(UniqueConfigCacheParent dir type_) new =
             ConfigCacheParent
               { configCacheParentDirectory = dir
               , configCacheParentType = type_
-              , configCacheParentPkgSrc = configCachePkgSrc new
+              , configCacheParentPkgSrc = new.pkgSrc
               , configCacheParentActive = True
-              , configCacheParentPathEnvVar = configCachePathEnvVar new
-              , configCacheParentHaddock = configCacheHaddock new
+              , configCacheParentPathEnvVar = new.pathEnvVar
+              , configCacheParentHaddock = new.buildHaddocks
               }
         Just parentEntity@(Entity parentId _) -> do
           old <- readConfigCache parentEntity
           update
             parentId
-            [ ConfigCacheParentPkgSrc =. configCachePkgSrc new
+            [ ConfigCacheParentPkgSrc =. new.pkgSrc
             , ConfigCacheParentActive =. True
-            , ConfigCacheParentPathEnvVar =. configCachePathEnvVar new
+            , ConfigCacheParentPathEnvVar =. new.pathEnvVar
             ]
           pure (parentId, Just old)
     updateList
@@ -187,29 +197,29 @@ saveConfigCache key@(UniqueConfigCacheParent dir type_) new =
       ConfigCacheDirOptionParent
       parentId
       ConfigCacheDirOptionIndex
-      (maybe [] (coDirs . configCacheOpts) mold)
-      (coDirs $ configCacheOpts new)
+      (maybe [] (.configureOpts.pathRelated) mold)
+      new.configureOpts.pathRelated
     updateList
       ConfigCacheNoDirOption
       ConfigCacheNoDirOptionParent
       parentId
       ConfigCacheNoDirOptionIndex
-      (maybe [] (coNoDirs . configCacheOpts) mold)
-      (coNoDirs $ configCacheOpts new)
+      (maybe [] (.configureOpts.nonPathRelated) mold)
+      new.configureOpts.nonPathRelated
     updateSet
       ConfigCacheDep
       ConfigCacheDepParent
       parentId
       ConfigCacheDepValue
-      (maybe Set.empty configCacheDeps mold)
-      (configCacheDeps new)
+      (maybe Set.empty (.deps) mold)
+      new.deps
     updateSet
       ConfigCacheComponent
       ConfigCacheComponentParent
       parentId
       ConfigCacheComponentValue
-      (maybe Set.empty configCacheComponents mold)
-      (configCacheComponents new)
+      (maybe Set.empty (.components) mold)
+      new.components
 
 -- | Mark 'ConfigCache' as inactive in the database.
 -- We use a flag instead of deleting the records since, in most cases, the same

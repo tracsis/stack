@@ -21,7 +21,7 @@ project, snapshot packages and snapshots themselves so that:
 
 * These files can be stored in source control
 * Users on other machines can reuse these lock files and get identical build
-  plans given that the used local packages and local snapshots are the same on
+  plans given that the used project packages and local snapshots are the same on
   those machines
 * Rerunning `stack build` in the future is deterministic in the build plan, not
   depending on mutable state in the world like Hackage revisions
@@ -39,15 +39,16 @@ they are created and updated.
 ## stack.yaml and snapshot files
 
 Relevant to this discussion, Stack's project-level configuration file
-(`stack.yaml`) specifies:
+(`stack.yaml`, by default) specifies:
 
-* the parent snapshot (`resolver` or `snapshot`)
+* the parent snapshot (the [`snapshot`](yaml_configuration.md#snapshot) or
+  [`resolver`](yaml_configuration.md#resolver) key)
 * extra-deps
 
 Some of this information can be incomplete. Consider this `stack.yaml` file:
 
 ~~~yaml
-resolver: lts-19.22
+snapshot: lts-19.22
 packages:
 - .
 extra-deps:
@@ -71,7 +72,7 @@ Haskell LTS snapshots never change, there's nothing that prohibits that from
 happening. Instead, the complete version of that key is:
 
 ~~~yaml
-resolver:
+snapshot:
 - url: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/lts/19/22.yaml
   size: 619399
   sha256: 5098594e71bdefe0c13e9e6236f12e3414ef91a2b89b029fd30e8fc8087f3a07
@@ -102,7 +103,7 @@ common case of no changes.
 
 The lock file contains the following information:
 
-* Completed package locations for extra deps and packages in snapshot files
+* Completed package locations for extra-deps and packages in snapshot files
 
     !!! note
 
@@ -147,9 +148,9 @@ packages:
 
 ## Creation procedure
 
-Whenever a project-level configuration file (`stack.yaml`) is loaded, Stack
-checks for a lock file in the same file path, with a `.lock` extension added.
-For example, if you command:
+Whenever a project-level configuration file (`stack.yaml`, by default) is
+loaded, Stack checks for a lock file in the same file path, with a `.lock`
+extension added. For example, if you command:
 
 ~~~text
 stack --stack-yaml my-stack.yaml build
@@ -176,9 +177,9 @@ created by:
 
 ## Update procedure
 
-Whenever a project-level configuration file (`stack.yaml`) is loaded, all
-completed package or snapshot locations (even those completed using information
-from a lock file) get collected to form a new lock file in memory. Subject to
-Stack's [`--lock-file`](global_flags.md#-lock-file-option) option, that new lock
-file is compared against the one on disk and, if there are any differences,
-written out to the disk.
+Whenever a project-level configuration file (`stack.yaml`, by default) is
+loaded, all completed package or snapshot locations (even those completed using
+information from a lock file) get collected to form a new lock file in memory.
+Subject to Stack's [`--lock-file`](global_flags.md#-lock-file-option) option,
+that new lock file is compared against the one on disk and, if there are any
+differences, written out to the disk.

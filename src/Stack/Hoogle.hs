@@ -1,5 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude   #-}
-{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE NoImplicitPrelude     #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE OverloadedRecordDot   #-}
+{-# LANGUAGE OverloadedStrings     #-}
 
 -- | A wrapper around hoogle.
 module Stack.Hoogle
@@ -19,17 +21,16 @@ import           Path.IO ( createDirIfMissing, doesFileExist )
 import qualified RIO.Map as Map
 import           RIO.Process ( findExecutable, proc, readProcess_, runProcess_)
 import qualified Stack.Build ( build )
-import           Stack.Build.Target ( NeedTargets (NeedTargets) )
+import           Stack.Build.Target ( NeedTargets (..) )
 import           Stack.Constants ( stackProgName' )
 import           Stack.Prelude
 import           Stack.Runners
                    ( ShouldReexec (..), withConfig, withDefaultEnvConfig
                    , withEnvConfig
                    )
-import           Stack.Types.BuildOpts
-                   ( BuildOptsCLI (..), buildOptsMonoidHaddockL
-                   , defaultBuildOptsCLI
-                   )
+import           Stack.Types.BuildOptsCLI
+                   ( BuildOptsCLI (..), defaultBuildOptsCLI )
+import           Stack.Types.BuildOptsMonoid ( buildOptsMonoidHaddockL )
 import           Stack.Types.Config
                    ( Config (..), HasConfig (..) )
 import           Stack.Types.EnvConfig
@@ -153,10 +154,10 @@ hoogleCmd (args, setup, rebuild, startServer) =
   requiringHoogle :: Muted -> RIO EnvConfig x -> RIO EnvConfig x
   requiringHoogle muted f = do
     hoogleTarget <- do
-      sourceMap <- view $ sourceMapL . to smDeps
+      sourceMap <- view $ sourceMapL . to (.deps)
       case Map.lookup hooglePackageName sourceMap of
         Just hoogleDep ->
-          case dpLocation hoogleDep of
+          case hoogleDep.location of
             PLImmutable pli ->
               T.pack . packageIdentifierString <$>
                   restrictMinHoogleVersion muted (packageLocationIdent pli)
@@ -176,8 +177,7 @@ hoogleCmd (args, setup, rebuild, startServer) =
               restrictMinHoogleVersion muted hoogleIdent
     config <- view configL
     let boptsCLI = defaultBuildOptsCLI
-            { boptsCLITargets =  [hoogleTarget]
-            }
+          { targetsCLI =  [hoogleTarget] }
     runRIO config $ withEnvConfig NeedTargets boptsCLI f
 
   restrictMinHoogleVersion ::
@@ -215,7 +215,7 @@ hoogleCmd (args, setup, rebuild, startServer) =
   runHoogle :: Path Abs File -> [String] -> RIO EnvConfig ()
   runHoogle hooglePath hoogleArgs = do
     config <- view configL
-    menv <- liftIO $ configProcessContextSettings config envSettings
+    menv <- liftIO $ config.processContextSettings envSettings
     dbpath <- hoogleDatabasePath
     let databaseArg = ["--database=" ++ toFilePath dbpath]
     withProcessContext menv $ proc
@@ -230,7 +230,7 @@ hoogleCmd (args, setup, rebuild, startServer) =
   ensureHoogleInPath :: RIO EnvConfig (Path Abs File)
   ensureHoogleInPath = do
     config <- view configL
-    menv <- liftIO $ configProcessContextSettings config envSettings
+    menv <- liftIO $ config.processContextSettings envSettings
     mHooglePath' <- eitherToMaybe <$> runRIO menv (findExecutable "hoogle")
     let mHooglePath'' =
           eitherToMaybe <$> requiringHoogle NotMuted (findExecutable "hoogle")
@@ -277,11 +277,10 @@ hoogleCmd (args, setup, rebuild, startServer) =
             installHoogle
         | otherwise -> prettyThrowIO $ HoogleNotFound err
 
-  envSettings =
-    EnvSettings
-      { esIncludeLocals = True
-      , esIncludeGhcPackagePath = True
-      , esStackExe = True
-      , esLocaleUtf8 = False
-      , esKeepGhcRts = False
-      }
+  envSettings = EnvSettings
+    { includeLocals = True
+    , includeGhcPackagePath = True
+    , stackExe = True
+    , localeUtf8 = False
+    , keepGhcRts = False
+    }

@@ -1,6 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE NoFieldSelectors    #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings   #-}
 
 module Stack.Lock
   ( lockCachedWanted
@@ -14,10 +15,10 @@ import           Data.Aeson.WarningParser
                    , jsonSubWarningsT, logJSONWarnings, withObjectWarnings
                    )
 import           Data.ByteString.Builder ( byteString )
-import qualified Data.List.NonEmpty as NE
 import qualified Data.Map as Map
 import qualified Data.Text as T
 import qualified Data.Yaml as Yaml
+import qualified RIO.NonEmpty as NE
 import           Path ( parent )
 import           Path.Extended ( addExtension )
 import           Path.IO ( doesFileExist )
@@ -52,14 +53,14 @@ instance Pretty LockPrettyException where
 instance Exception LockPrettyException
 
 data LockedLocation a b = LockedLocation
-  { llOriginal :: a
-  , llCompleted :: b
+  { original :: a
+  , completed :: b
   }
   deriving (Eq, Show)
 
 instance (ToJSON a, ToJSON b) => ToJSON (LockedLocation a b) where
   toJSON ll =
-      object [ "original" .= llOriginal ll, "completed" .= llCompleted ll ]
+      object [ "original" .= ll.original, "completed" .= ll.completed ]
 
 instance ( FromJSON (WithJSONWarnings (Unresolved a))
          , FromJSON (WithJSONWarnings (Unresolved b))
@@ -75,7 +76,7 @@ instance ( FromJSON (WithJSONWarnings (Unresolved a))
 -- serialization should not produce locations with multiple subdirs
 -- so we should be OK using just a head element
 newtype SingleRPLI
-  = SingleRPLI { unSingleRPLI :: RawPackageLocationImmutable}
+  = SingleRPLI { singleRPLI :: RawPackageLocationImmutable}
 
 instance FromJSON (WithJSONWarnings (Unresolved SingleRPLI)) where
   parseJSON v =
@@ -85,23 +86,24 @@ instance FromJSON (WithJSONWarnings (Unresolved SingleRPLI)) where
       pure $ withWarnings $ SingleRPLI . NE.head <$> unresolvedRPLIs
 
 data Locked = Locked
-  { lckSnapshotLocations :: [LockedLocation RawSnapshotLocation SnapshotLocation]
-  , lckPkgImmutableLocations :: [LockedLocation RawPackageLocationImmutable PackageLocationImmutable]
+  { snapshotLocations :: [LockedLocation RawSnapshotLocation SnapshotLocation]
+  , pkgImmutableLocations :: [LockedLocation RawPackageLocationImmutable PackageLocationImmutable]
   }
   deriving (Eq, Show)
 
 instance ToJSON Locked where
-  toJSON Locked {..} =
+  toJSON lck =
     object
-      [ "snapshots" .= lckSnapshotLocations
-      , "packages" .= lckPkgImmutableLocations
+      [ "snapshots" .= lck.snapshotLocations
+      , "packages" .= lck.pkgImmutableLocations
       ]
 
 instance FromJSON (WithJSONWarnings (Unresolved Locked)) where
   parseJSON = withObjectWarnings "Locked" $ \o -> do
     snapshots <- jsonSubWarningsT $ o ..: "snapshots"
     packages <- jsonSubWarningsT $ o ..: "packages"
-    let unwrap ll = ll { llOriginal = unSingleRPLI (llOriginal ll) }
+    let unwrap :: LockedLocation SingleRPLI b -> LockedLocation RawPackageLocationImmutable b
+        unwrap ll = ll { original = ll.original.singleRPLI }
     pure $ Locked <$> sequenceA snapshots <*> (map unwrap <$> sequenceA packages)
 
 loadYamlThrow ::
@@ -150,9 +152,9 @@ lockCachedWanted stackFile resolver fillWanted = do
       logDebug "Not reading lock file"
       pure $ Locked [] []
   let toMap :: Ord a => [LockedLocation a b] -> Map a b
-      toMap =  Map.fromList . map (llOriginal &&& llCompleted)
-      slocCache = toMap $ lckSnapshotLocations locked
-      pkgLocCache = toMap $ lckPkgImmutableLocations locked
+      toMap =  Map.fromList . map ((.original) &&& (.completed))
+      slocCache = toMap locked.snapshotLocations
+      pkgLocCache = toMap locked.pkgImmutableLocations
   debugRSL <- view rslInLogL
   (snap, slocCompleted, pliCompleted) <-
     loadAndCompleteSnapshotRaw' debugRSL resolver slocCache pkgLocCache
@@ -166,8 +168,8 @@ lockCachedWanted stackFile resolver fillWanted = do
         | raw == toRawSL complete = Nothing
         | otherwise = Just $ LockedLocation raw complete
       newLocked = Locked
-        { lckSnapshotLocations = mapMaybe differentSnapLocs slocCompleted
-        , lckPkgImmutableLocations =
+        { snapshotLocations = mapMaybe differentSnapLocs slocCompleted
+        , pkgImmutableLocations =
           lockLocations $ pliCompleted <> prjCompleted
         }
   when (newLocked /= locked) $

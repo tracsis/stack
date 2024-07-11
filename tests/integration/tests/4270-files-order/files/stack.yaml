@@ -1,4 +1,1 @@
-resolver: lts-21.13
-
-packages:
-- .
+snapshot: lts-22.21

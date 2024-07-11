@@ -1,7 +1,9 @@
-{-# LANGUAGE NoImplicitPrelude     #-}
-{-# LANGUAGE DataKinds             #-}
-{-# LANGUAGE GADTs                 #-}
-{-# LANGUAGE TypeFamilies          #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE DataKinds           #-}
+{-# LANGUAGE GADTs               #-}
+{-# LANGUAGE NoFieldSelectors    #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE TypeFamilies        #-}
 
 module Stack.Types.BuildConfig
   ( BuildConfig (..)
@@ -29,52 +31,52 @@ import           Stack.Types.Storage ( ProjectStorage )
 --
 -- These are the components which know nothing about local configuration.
 data BuildConfig = BuildConfig
-  { bcConfig     :: !Config
-  , bcSMWanted :: !SMWanted
-  , bcExtraPackageDBs :: ![Path Abs Dir]
+  { config     :: !Config
+  , smWanted :: !SMWanted
+  , extraPackageDBs :: ![Path Abs Dir]
     -- ^ Extra package databases
-  , bcStackYaml  :: !(Path Abs File)
+  , stackYaml  :: !(Path Abs File)
     -- ^ Location of the stack.yaml file.
     --
     -- Note: if the STACK_YAML environment variable is used, this may be
     -- different from projectRootL </> "stack.yaml" if a different file
     -- name is used.
-  , bcProjectStorage :: !ProjectStorage
+  , projectStorage :: !ProjectStorage
   -- ^ Database connection pool for project Stack database
-  , bcCurator :: !(Maybe Curator)
+  , curator :: !(Maybe Curator)
   }
 
 instance HasPlatform BuildConfig where
-  platformL = configL.platformL
+  platformL = configL . platformL
   {-# INLINE platformL #-}
-  platformVariantL = configL.platformVariantL
+  platformVariantL = configL . platformVariantL
   {-# INLINE platformVariantL #-}
 
 instance HasGHCVariant BuildConfig where
-  ghcVariantL = configL.ghcVariantL
+  ghcVariantL = configL . ghcVariantL
   {-# INLINE ghcVariantL #-}
 
 instance HasProcessContext BuildConfig where
-  processContextL = configL.processContextL
+  processContextL = configL . processContextL
 
 instance HasPantryConfig BuildConfig where
-  pantryConfigL = configL.pantryConfigL
+  pantryConfigL = configL . pantryConfigL
 
 instance HasConfig BuildConfig where
-  configL = lens bcConfig (\x y -> x { bcConfig = y })
+  configL = lens (.config) (\x y -> x { config = y })
 
 instance HasRunner BuildConfig where
-  runnerL = configL.runnerL
+  runnerL = configL . runnerL
 
 instance HasLogFunc BuildConfig where
-  logFuncL = runnerL.logFuncL
+  logFuncL = runnerL . logFuncL
 
 instance HasStylesUpdate BuildConfig where
-  stylesUpdateL = runnerL.stylesUpdateL
+  stylesUpdateL = runnerL . stylesUpdateL
 
 instance HasTerm BuildConfig where
-  useColorL = runnerL.useColorL
-  termWidthL = runnerL.termWidthL
+  useColorL = runnerL . useColorL
+  termWidthL = runnerL . termWidthL
 
 class HasConfig env => HasBuildConfig env where
   buildConfigL :: Lens' env BuildConfig
@@ -84,11 +86,11 @@ instance HasBuildConfig BuildConfig where
   {-# INLINE buildConfigL #-}
 
 stackYamlL :: HasBuildConfig env => Lens' env (Path Abs File)
-stackYamlL = buildConfigL.lens bcStackYaml (\x y -> x { bcStackYaml = y })
+stackYamlL = buildConfigL . lens (.stackYaml) (\x y -> x { stackYaml = y })
 
 -- | Directory containing the project's stack.yaml file
 projectRootL :: HasBuildConfig env => Getting r env (Path Abs Dir)
-projectRootL = stackYamlL.to parent
+projectRootL = stackYamlL . to parent
 
 -- | Per-project work dir
 getProjectWorkDir :: (HasBuildConfig env, MonadReader env m) => m (Path Abs Dir)
@@ -100,4 +102,4 @@ getProjectWorkDir = do
 -- | The compiler specified by the @SnapshotDef@. This may be different from the
 -- actual compiler used!
 wantedCompilerVersionL :: HasBuildConfig s => Getting r s WantedCompiler
-wantedCompilerVersionL = buildConfigL.to (smwCompiler . bcSMWanted)
+wantedCompilerVersionL = buildConfigL . to (.smWanted.compiler)

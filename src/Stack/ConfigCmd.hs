@@ -1,6 +1,7 @@
 {-# LANGUAGE NoImplicitPrelude   #-}
 {-# LANGUAGE GADTs               #-}
 {-# LANGUAGE OverloadedLists     #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings   #-}
 
 -- | Make changes to project or global configuration.
@@ -22,7 +23,6 @@ import           Data.Attoparsec.Text as P
                    , takeWhile
                    )
 import qualified Data.Map.Merge.Strict as Map
-import qualified Data.List.NonEmpty as NE
 import qualified Data.Text as T
 import qualified Data.Yaml as Yaml
 import qualified Options.Applicative as OA
@@ -31,6 +31,8 @@ import qualified Options.Applicative.Types as OA
 import           Pantry ( loadSnapshot )
 import           Path ( (</>), parent )
 import qualified RIO.Map as Map
+import           RIO.NonEmpty ( nonEmpty )
+import qualified RIO.NonEmpty as NE
 import           RIO.Process ( envVarsL )
 import           Stack.Config
                    ( makeConcreteResolver, getProjectConfig
@@ -62,7 +64,8 @@ instance Exception ConfigCmdException where
     ++ "'config' command used when no project configuration available."
 
 data ConfigCmdSet
-  = ConfigCmdSetResolver !(Unresolved AbstractResolver)
+  = ConfigCmdSetSnapshot !(Unresolved AbstractResolver)
+  | ConfigCmdSetResolver !(Unresolved AbstractResolver)
   | ConfigCmdSetSystemGhc !CommandScope !Bool
   | ConfigCmdSetInstallGhc !CommandScope !Bool
   | ConfigCmdSetDownloadPrefix !CommandScope !Text
@@ -75,6 +78,7 @@ data CommandScope
     -- ^ Apply changes to the project @stack.yaml@.
 
 configCmdSetScope :: ConfigCmdSet -> CommandScope
+configCmdSetScope (ConfigCmdSetSnapshot _) = CommandScopeProject
 configCmdSetScope (ConfigCmdSetResolver _) = CommandScopeProject
 configCmdSetScope (ConfigCmdSetSystemGhc scope _) = scope
 configCmdSetScope (ConfigCmdSetInstallGhc scope _) = scope
@@ -88,7 +92,7 @@ cfgCmdSet cmd = do
   configFilePath <-
     case configCmdSetScope cmd of
       CommandScopeProject -> do
-        mstackYamlOption <- view $ globalOptsL.to globalStackYaml
+        mstackYamlOption <- view $ globalOptsL . to (.stackYaml)
         mstackYaml <- getProjectConfig mstackYamlOption
         case mstackYaml of
           PCProject stackYaml -> pure stackYaml
@@ -96,7 +100,7 @@ cfgCmdSet cmd = do
             fmap (</> stackDotYaml) (getImplicitGlobalProjectDir conf)
           PCNoProject _extraDeps -> throwIO NoProjectConfigAvailable
           -- maybe modify the ~/.stack/config.yaml file instead?
-      CommandScopeGlobal -> pure (configUserConfigPath conf)
+      CommandScopeGlobal -> pure conf.userConfigPath
   rawConfig <- liftIO (readFileUtf8 (toFilePath configFilePath))
   config <- either throwM pure (Yaml.decodeEither' $ encodeUtf8 rawConfig)
   newValue <- cfgCmdSetValue (parent configFilePath) cmd
@@ -130,20 +134,22 @@ cfgCmdSet cmd = do
   --   key2:
   --     key3: value
   --
-  writeLines yamlLines spaces cmdKeys value = case NE.tail cmdKeys of
-    [] -> yamlLines <> [spaces <> NE.head cmdKeys <> ": " <> value]
-    ks -> writeLines (yamlLines <> [spaces <> NE.head cmdKeys <> ":"])
-                     (spaces <> "  ")
-                     (NE.fromList ks)
-                     value
+  writeLines yamlLines spaces cmdKeys value =
+    case nonEmpty $ NE.tail cmdKeys of
+      Nothing -> yamlLines <> [spaces <> NE.head cmdKeys <> ": " <> value]
+      Just ks -> writeLines
+                   (yamlLines <> [spaces <> NE.head cmdKeys <> ":"])
+                   (spaces <> "  ")
+                   ks
+                   value
 
   inConfig v cmdKeys = case v of
     Yaml.Object obj ->
       case KeyMap.lookup (Key.fromText (NE.head cmdKeys)) obj of
         Nothing -> Nothing
-        Just v' -> case NE.tail cmdKeys of
-          [] -> Just v'
-          ks -> inConfig v' (NE.fromList ks)
+        Just v' -> case nonEmpty $ NE.tail cmdKeys of
+          Nothing -> Just v'
+          Just ks -> inConfig v' ks
     _ -> Nothing
 
   switchLine file cmdKey _ searched [] = do
@@ -220,18 +226,27 @@ cfgCmdSetValue ::
      (HasConfig env, HasGHCVariant env)
   => Path Abs Dir -- ^ root directory of project
   -> ConfigCmdSet -> RIO env Yaml.Value
-cfgCmdSetValue root (ConfigCmdSetResolver newResolver) = do
-  newResolver' <- resolvePaths (Just root) newResolver
-  concreteResolver <- makeConcreteResolver newResolver'
-  -- Check that the snapshot actually exists
-  void $ loadSnapshot =<< completeSnapshotLocation concreteResolver
-  pure (Yaml.toJSON concreteResolver)
+cfgCmdSetValue root (ConfigCmdSetSnapshot newSnapshot) =
+  snapshotValue root newSnapshot
+cfgCmdSetValue root (ConfigCmdSetResolver newSnapshot) =
+  snapshotValue root newSnapshot
 cfgCmdSetValue _ (ConfigCmdSetSystemGhc _ bool') = pure $ Yaml.Bool bool'
 cfgCmdSetValue _ (ConfigCmdSetInstallGhc _ bool') = pure $ Yaml.Bool bool'
 cfgCmdSetValue _ (ConfigCmdSetDownloadPrefix _ url) = pure $ Yaml.String url
 
+snapshotValue ::
+     HasConfig env
+  => Path Abs Dir -- ^ root directory of project
+  -> Unresolved AbstractResolver -> RIO env Yaml.Value
+snapshotValue root snapshot = do
+  snapshot' <- resolvePaths (Just root) snapshot
+  concreteSnapshot <- makeConcreteResolver snapshot'
+  -- Check that the snapshot actually exists
+  void $ loadSnapshot =<< completeSnapshotLocation concreteSnapshot
+  pure (Yaml.toJSON concreteSnapshot)
 
 cfgCmdSetKeys :: ConfigCmdSet -> NonEmpty Text
+cfgCmdSetKeys (ConfigCmdSetSnapshot _) = ["snapshot"]
 cfgCmdSetKeys (ConfigCmdSetResolver _) = ["resolver"]
 cfgCmdSetKeys (ConfigCmdSetSystemGhc _ _) = [configMonoidSystemGHCName]
 cfgCmdSetKeys (ConfigCmdSetInstallGhc _ _) = [configMonoidInstallGHCName]
@@ -251,15 +266,24 @@ configCmdSetParser :: OA.Parser ConfigCmdSet
 configCmdSetParser =
   OA.hsubparser $
     mconcat
-      [ OA.command "resolver"
+      [ OA.command "snapshot"
+          ( OA.info
+              (   ConfigCmdSetSnapshot
+              <$> OA.argument
+                    readAbstractResolver
+                    (  OA.metavar "SNAPSHOT"
+                    <> OA.help "E.g. \"nightly\" or \"lts-22.8\"" ))
+              ( OA.progDesc
+                  "Change the snapshot of the current project." ))
+      , OA.command "resolver"
           ( OA.info
               (   ConfigCmdSetResolver
               <$> OA.argument
                     readAbstractResolver
                     (  OA.metavar "SNAPSHOT"
-                    <> OA.help "E.g. \"nightly\" or \"lts-7.2\"" ))
+                    <> OA.help "E.g. \"nightly\" or \"lts-22.8\"" ))
               ( OA.progDesc
-                  "Change the resolver of the current project." ))
+                  "Change the resolver key of the current project." ))
       , OA.command (T.unpack configMonoidSystemGHCName)
           ( OA.info
               (   ConfigCmdSetSystemGhc
@@ -344,7 +368,7 @@ data EnvVarAction = EVASet !Text | EVAUnset
 cfgCmdEnv :: EnvSettings -> RIO EnvConfig ()
 cfgCmdEnv es = do
   origEnv <- liftIO $ Map.fromList . map (first fromString) <$> getEnvironment
-  mkPC <- view $ configL.to configProcessContextSettings
+  mkPC <- view $ configL . to (.processContextSettings)
   pc <- liftIO $ mkPC es
   let newEnv = pc ^. envVarsL
       actions = Map.merge

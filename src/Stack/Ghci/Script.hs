@@ -1,11 +1,11 @@
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings   #-}
 
 module Stack.Ghci.Script
   ( GhciScript
   , ModuleName
   , cmdAdd
-  , cmdCdGhc
   , cmdModule
   , scriptToLazyByteString
   , scriptToBuilder
@@ -19,7 +19,7 @@ import           Distribution.ModuleName ( ModuleName, components )
 import           Stack.Prelude
 import           System.IO ( hSetBinaryMode )
 
-newtype GhciScript = GhciScript { unGhciScript :: [GhciCommand] }
+newtype GhciScript = GhciScript { ghciScript :: [GhciCommand] }
 
 instance Semigroup GhciScript where
   GhciScript xs <> GhciScript ys = GhciScript (ys <> xs)
@@ -30,15 +30,11 @@ instance Monoid GhciScript where
 
 data GhciCommand
   = AddCmd (Set (Either ModuleName (Path Abs File)))
-  | CdGhcCmd (Path Abs Dir)
   | ModuleCmd (Set ModuleName)
   deriving Show
 
 cmdAdd :: Set (Either ModuleName (Path Abs File)) -> GhciScript
 cmdAdd = GhciScript . (:[]) . AddCmd
-
-cmdCdGhc :: Path Abs Dir -> GhciScript
-cmdCdGhc = GhciScript . (:[]) . CdGhcCmd
 
 cmdModule :: Set ModuleName -> GhciScript
 cmdModule = GhciScript . (:[]) . ModuleCmd
@@ -49,7 +45,7 @@ scriptToLazyByteString = toLazyByteString . scriptToBuilder
 scriptToBuilder :: GhciScript -> Builder
 scriptToBuilder backwardScript = mconcat $ fmap commandToBuilder script
  where
-  script = reverse $ unGhciScript backwardScript
+  script = reverse backwardScript.ghciScript
 
 scriptToFile :: Path Abs File -> GhciScript -> IO ()
 scriptToFile path script =
@@ -78,9 +74,6 @@ commandToBuilder (AddCmd modules)
                  (S.toAscList modules)
          )
     <> "\n"
-
-commandToBuilder (CdGhcCmd path) =
-  ":cd-ghc " <> fromString (quoteFileName (toFilePath path)) <> "\n"
 
 commandToBuilder (ModuleCmd modules)
   | S.null modules = ":module +\n"
