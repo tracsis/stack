@@ -2,7 +2,14 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings   #-}
 
--- | A module which exports all package-level file-gathering logic.
+{-|
+Module      : Stack.PackageFile
+Description : All package-level file-gathering logic.
+License     : BSD-3-Clause
+
+A module which exports all package-level file-gathering logic.
+-}
+
 module Stack.PackageFile
   ( getPackageFile
   , stackPackageFileFromCabal
@@ -40,8 +47,9 @@ import           System.IO.Error ( isUserError )
 
 -- | Resolve the file, if it can't be resolved, warn for the user
 -- (purely to be helpful).
-resolveFileOrWarn :: FilePath.FilePath
-                  -> RIO GetPackageFileContext (Maybe (Path Abs File))
+resolveFileOrWarn ::
+     FilePath.FilePath
+  -> RIO GetPackageFileContext (Maybe (Path Abs File))
 resolveFileOrWarn = resolveOrWarn "File" f
  where
   f p x = forgivingResolveFile p x >>= rejectMissingFile
@@ -85,14 +93,22 @@ resolveGlobFiles ::
 resolveGlobFiles cabalFileVersion =
   fmap (S.fromList . concatMap catMaybes) . mapM resolve
  where
+  resolve :: FilePath -> RIO GetPackageFileContext [Maybe (Path Abs File)]
   resolve name =
     if '*' `elem` name
       then explode name
       else fmap pure (resolveFileOrWarn name)
+
+  explode :: FilePath -> RIO GetPackageFileContext [Maybe (Path Abs File)]
   explode name = do
     dir <- asks (parent . (.file))
     names <- matchDirFileGlob' (toFilePath dir) name
     mapM resolveFileOrWarn names
+
+  matchDirFileGlob' ::
+       FilePath
+    -> FilePath
+    -> RIO GetPackageFileContext [FilePath]
   matchDirFileGlob' dir glob =
     catch
       (liftIO (matchDirFileGlob minBound cabalFileVersion dir glob))
@@ -150,6 +166,8 @@ getPackageFile pkg cabalFP =
           moreBuildFiles <> packageComponentFile.packageExtraFile
       }
 
+-- | For the given contents of a Cabal file, yields the information from it that
+-- Stack needs to track files.
 stackPackageFileFromCabal :: Cabal.PackageDescription -> StackPackageFile
 stackPackageFileFromCabal cabalPkg =
   StackPackageFile

@@ -5,7 +5,14 @@
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE TypeFamilies          #-}
 
--- Types and functions related to Stack's @sdist@ command.
+{-|
+Module      : Stack.SDist
+Description : Types and functions related to Stack's @sdist@ command.
+License     : BSD-3-Clause
+
+Types and functions related to Stack's @sdist@ command.
+-}
+
 module Stack.SDist
   ( SDistOpts (..)
   , sdistCmd
@@ -15,17 +22,18 @@ module Stack.SDist
   , readLocalPackage
   ) where
 
-import qualified Codec.Archive.Tar.Utf8 as Tar
+import qualified Codec.Archive.Tar as Tar
 import qualified Codec.Archive.Tar.Entry as Tar
 import qualified Codec.Compression.GZip as GZip
 import           Conduit ( runConduitRes, sourceLazy, sinkFileCautious )
 import           Control.Concurrent.Execute
                    ( ActionContext (..), Concurrency (..) )
+import           Control.Monad.Extra ( whenJust )
 import qualified Data.ByteString as S
-import qualified Data.ByteString.Char8 as S8
 import qualified Data.ByteString.Lazy as L
 import           Data.Char ( toLower )
 import           Data.Data ( cast )
+import qualified Data.Either.Extra as EE
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -41,6 +49,7 @@ import qualified Distribution.PackageDescription.Check as Check
 import qualified Distribution.PackageDescription.Parsec as Cabal
 import           Distribution.PackageDescription.PrettyPrint
                    ( showGenericPackageDescription )
+import           Distribution.Simple.Utils ( cabalVersion )
 import           Distribution.Version
                    ( earlierVersion, hasLowerBound, hasUpperBound, isAnyVersion
                    , orLaterVersion, simplifyVersionRange
@@ -65,7 +74,7 @@ import           Stack.Runners
 import           Stack.SourceMap ( mkProjectPackage )
 import           Stack.Types.Build ( TaskType (..) )
 import           Stack.Types.BuildConfig
-                   ( BuildConfig (..), HasBuildConfig (..), stackYamlL )
+                   ( BuildConfig (..), HasBuildConfig (..), configFileL )
 import           Stack.Types.BuildOpts ( BuildOpts (..) )
 import           Stack.Types.BuildOptsCLI ( defaultBuildOptsCLI )
 import           Stack.Types.Config ( Config (..), HasConfig (..) )
@@ -83,6 +92,7 @@ import           Stack.Types.Package
 import           Stack.Types.Platform ( HasPlatform (..) )
 import           Stack.Types.PvpBounds ( PvpBounds (..), PvpBoundsType (..) )
 import           Stack.Types.Runner ( HasRunner, Runner )
+import           Stack.Types.SDistOpts ( SDistOpts (..) )
 import           Stack.Types.SourceMap
                    ( CommonPackage (..), ProjectPackage (..), SMWanted (..)
                    , SourceMap (..), ppRoot
@@ -128,20 +138,6 @@ instance Pretty SDistPrettyException where
 
 instance Exception SDistPrettyException
 
--- | Type representing command line options for @stack sdist@ command.
-data SDistOpts = SDistOpts
-  { dirsToWorkWith :: [String]
-    -- ^ Directories to package
-  , pvpBounds :: Maybe PvpBounds
-    -- ^ PVP Bounds overrides
-  , ignoreCheck :: Bool
-    -- ^ Whether to ignore check of the package for common errors
-  , buildTarball :: Bool
-    -- ^ Whether to build the tarball
-  , tarPath :: Maybe FilePath
-    -- ^ Where to copy the tarball
-  }
-
 -- | Function underlying the @stack sdist@ command.
 sdistCmd :: SDistOpts -> RIO Runner ()
 sdistCmd sdistOpts =
@@ -152,12 +148,15 @@ sdistCmd sdistOpts =
         dirs <- view $
           buildConfigL . to (map ppRoot . Map.elems . (.smWanted.project))
         when (null dirs) $ do
-          stackYaml <- view stackYamlL
+          configFile <- view configFileL
+          -- We are indifferent as to whether the configuration file is a
+          -- user-specific global or a project-level one.
+          let eitherConfigFile = EE.fromEither configFile
           prettyErrorL
             [ style Shell "stack sdist"
             , flow "expects a list of targets, and otherwise defaults to all \
                    \of the project's packages. However, the configuration at"
-            , pretty stackYaml
+            , pretty eitherConfigFile
             , flow "contains no packages, so no sdist tarballs will be \
                    \generated."
             ]
@@ -185,7 +184,8 @@ sdistCmd sdistOpts =
     createDirectoryIfMissing True $ FP.takeDirectory targetTarPath
     copyFile (toFilePath tarPath) targetTarPath
 
--- | Given the path to a local package, creates its source distribution tarball.
+-- | Given the path to a package directory, creates a source distribution
+-- tarball for the package.
 --
 -- While this yields a 'FilePath', the name of the tarball, this tarball is not
 -- written to the disk and instead yielded as a lazy bytestring.
@@ -194,7 +194,7 @@ getSDistTarball ::
   => Maybe PvpBounds
      -- ^ Override Config value
   -> Path Abs Dir
-     -- ^ Path to local package
+     -- ^ Path to package directory
   -> RIO
        env
        ( FilePath
@@ -250,13 +250,9 @@ getSDistTarball mpvpBounds pkgDir = do
   -- prone and more predictable to read everything in at once, so that's what
   -- we're doing for now:
   let tarPath isDir fp =
-        case Tar.toTarPath isDir (forceUtf8Enc (pkgIdName FP.</> fp)) of
+        case Tar.toTarPath isDir (pkgIdName FP.</> fp) of
           Left e -> prettyThrowIO $ ToTarPathException e
           Right tp -> pure tp
-      -- convert a String of proper characters to a String of bytes in UTF8
-      -- encoding masquerading as characters. This is necessary for tricking the
-      -- tar package into proper character encoding.
-      forceUtf8Enc = S8.unpack . T.encodeUtf8 . T.pack
       packWith f isDir fp = liftIO $ f (pkgFp FP.</> fp) =<< tarPath isDir fp
       packDir = packWith Tar.packDirectoryEntry True
       packFile fp
@@ -451,8 +447,9 @@ gtraverseT f =
                  Nothing -> gtraverseT f x
                  Just b  -> fromMaybe x (cast (f b)))
 
--- | Read in a 'LocalPackage' config.  This makes some default decisions about
--- 'LocalPackage' fields that might not be appropriate for other use-cases.
+-- | Read in a t'LocalPackage' config.  This makes some default decisions
+-- about v'LocalPackage' fields that might not be appropriate for other
+-- use-cases.
 readLocalPackage :: HasEnvConfig env => Path Abs Dir -> RIO env LocalPackage
 readLocalPackage pkgDir = do
   config  <- getDefaultPackageConfig
@@ -573,7 +570,8 @@ checkPackageInExtractedTarball pkgDir = do
   prettyInfoL
     [ flow "Checking package"
     , style Current (fromPackageName name)
-    , flow "for common mistakes."
+    , flow "for common mistakes using Cabal version"
+    , fromString $ versionString cabalVersion <> "."
     ]
   let pkgChecks =
         -- MSS 2017-12-12: Try out a few different variants of pkgDesc to try
@@ -600,9 +598,7 @@ checkPackageInExtractedTarball pkgDir = do
          flow "Package check reported the following warnings:"
       <> line
       <> bulletedList (map (fromString . show) warnings)
-  case nonEmpty errors of
-    Nothing -> pure ()
-    Just ne -> prettyThrowM $ CheckException ne
+  whenJust (nonEmpty errors) $ \ne -> prettyThrowM $ CheckException ne
 
 buildExtractedTarball :: HasEnvConfig env => ResolvedPath Dir -> RIO env ()
 buildExtractedTarball pkgDir = do

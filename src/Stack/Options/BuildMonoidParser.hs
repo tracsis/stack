@@ -1,13 +1,17 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 
+{-|
+Module      : Stack.Options.BuildMonoidParser
+Description : Parse arguments for Stack's build configuration.
+License     : BSD-3-Clause
+
+Parse arguments for Stack's build configuration.
+-}
+
 module Stack.Options.BuildMonoidParser
   ( buildOptsMonoidParser
-  , cabalVerboseParser
-  , cabalVerbosityOptsParser
-  , cabalVerbosityParser
   ) where
 
-import qualified Data.Text as T
 import           Distribution.Parsec ( eitherParsec )
 import           Options.Applicative
                    ( Parser, eitherReader, flag, help, long, metavar, option
@@ -27,7 +31,9 @@ import           Stack.Types.BuildOptsMonoid
                    ( BuildOptsMonoid (..), CabalVerbosity, readProgressBarFormat
                    , toFirstCabalVerbosity
                    )
+import           Stack.Types.ComponentUtils ( unqualCompFromString )
 
+-- | Parse command line arguments for build configuration.
 buildOptsMonoidParser :: GlobalOptsContext -> Parser BuildOptsMonoid
 buildOptsMonoidParser hide0 = BuildOptsMonoid
   <$> trace'
@@ -41,6 +47,9 @@ buildOptsMonoidParser hide0 = BuildOptsMonoid
   <*> haddockOptsParser hideBool
   <*> openHaddocks
   <*> haddockDeps
+  <*> haddockExecutables
+  <*> haddockTests
+  <*> haddockBenchmarks
   <*> haddockInternal
   <*> haddockHyperlinkSource
   <*> haddockForHackage
@@ -133,6 +142,21 @@ buildOptsMonoidParser hide0 = BuildOptsMonoid
     "building Haddock documentation for dependencies. (default: if building \
     \Haddock documentation, true; otherwise, false)"
     hide
+  haddockExecutables = firstBoolFlagsFalse
+    "haddock-executables"
+    "also building Haddock documentation for all executables (like \
+    \'cabal haddock --executables')."
+    hide
+  haddockTests = firstBoolFlagsFalse
+    "haddock-tests"
+    "also building Haddock documentation for all test suites (like \
+    \'cabal haddock --tests')."
+    hide
+  haddockBenchmarks = firstBoolFlagsFalse
+    "haddock-benchmarks"
+    "also building Haddock documentation for all benchmarks (like \
+    \'cabal haddock --benchmarks')."
+    hide
   haddockInternal = firstBoolFlagsFalse
     "haddock-internal"
     "building Haddock documentation for internal modules (like \
@@ -172,8 +196,9 @@ buildOptsMonoidParser hide0 = BuildOptsMonoid
     hide
   forceDirty = firstBoolFlagsFalse
     "force-dirty"
-    "forcing the treatment of all local packages as having dirty files. \
-    \Useful for cases where Stack can't detect a file change."
+    "forcing the treatment of all project packages and local extra-deps as \
+    \having dirty files. Useful for cases where Stack can't detect a file \
+    \change."
     hide
   tests = firstBoolFlagsFalse
     "test"
@@ -195,7 +220,7 @@ buildOptsMonoidParser hide0 = BuildOptsMonoid
     ++ splitObjsWarning
     )
     hide
-  skipComponents = many (fmap T.pack (strOption
+  skipComponents = many (fmap unqualCompFromString (strOption
     (  long "skip"
     <> help "Skip given component (can be specified multiple times)."
     <> hide

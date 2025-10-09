@@ -1,6 +1,13 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 
--- | Functions to parse command line arguments for Stack's @script@ command.
+{-|
+Module      : Stack.Options.ScriptParser
+Description : Parse arguments for Stack's @script@ command.
+License     : BSD-3-Clause
+
+Functions to parse command line arguments for Stack's @script@ command.
+-}
+
 module Stack.Options.ScriptParser
   ( scriptOptsParser
   ) where
@@ -12,6 +19,7 @@ import           Options.Applicative
 import           Options.Applicative.Builder.Extra
                    ( boolFlags, fileExtCompleter )
 import           Stack.Options.Completion ( ghcOptsCompleter )
+import           Stack.Options.PackagesParser ( packagesParser )
 import           Stack.Prelude
 import           Stack.Script
                    ( ScriptExecute (..), ScriptOpts (..), ShouldRun (..) )
@@ -19,11 +27,7 @@ import           Stack.Script
 -- | Parse command line arguments for Stack's @script@ command.
 scriptOptsParser :: Parser ScriptOpts
 scriptOptsParser = ScriptOpts
-  <$> many (strOption
-        (  long "package"
-        <> metavar "PACKAGE"
-        <> help "Add a package (can be specified multiple times)."
-        ))
+  <$> packagesParser
   <*> strArgument
         (  metavar "FILE"
         <> completer (fileExtCompleter [".hs", ".lhs"])
@@ -58,8 +62,9 @@ scriptOptsParser = ScriptOpts
         ))
   <*> many (option extraDepRead
         (  long "extra-dep"
-        <> metavar "PACKAGE-VERSION"
-        <> help "Extra dependencies to be added to the snapshot."
+        <> metavar "EXTRA-DEP"
+        <> help "An immutable extra dependency to be added to the snapshot \
+                \(can be specified multiple times)."
         ))
   <*> (   flag' NoRun
             (  long "no-run"
@@ -69,4 +74,4 @@ scriptOptsParser = ScriptOpts
       )
  where
   extraDepRead = eitherReader $
-                   mapLeft show . parsePackageIdentifierRevision . fromString
+                   mapLeft show . parseRawPackageLocationImmutables . fromString

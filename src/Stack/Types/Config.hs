@@ -10,6 +10,11 @@
 {-# LANGUAGE TypeFamilies        #-}
 {-# LANGUAGE ViewPatterns        #-}
 
+{-|
+Module      : Stack.Types.Config
+License     : BSD-3-Clause
+-}
+
 module Stack.Types.Config
   (
     Config (..)
@@ -21,7 +26,7 @@ module Stack.Types.Config
   , buildOptsL
   , envOverrideSettingsL
   , globalOptsL
-  , stackGlobalConfigL
+  , userGlobalConfigFileL
   , stackRootL
   , workDirL
   -- * Helper logging functions
@@ -43,158 +48,177 @@ import           Stack.Types.Docker ( DockerOpts )
 import           Stack.Types.DumpLogs ( DumpLogs )
 import           Stack.Types.EnvSettings ( EnvSettings )
 import           Stack.Types.GHCVariant ( GHCVariant (..), HasGHCVariant (..) )
+import           Stack.Types.MsysEnvironment ( MsysEnvironment )
 import           Stack.Types.Nix ( NixOpts )
 import           Stack.Types.Platform ( HasPlatform (..), PlatformVariant )
 import           Stack.Types.Project ( Project (..) )
 import           Stack.Types.ProjectConfig ( ProjectConfig (..) )
 import           Stack.Types.PvpBounds ( PvpBounds )
-import           Stack.Types.Resolver ( AbstractResolver )
 import           Stack.Types.Runner ( HasRunner (..), Runner, globalOptsL )
 import           Stack.Types.SCM ( SCM )
 import           Stack.Types.SetupInfo ( SetupInfo )
+import           Stack.Types.Snapshot ( AbstractSnapshot )
 import           Stack.Types.Storage ( UserStorage )
 import           Stack.Types.TemplateName ( TemplateName )
 import           Stack.Types.Version ( VersionCheck (..), VersionRange )
 
 -- | The top-level Stackage configuration.
 data Config = Config
-  { workDir                :: !(Path Rel Dir)
+  { workDir                 :: !(Path Rel Dir)
     -- ^ this allows to override .stack-work directory
-  , userConfigPath         :: !(Path Abs File)
-    -- ^ Path to user configuration file (usually ~/.stack/config.yaml)
-  , build                  :: !BuildOpts
+  , userGlobalConfigFile    :: !(Path Abs File)
+    -- ^ The user-specific global configuration file.
+  , build                   :: !BuildOpts
     -- ^ Build configuration
-  , docker                 :: !DockerOpts
+  , docker                  :: !DockerOpts
     -- ^ Docker configuration
-  , nix                    :: !NixOpts
+  , nix                     :: !NixOpts
     -- ^ Execution environment (e.g nix-shell) configuration
-  , processContextSettings :: !(EnvSettings -> IO ProcessContext)
+  , processContextSettings  :: !(EnvSettings -> IO ProcessContext)
     -- ^ Environment variables to be passed to external tools
-  , localProgramsBase      :: !(Path Abs Dir)
+  , localProgramsBase       :: !(Path Abs Dir)
     -- ^ Non-platform-specific path containing local installations
-  , localPrograms          :: !(Path Abs Dir)
+  , localPrograms           :: !(Path Abs Dir)
     -- ^ Path containing local installations (mainly GHC)
-  , hideTHLoading          :: !Bool
+  , hideTHLoading           :: !Bool
     -- ^ Hide the Template Haskell "Loading package ..." messages from the
     -- console
-  , prefixTimestamps       :: !Bool
+  , prefixTimestamps        :: !Bool
     -- ^ Prefix build output with timestamps for each line.
-  , platform               :: !Platform
+  , platform                :: !Platform
     -- ^ The platform we're building for, used in many directory names
-  , platformVariant        :: !PlatformVariant
+  , platformVariant         :: !PlatformVariant
     -- ^ Variant of the platform, also used in directory names
-  , ghcVariant             :: !(Maybe GHCVariant)
+  , ghcVariant              :: !(Maybe GHCVariant)
     -- ^ The variant of GHC requested by the user.
-  , ghcBuild               :: !(Maybe CompilerBuild)
+  , ghcBuild                :: !(Maybe CompilerBuild)
     -- ^ Override build of the compiler distribution (e.g. standard, gmp4,
     -- tinfo6)
-  , latestSnapshot         :: !Text
+  , latestSnapshot          :: !Text
     -- ^ URL of a JSON file providing the latest LTS and Nightly snapshots.
-  , systemGHC              :: !Bool
+  , systemGHC               :: !Bool
     -- ^ Should we use the system-installed GHC (on the PATH) if
     -- available? Can be overridden by command line options.
-  , installGHC             :: !Bool
+  , installGHC              :: !Bool
     -- ^ Should we automatically install GHC if missing or the wrong
     -- version is available? Can be overridden by command line options.
-  , skipGHCCheck           :: !Bool
+  , installMsys              :: !Bool
+    -- ^ On Windows, should we automatically install MSYS2 if missing? Can be
+    -- overridden by command line options.
+  , skipGHCCheck            :: !Bool
     -- ^ Don't bother checking the GHC version or architecture.
-  , skipMsys               :: !Bool
+  , skipMsys                :: !Bool
     -- ^ On Windows: don't use a sandboxed MSYS
-  , compilerCheck          :: !VersionCheck
+  , msysEnvironment         :: !(Maybe MsysEnvironment)
+    -- ^ On Windows: what MSYS2 environment to apply. Nothing on other operating
+    -- systems.
+  , compilerCheck           :: !VersionCheck
     -- ^ Specifies which versions of the compiler are acceptable.
-  , compilerRepository     :: !CompilerRepository
+  , compilerRepository      :: !CompilerRepository
     -- ^ Specifies the repository containing the compiler sources
-  , localBin               :: !(Path Abs Dir)
+  , localBin                :: !(Path Abs Dir)
     -- ^ Directory we should install executables into
-  , requireStackVersion    :: !VersionRange
+  , fileWatchHook           :: !(Maybe (Path Abs File))
+    -- ^ Optional path of executable used to override --file-watch
+    -- post-processing.
+  , requireStackVersion     :: !VersionRange
     -- ^ Require a version of Stack within this range.
-  , jobs                   :: !Int
+  , jobs                    :: !Int
     -- ^ How many concurrent jobs to run, defaults to number of capabilities
-  , overrideGccPath        :: !(Maybe (Path Abs File))
+  , overrideGccPath         :: !(Maybe (Path Abs File))
     -- ^ Optional gcc override path
-  , extraIncludeDirs       :: ![FilePath]
+  , extraIncludeDirs        :: ![FilePath]
     -- ^ --extra-include-dirs arguments
-  , extraLibDirs           :: ![FilePath]
+  , extraLibDirs            :: ![FilePath]
     -- ^ --extra-lib-dirs arguments
-  , customPreprocessorExts :: ![Text]
+  , customPreprocessorExts  :: ![Text]
     -- ^ List of custom preprocessors to complete the hard coded ones
-  , concurrentTests        :: !Bool
+  , concurrentTests         :: !Bool
     -- ^ Run test suites concurrently
-  , templateParams         :: !(Map Text Text)
+  , templateParams          :: !(Map Text Text)
     -- ^ Parameters for templates.
-  , scmInit                :: !(Maybe SCM)
+  , scmInit                 :: !(Maybe SCM)
     -- ^ Initialize SCM (e.g. git) when creating new projects.
-  , ghcOptionsByName       :: !(Map PackageName [Text])
+  , ghcOptionsByName        :: !(Map PackageName [Text])
     -- ^ Additional GHC options to apply to specific packages.
-  , ghcOptionsByCat        :: !(Map ApplyGhcOptions [Text])
+  , ghcOptionsByCat         :: !(Map ApplyGhcOptions [Text])
     -- ^ Additional GHC options to apply to categories of packages
-  , cabalConfigOpts        :: !(Map CabalConfigKey [Text])
+  , cabalConfigOpts         :: !(Map CabalConfigKey [Text])
     -- ^ Additional options to be passed to ./Setup.hs configure
-  , setupInfoLocations     :: ![String]
+  , setupInfoLocations      :: ![String]
     -- ^ URLs or paths to stack-setup.yaml files, for finding tools.
     -- If none present, the default setup-info is used.
-  , setupInfoInline        :: !SetupInfo
+  , setupInfoInline         :: !SetupInfo
     -- ^ Additional SetupInfo to use to find tools.
-  , pvpBounds              :: !PvpBounds
+  , pvpBounds               :: !PvpBounds
     -- ^ How PVP upper bounds should be added to packages
-  , modifyCodePage         :: !Bool
+  , modifyCodePage          :: !Bool
     -- ^ Force the code page to UTF-8 on Windows
-  , rebuildGhcOptions      :: !Bool
+  , rebuildGhcOptions       :: !Bool
     -- ^ Rebuild on GHC options changes
-  , applyGhcOptions        :: !ApplyGhcOptions
+  , applyGhcOptions         :: !ApplyGhcOptions
     -- ^ Which packages do --ghc-options on the command line apply to?
-  , applyProgOptions       :: !ApplyProgOptions
+  , applyProgOptions        :: !ApplyProgOptions
     -- ^ Which packages do all and any --PROG-option options on the command line
     -- apply to?
-  , allowNewer             :: !Bool
+  , allowNewer              :: !(First Bool)
     -- ^ Ignore version ranges in .cabal files. Funny naming chosen to
     -- match cabal.
-  , allowNewerDeps         :: !(Maybe [PackageName])
+  , allowNewerDeps          :: !(Maybe [PackageName])
     -- ^ Ignore dependency upper and lower bounds only for specified
     -- packages. No effect unless allow-newer is enabled.
-  , defaultTemplate        :: !(Maybe TemplateName)
+  , defaultInitSnapshot     :: !(First AbstractSnapshot)
+    -- ^ An optional default snapshot to use with @stack init@ when none is
+    -- specified at the command line.
+  , defaultTemplate         :: !(Maybe TemplateName)
     -- ^ The default template to use when none is specified.
     -- (If Nothing, the 'default' default template is used.)
-  , allowDifferentUser     :: !Bool
+  , allowDifferentUser      :: !Bool
     -- ^ Allow users other than the Stack root owner to use the Stack
     -- installation.
-  , dumpLogs               :: !DumpLogs
+  , dumpLogs                :: !DumpLogs
     -- ^ Dump logs of local non-dependencies when doing a build.
-  , project                :: !(ProjectConfig (Project, Path Abs File))
+  , project                 :: !(ProjectConfig (Project, Path Abs File))
     -- ^ Project information and stack.yaml file location
-  , allowLocals            :: !Bool
+  , allowLocals             :: !Bool
     -- ^ Are we allowed to build local packages? The script
     -- command disallows this.
-  , saveHackageCreds       :: !Bool
+  , saveHackageCreds        :: !FirstTrue
     -- ^ Should we save Hackage credentials to a file?
-  , hackageBaseUrl         :: !Text
+  , hackageBaseUrl          :: !Text
     -- ^ Hackage base URL used when uploading packages
-  , runner                 :: !Runner
-  , pantryConfig           :: !PantryConfig
-  , stackRoot              :: !(Path Abs Dir)
-  , resolver               :: !(Maybe AbstractResolver)
-    -- ^ Any resolver override from the command line
-  , userStorage            :: !UserStorage
+  , runner                  :: !Runner
+  , pantryConfig            :: !PantryConfig
+  , stackRoot               :: !(Path Abs Dir)
+  , snapshot                :: !(Maybe AbstractSnapshot)
+    -- ^ Any snapshot override from the command line
+  , userStorage             :: !UserStorage
     -- ^ Database connection pool for user Stack database
-  , hideSourcePaths        :: !Bool
+  , hideSourcePaths         :: !Bool
     -- ^ Enable GHC hiding source paths?
-  , recommendUpgrade       :: !Bool
+  , recommendStackUpgrade   :: !Bool
     -- ^ Recommend a Stack upgrade?
-  , notifyIfNixOnPath      :: !Bool
+  , notifyIfNixOnPath       :: !Bool
     -- ^ Notify if the Nix package manager (nix) is on the PATH, but
     -- Stack's Nix integration is not enabled?
-  , notifyIfGhcUntested    :: !Bool
+  , notifyIfGhcUntested     :: !Bool
     -- ^ Notify if Stack has not been tested with the GHC version?
-  , notifyIfCabalUntested  :: !Bool
+  , notifyIfCabalUntested   :: !Bool
     -- ^ Notify if Stack has not been tested with the Cabal version?
-  , notifyIfArchUnknown    :: !Bool
+  , notifyIfArchUnknown     :: !Bool
     -- ^ Notify if the specified machine architecture is unknown to Cabal (the
     -- library)?
-  , noRunCompile           :: !Bool
+  , notifyIfNoRunTests      :: !Bool
+    -- ^ Notify if the --no-run-tests flag has prevented the running of a
+    -- targeted test suite?
+  , notifyIfNoRunBenchmarks :: !Bool
+    -- ^ Notify if the --no-run-benchmarks flag has prevented the running of a
+    -- targeted benchmark?
+  , noRunCompile            :: !Bool
     -- ^ Use --no-run and --compile options when using `stack script`
-  , stackDeveloperMode     :: !Bool
+  , stackDeveloperMode      :: !Bool
     -- ^ Turn on Stack developer mode for additional messages?
-  , casa                   :: !(Maybe (CasaRepoPrefix, Int))
+  , casa                    :: !(Maybe (CasaRepoPrefix, Int))
     -- ^ Optional Casa configuration
   }
 
@@ -226,7 +250,7 @@ ghcInstallHook = do
 -- Lens classes
 -----------------------------------
 
--- | Class for environment values that can provide a 'Config'.
+-- | Class for environment values that can provide a t'Config'.
 class ( HasPlatform env
       , HasGHCVariant env
       , HasProcessContext env
@@ -281,10 +305,10 @@ stackRootL :: HasConfig s => Lens' s (Path Abs Dir)
 stackRootL =
   configL . lens (.stackRoot) (\x y -> x { stackRoot = y })
 
-stackGlobalConfigL :: HasConfig s => Lens' s (Path Abs File)
-stackGlobalConfigL = configL . lens
-  (.userConfigPath)
-  (\x y -> x { userConfigPath = y })
+userGlobalConfigFileL :: HasConfig s => Lens' s (Path Abs File)
+userGlobalConfigFileL = configL . lens
+  (.userGlobalConfigFile)
+  (\x y -> x { userGlobalConfigFile = y })
 
 buildOptsL :: HasConfig s => Lens' s BuildOpts
 buildOptsL = configL . lens (.build) (\x y -> x { build = y })

@@ -3,6 +3,11 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings   #-}
 
+{-|
+Module      : Stack.Types.Build.Exception
+License     : BSD-3-Clause
+-}
+
 module Stack.Types.Build.Exception
   ( BuildException (..)
   , BuildPrettyException (..)
@@ -27,12 +32,13 @@ import           Distribution.Types.TestSuiteInterface ( TestSuiteInterface )
 import qualified Distribution.Version as C
 import           RIO.NonEmpty ( nonEmpty )
 import           RIO.Process ( showProcessArgDebug )
-import           Stack.Constants
-                   ( defaultUserConfigPath, wiredInPackages )
+import           Stack.Constants ( defaultUserConfigPath, wiredInPackages )
 import           Stack.Prelude
 import           Stack.Types.Compiler ( ActualCompiler, compilerVersionString )
 import           Stack.Types.CompilerBuild
                    ( CompilerBuild, compilerBuildSuffix )
+import           Stack.Types.ComponentUtils
+                   ( StackUnqualCompName, unqualCompToString )
 import           Stack.Types.DumpPackage ( DumpPackage )
 import           Stack.Types.UnusedFlags ( FlagSource (..), UnusedFlags (..) )
 import           Stack.Types.GHCVariant ( GHCVariant, ghcVariantSuffix )
@@ -41,6 +47,7 @@ import           Stack.Types.NamedComponent
 import           Stack.Types.Package ( Package (..), packageIdentifier )
 import           Stack.Types.ParentMap ( ParentMap )
 import           Stack.Types.Version ( VersionCheck (..), VersionRange )
+import           Stack.Types.WantedCompilerSetter ( WantedCompilerSetter (..) )
 
 -- | Type representing exceptions thrown by functions exported by modules with
 -- names beginning @Stack.Build@.
@@ -54,7 +61,7 @@ data BuildException
       (Path Abs File) -- stack.yaml
   | TestSuiteFailure
       PackageIdentifier
-      (Map Text (Maybe ExitCode))
+      (Map StackUnqualCompName (Maybe ExitCode))
       (Maybe (Path Abs File))
       S.ByteString
   | TestSuiteTypeUnsupported TestSuiteInterface
@@ -100,7 +107,7 @@ instance Exception BuildException where
       | otherwise = pure $
           "The following target packages were not found: " ++
           intercalate ", " (map packageNameString $ Set.toList noKnown) ++
-          "\nSee https://docs.haskellstack.org/en/stable/build_command/#target-syntax for details."
+          "\nSee https://docs.haskellstack.org/en/stable/commands/build_command/#target-syntax for details."
     notInSnapshot'
       | Map.null notInSnapshot = []
       | otherwise =
@@ -120,7 +127,7 @@ instance Exception BuildException where
         [ ["Test suite failure for package " ++ packageIdentifierString ident]
         , flip map (Map.toList codes) $ \(name, mcode) -> concat
             [ "    "
-            , T.unpack name
+            , unqualCompToString name
             , ": "
             , case mcode of
                 Nothing -> " executable not found"
@@ -149,7 +156,7 @@ instance Exception BuildException where
      -- Suppressing duplicate output
   displayException (LocalPackageDoesn'tMatchTarget name localV requestedV) = concat
     [ "Error: [S-5797]\n"
-    , "Version for local package "
+    , "Version for project package "
     , packageNameString name
     , " is "
     , versionString localV
@@ -224,7 +231,7 @@ instance Exception BuildException where
 data BuildPrettyException
   = ConstructPlanFailed
       [ConstructPlanException]
-      (Path Abs File)
+      (Either (Path Abs File) (Path Abs File))
       (Path Abs Dir)
       Bool -- Is the project the implicit global project?
       ParentMap
@@ -248,27 +255,28 @@ data BuildPrettyException
       [Text]     -- log contents
   | TargetParseException [StyleDoc]
   | SomeTargetsNotBuildable [(PackageName, NamedComponent)]
-  | InvalidFlagSpecification (Set UnusedFlags)
+  | InvalidFlagSpecification [UnusedFlags]
   | GHCProfOptionInvalid
-  | NotOnlyLocal [PackageName] [Text]
+  | NotOnlyLocal [PackageName] [StackUnqualCompName]
   | CompilerVersionMismatch
       (Maybe (ActualCompiler, Arch)) -- found
       (WantedCompiler, Arch) -- expected
       GHCVariant -- expected
       CompilerBuild -- expected
       VersionCheck
-      (Maybe (Path Abs File)) -- Path to the stack.yaml file
+      WantedCompilerSetter -- Way that the wanted compiler is set
       StyleDoc -- recommended resolution
+  | ActionNotFilteredBug StyleDoc
   deriving (Show, Typeable)
 
 instance Pretty BuildPrettyException where
-  pretty ( ConstructPlanFailed errs stackYaml stackRoot isImplicitGlobal parents wanted prunedGlobalDeps ) =
+  pretty ( ConstructPlanFailed errs configFile stackRoot isImplicitGlobal parents wanted prunedGlobalDeps ) =
     "[S-4804]"
     <> line
     <> flow "Stack failed to construct a build plan."
     <> blankLine
     <> pprintExceptions
-         errs stackYaml stackRoot isImplicitGlobal parents wanted prunedGlobalDeps
+         errs configFile stackRoot isImplicitGlobal parents wanted prunedGlobalDeps
   pretty (ExecutionFailure es) =
     "[S-7282]"
     <> line
@@ -310,7 +318,7 @@ instance Pretty BuildPrettyException where
     <> line
     <> flow "Invalid flag specification:"
     <> line
-    <> bulletedList (map go (Set.toList unused))
+    <> bulletedList (map go (L.sort unused))
    where
     showFlagSrc :: FlagSource -> StyleDoc
     showFlagSrc FSCommandLine = flow "(specified on the command line)"
@@ -387,10 +395,18 @@ instance Pretty BuildPrettyException where
               fillSep
                 ( "Executables:"
                 : mkNarrativeList Nothing False
-                    (map (fromString . T.unpack) exes :: [StyleDoc])
+                    (map (fromString . unqualCompToString) exes :: [StyleDoc])
                 )
            <> line
-  pretty (CompilerVersionMismatch mactual (expected, eArch) ghcVariant ghcBuild check mstack resolution) =
+  pretty ( CompilerVersionMismatch
+             mactual
+             (expected, eArch)
+             ghcVariant
+             ghcBuild
+             check
+             wantedCompilerSetter
+             resolution
+         ) =
     "[S-6362]"
     <> line
     <> fillSep
@@ -415,18 +431,37 @@ instance Pretty BuildPrettyException where
          ,    parens
                 ( fillSep
                     [ flow "based on"
-                    , case mstack of
-                        Nothing -> flow "command line arguments"
-                        Just stack -> fillSep
-                          [ flow "resolver setting in"
-                          , pretty stack
+                    , case wantedCompilerSetter of
+                        CompilerAtCommandLine -> fillSep
+                          [ "the"
+                          , style Shell "--compiler"
+                          , "option"
                           ]
+                        SnapshotAtCommandLine -> fillSep
+                          [ "the"
+                          , style Shell "--snapshot" <> ","
+                          , "or"
+                          , style Shell "--resolver" <> ","
+                          , "option"
+                          ]
+                        YamlConfiguration mConfigFile -> case mConfigFile of
+                          Nothing -> flow "command line arguments"
+                          Just configFile -> fillSep
+                            [ flow "the configuration in"
+                            , pretty configFile
+                            ]
                     ]
                 )
           <> "."
          ]
     <> blankLine
     <> resolution
+  pretty (ActionNotFilteredBug source) = bugPrettyReport "S-4660" $
+    fillSep
+      [ source
+      , flow "is seeking to run an action that should have been filtered from \
+             \the list of actions."
+      ]
 
 instance Exception BuildPrettyException
 
@@ -456,21 +491,22 @@ pprintTargetParseErrors errs =
        , style Shell "my-package-0.1.2.3" <> "),"
        , flow "a package component (e.g."
        , style Shell "my-package:test:my-test-suite" <> "),"
-       , flow "or, failing that, a relative path to a directory that is a \
-              \local package directory or a parent directory of one or more \
-              \local package directories."
+       , flow "or, failing that, a relative path to a local directory for a \
+              \package or a parent directory of one or more such directories."
        ]
 
 pprintExceptions ::
      [ConstructPlanException]
-  -> Path Abs File
+  -> Either (Path Abs File) (Path Abs File)
+     -- ^ The configuration file, which may be either (Left) a user-specific
+     -- global one or (Right) a project-level one.
   -> Path Abs Dir
   -> Bool
   -> ParentMap
   -> Set PackageName
   -> Map PackageName [PackageName]
   -> StyleDoc
-pprintExceptions exceptions stackYaml stackRoot isImplicitGlobal parentMap wanted' prunedGlobalDeps =
+pprintExceptions exceptions configFile stackRoot isImplicitGlobal parentMap wanted' prunedGlobalDeps =
      fillSep
        [ flow
            (  "While constructing the build plan, Stack encountered the \
@@ -517,20 +553,24 @@ pprintExceptions exceptions stackYaml stackRoot isImplicitGlobal parentMap wante
           then ["also"]
           else
             [ fillSep
-                $  [ "in"
+                $  [ "pass"
+                   , style Shell "--allow-newer" <> ","
+                   , flow "or, in"
                    , pretty (defaultUserConfigPath stackRoot)
                    , flow
                        (  "(global configuration)"
                        <> if isImplicitGlobal then "," else mempty
                        )
                    ]
-                <> ( if isImplicitGlobal
-                       then []
-                       else
-                         [ "or"
-                         , pretty stackYaml
-                         , flow "(project-level configuration),"
-                         ]
+                <> ( case configFile of
+                      Left _ -> []
+                      Right projectConfigFile -> if isImplicitGlobal
+                        then []
+                        else
+                          [ "or"
+                          , pretty projectConfigFile
+                          , flow "(project-level configuration),"
+                          ]
                    )
                 <> [ "set"
                    ,    style Shell (flow "allow-newer: true")
@@ -553,14 +593,23 @@ pprintExceptions exceptions stackYaml stackRoot isImplicitGlobal parentMap wante
             ]
         ]
     | otherwise =
-        [   fillSep
-              [ style Recommendation (flow "Recommended action:")
-              , flow "try adding the following to your"
-              , style Shell "extra-deps"
-              , "in"
-              , pretty stackYaml
-              , "(project-level configuration):"
-              ]
+        [    fillSep
+               [ style Recommendation (flow "Recommended action:")
+               , flow "try adding the following to your"
+               , case configFile of
+                   Left _ -> fillSep
+                     [ style Shell "--extra-dep"
+                     , flow "options of the"
+                     , style Shell (flow "stack script")
+                     , "command:"
+                     ]
+                   Right projectConfigFile -> fillSep
+                     [ style Shell "extra-deps"
+                     , "in"
+                     , pretty projectConfigFile
+                     , "(project-level configuration):"
+                     ]
+               ]
           <> blankLine
           <> vsep (map pprintExtra (Map.toList extras))
         ]
@@ -740,12 +789,15 @@ pprintExceptions exceptions stackYaml stackRoot isImplicitGlobal parentMap wante
               , style Shell "build-tools"
               , "or"
               , style Shell "build-tool-depends"
-              , flow "(Cabal file)"
-              , flow "or an omission from the"
-              , style Shell "packages"
-              , flow "list in"
-              , pretty stackYaml
-              , flow "(project-level configuration).)"
+              , case configFile of
+                  Left _ -> flow "(Cabal file)."
+                  Right projectConfigFile -> fillSep
+                    [ flow "(Cabal file) or an omission from the"
+                    , style Shell "packages"
+                    , flow "list in"
+                    , pretty projectConfigFile
+                    , flow "(project-level configuration).)"
+                    ]
               ]
           | otherwise -> ""
         Just (laVer, _)
@@ -777,7 +829,7 @@ data BadDependency
   | Couldn'tResolveItsDependencies Version
   | DependencyMismatch Version
   | HasNoLibrary
-  -- ^ See description of 'DepType'
+  -- ^ See description of 'Stack.Types.Dependency.DepType'
   | BDDependencyCycleDetected ![PackageName]
   deriving (Eq, Ord, Show, Typeable)
 
@@ -854,9 +906,8 @@ showBuildError errorCode isBuildingSetup exitCode mtaskProvides execName fullArg
     removeTrailingSpaces = dropWhileEnd isSpace . unlines
     dropQuotes = filter ('\"' /=)
 
--- | Get the shortest reason for the package to be in the build plan. In
--- other words, trace the parent dependencies back to a 'wanted'
--- package.
+-- | Get the shortest reason for the package to be in the build plan. In other
+-- words, trace the parent dependencies back to a \'wanted\' package.
 getShortestDepsPath ::
      ParentMap
   -> Set PackageName

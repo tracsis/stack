@@ -2,7 +2,14 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedRecordDot   #-}
 
--- | Build configuration
+{-|
+Module      : Stack.Config.Build
+Description : Build configuration.
+License     : BSD-3-Clause
+
+Build configuration.
+-}
+
 module Stack.Config.Build
  ( buildOptsFromMonoid
  , haddockOptsFromMonoid
@@ -54,6 +61,15 @@ buildOptsFromMonoid buildMonoid = BuildOpts
   , haddockDeps = if isHaddockFromHackage
       then Nothing
       else getFirst buildMonoid.haddockDeps
+  , haddockExecutables =
+         not isHaddockFromHackage
+      && fromFirstFalse buildMonoid.haddockExecutables
+  , haddockTests =
+         not isHaddockFromHackage
+      && fromFirstFalse buildMonoid.haddockTests
+  , haddockBenchmarks =
+         not isHaddockFromHackage
+      && fromFirstFalse buildMonoid.haddockBenchmarks
   , haddockInternal =
          not isHaddockFromHackage
       && fromFirstFalse buildMonoid.haddockInternal
@@ -113,7 +129,7 @@ testOptsFromMonoid toMonoid madditional = defaultTestOpts
   , TestOpts.additionalArgs =
       fromMaybe [] madditional <> toMonoid.additionalArgs
   , TestOpts.coverage = fromFirstFalse toMonoid.coverage
-  , TestOpts.disableRun = fromFirstFalse toMonoid.disableRun
+  , TestOpts.runTests = fromFirstTrue toMonoid.runTests
   , TestOpts.maximumTimeSeconds =
       fromFirst
         defaultTestOpts.maximumTimeSeconds
@@ -126,12 +142,9 @@ benchmarkOptsFromMonoid ::
      BenchmarkOptsMonoid
   -> Maybe [String]
   -> BenchmarkOpts
-benchmarkOptsFromMonoid beoMonoid madditional =
-  defaultBenchmarkOpts
-    { BenchmarkOpts.additionalArgs =
-        fmap (\args -> unwords args <> " ") madditional <>
-        getFirst beoMonoid.additionalArgs
-    , BenchmarkOpts.disableRun = fromFirst
-        defaultBenchmarkOpts.disableRun
-        beoMonoid.disableRun
-    }
+benchmarkOptsFromMonoid beoMonoid madditional = defaultBenchmarkOpts
+  { BenchmarkOpts.additionalArgs =
+      fmap (\args -> unwords args <> " ") madditional <>
+      getFirst beoMonoid.additionalArgs
+  , BenchmarkOpts.runBenchmarks = fromFirstTrue beoMonoid.runBenchmarks
+  }

@@ -1,6 +1,12 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 
--- | Names for packages.
+{-|
+Module      : Stack.Types.PackageName
+Description : Names for packages.
+License     : BSD-3-Clause
+
+Names for packages.
+-}
 
 module Stack.Types.PackageName
   ( packageNameArgument
@@ -11,8 +17,9 @@ import           Stack.Prelude
 
 -- | An argument which accepts a template name of the format
 -- @foo.hsfiles@.
-packageNameArgument :: O.Mod O.ArgumentFields PackageName
-                    -> O.Parser PackageName
+packageNameArgument ::
+     O.Mod O.ArgumentFields PackageName
+  -> O.Parser PackageName
 packageNameArgument =
   O.argument
     (do s <- O.str

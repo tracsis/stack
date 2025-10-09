@@ -3,14 +3,20 @@
 {-# LANGUAGE OverloadedRecordDot   #-}
 {-# LANGUAGE OverloadedStrings     #-}
 
--- Load information on package sources
+{-|
+Module      : Stack.Build.Source
+Description : Load information on package sources.
+License     : BSD-3-Clause
+
+Load information on package sources.
+-}
+
 module Stack.Build.Source
   ( projectLocalPackages
   , localDependencies
   , loadCommonPackage
   , loadLocalPackage
   , loadSourceMap
-  , getLocalFlags
   , addUnlistedToBuildCache
   , hashSourceMapData
   ) where
@@ -32,12 +38,12 @@ import           Stack.Package
 import           Stack.PackageFile ( getPackageFile )
 import           Stack.Prelude
 import           Stack.SourceMap
-                   ( DumpedGlobalPackage, checkFlagsUsedThrowing
-                   , getCompilerInfo, immutableLocSha, mkProjectPackage
+                   ( getCompilerInfo, immutableLocSha, mkProjectPackage
                    , pruneGlobals
                    )
 import           Stack.Types.ApplyGhcOptions ( ApplyGhcOptions (..) )
 import           Stack.Types.ApplyProgOptions ( ApplyProgOptions (..) )
+import           Stack.Types.Build.Exception ( BuildPrettyException (..) )
 import           Stack.Types.BuildConfig
                    ( BuildConfig (..), HasBuildConfig (..) )
 import           Stack.Types.BuildOpts ( BuildOpts (..), TestOpts (..) )
@@ -49,6 +55,7 @@ import           Stack.Types.CabalConfigKey ( CabalConfigKey (..) )
 import           Stack.Types.CompilerPaths ( HasCompiler, getCompilerPath )
 import           Stack.Types.Config ( Config (..), HasConfig (..), buildOptsL )
 import           Stack.Types.Curator ( Curator (..) )
+import           Stack.Types.DumpPackage ( DumpedGlobalPackage )
 import           Stack.Types.EnvConfig
                    ( EnvConfig (..), HasEnvConfig (..), HasSourceMap (..)
                    , actualCompilerVersionL
@@ -67,9 +74,9 @@ import           Stack.Types.Platform ( HasPlatform (..) )
 import           Stack.Types.SourceMap
                    ( CommonPackage (..), DepPackage (..), ProjectPackage (..)
                    , SMActual (..), SMTargets (..), SourceMap (..)
-                   , SourceMapHash (..), Target (..), ppGPD, ppRoot
+                   , SourceMapHash (..), Target (..), ppRoot
                    )
-import           Stack.Types.UnusedFlags ( FlagSource (..) )
+import           Stack.Types.UnusedFlags ( FlagSource (..), UnusedFlags (..) )
 import           System.FilePath ( takeFileName )
 import           System.IO.Error ( isDoesNotExistError )
 
@@ -93,51 +100,25 @@ localDependencies = do
 
 -- | Given the parsed targets and build command line options constructs a source
 -- map
-loadSourceMap :: HasBuildConfig env
-              => SMTargets
-              -> BuildOptsCLI
-              -> SMActual DumpedGlobalPackage
-              -> RIO env SourceMap
+loadSourceMap ::
+     forall env. HasBuildConfig env
+  => SMTargets
+  -> BuildOptsCLI
+  -> SMActual DumpedGlobalPackage
+  -> RIO env SourceMap
 loadSourceMap targets boptsCli sma = do
-  bconfig <- view buildConfigL
+  logDebug "Applying and checking flags"
+  let errsPackages = mapMaybe checkPackage packagesWithCliFlags
+  eProject <- mapM applyOptsFlagsPP (M.toList sma.project)
+  eDeps <- mapM applyOptsFlagsDep (M.toList targetsAndSmaDeps)
+  let (errsProject, project') = partitionEithers eProject
+      (errsDeps, deps') = partitionEithers eDeps
+      errs = errsPackages <> errsProject <> errsDeps
+  unless (null errs) $ prettyThrowM $ InvalidFlagSpecification errs
   let compiler = sma.compiler
-      project = M.map applyOptsFlagsPP sma.project
-      bopts = bconfig.config.build
-      applyOptsFlagsPP p@ProjectPackage{ projectCommon = c } = p
-        { projectCommon = applyOptsFlags (M.member c.name targets.targets) True c }
-      deps0 = targets.deps <> sma.deps
-      deps = M.map applyOptsFlagsDep deps0
-      applyOptsFlagsDep d@DepPackage{ depCommon = c } = d
-        { depCommon = applyOptsFlags (M.member c.name targets.deps) False c }
-      applyOptsFlags isTarget isProjectPackage common =
-        let name = common.name
-            flags = getLocalFlags boptsCli name
-            ghcOptions =
-              generalGhcOptions bconfig boptsCli isTarget isProjectPackage
-            cabalConfigOpts =
-              generalCabalConfigOpts bconfig boptsCli common.name isTarget isProjectPackage
-        in  common
-              { flags =
-                  if M.null flags
-                    then common.flags
-                    else flags
-              , ghcOptions =
-                  ghcOptions ++ common.ghcOptions
-              , cabalConfigOpts =
-                  cabalConfigOpts ++ common.cabalConfigOpts
-              , buildHaddocks =
-                  if isTarget
-                    then bopts.buildHaddocks
-                    else shouldHaddockDeps bopts
-              }
-      packageCliFlags = Map.fromList $
-        mapMaybe maybeProjectFlags $
-        Map.toList boptsCli.flags
-      maybeProjectFlags (ACFByName name, fs) = Just (name, fs)
-      maybeProjectFlags _ = Nothing
+      project = M.fromList project'
+      deps = M.fromList deps'
       globalPkgs = pruneGlobals sma.globals (Map.keysSet deps)
-  logDebug "Checking flags"
-  checkFlagsUsedThrowing packageCliFlags FSCommandLine project deps
   logDebug "SourceMap constructed"
   pure SourceMap
     { targets
@@ -146,8 +127,92 @@ loadSourceMap targets boptsCli sma = do
     , deps
     , globalPkgs
     }
+ where
+  cliFlags = boptsCli.flags
+  targetsAndSmaDeps = targets.deps <> sma.deps
+  packagesWithCliFlags = mapMaybe maybeProjectWithCliFlags $ Map.toList cliFlags
+   where
+    maybeProjectWithCliFlags (ACFByName name, _) = Just name
+    maybeProjectWithCliFlags _ = Nothing
+  checkPackage :: PackageName -> Maybe UnusedFlags
+  checkPackage name =
+    let maybeCommon =
+              fmap (.projectCommon) (Map.lookup name sma.project)
+          <|> fmap (.depCommon) (Map.lookup name targetsAndSmaDeps)
+    in  maybe
+          (Just $ UFNoPackage FSCommandLine name)
+          (const Nothing)
+           maybeCommon
+  applyOptsFlagsPP ::
+       (a, ProjectPackage)
+    -> RIO env (Either UnusedFlags (a, ProjectPackage))
+  applyOptsFlagsPP (name, p@ProjectPackage{ projectCommon = common }) = do
+    let isTarget = M.member common.name targets.targets
+    eCommon <- applyOptsFlags isTarget True common
+    pure $ (\common' -> (name, p { projectCommon = common' })) <$> eCommon
+  applyOptsFlagsDep ::
+       (a, DepPackage)
+    -> RIO env (Either UnusedFlags (a, DepPackage))
+  applyOptsFlagsDep (name, d@DepPackage{ depCommon = common }) = do
+    let isTarget = M.member common.name targets.deps
+    eCommon <- applyOptsFlags isTarget False common
+    pure $ (\common' -> (name, d { depCommon = common' })) <$> eCommon
+  applyOptsFlags ::
+       Bool
+    -> Bool
+    -> CommonPackage
+    -> RIO env (Either UnusedFlags CommonPackage)
+  applyOptsFlags isTarget isProjectPackage common = do
+    let name = common.name
+        cliFlagsByName = Map.findWithDefault Map.empty (ACFByName name) cliFlags
+        cliFlagsAll =
+          Map.findWithDefault Map.empty ACFAllProjectPackages cliFlags
+        noOptsToApply = Map.null cliFlagsByName && Map.null cliFlagsAll
+    (flags, unusedByName, pkgFlags) <- if noOptsToApply
+      then
+        pure (Map.empty, Set.empty, Set.empty)
+      else do
+        gpd <-
+          -- This action is expensive. We want to avoid it if we can.
+          liftIO common.gpd
+        let pkgFlags = Set.fromList $ map C.flagName $ C.genPackageFlags gpd
+            unusedByName = Map.keysSet $ Map.withoutKeys cliFlagsByName pkgFlags
+            cliFlagsAllRelevant =
+              Map.filterWithKey (\k _ -> k `Set.member` pkgFlags) cliFlagsAll
+            flags = cliFlagsByName <> cliFlagsAllRelevant
+        pure (flags, unusedByName, pkgFlags)
+    if Set.null unusedByName
+      -- All flags are defined, nothing to do
+      then do
+        bconfig <- view buildConfigL
+        let bopts = bconfig.config.build
+            ghcOptions =
+              generalGhcOptions bconfig boptsCli isTarget isProjectPackage
+            cabalConfigOpts = generalCabalConfigOpts
+              bconfig
+              boptsCli
+              name
+              isTarget
+              isProjectPackage
+        pure $ Right common
+          { flags =
+              if M.null flags
+                then common.flags
+                else flags
+          , ghcOptions =
+              ghcOptions ++ common.ghcOptions
+          , cabalConfigOpts =
+              cabalConfigOpts ++ common.cabalConfigOpts
+          , buildHaddocks =
+              if isTarget
+                then bopts.buildHaddocks
+                else shouldHaddockDeps bopts
+          }
+      -- Error about the undefined flags
+      else
+        pure $ Left $ UFFlagsNotDefined FSCommandLine name pkgFlags unusedByName
 
--- | Get a 'SourceMapHash' for a given 'SourceMap'
+-- | Get a t'SourceMapHash' for a given t'SourceMap'
 --
 -- Basic rules:
 --
@@ -177,7 +242,7 @@ hashSourceMapData boptsCli sm = do
   immDeps <- forM (Map.elems sm.deps) depPackageHashableContent
   bc <- view buildConfigL
   let -- extra bytestring specifying GHC options supposed to be applied to GHC
-      -- boot packages so we'll have different hashes when bare resolver
+      -- boot packages so we'll have different hashes when bare snapshot
       -- 'ghc-X.Y.Z' is used, no extra-deps and e.g. user wants builds with
       -- profiling or without
       bootGhcOpts = map display (generalGhcOptions bc boptsCli False False)
@@ -206,18 +271,6 @@ depPackageHashableContent dp =
         <> getUtf8Builder (mconcat flags)
         <> getUtf8Builder (mconcat ghcOptions)
         <> getUtf8Builder (mconcat cabalConfigOpts)
-
--- | All flags for a local package.
-getLocalFlags ::
-     BuildOptsCLI
-  -> PackageName
-  -> Map FlagName Bool
-getLocalFlags boptsCli name = Map.unions
-  [ Map.findWithDefault Map.empty (ACFByName name) cliFlags
-  , Map.findWithDefault Map.empty ACFAllProjectPackages cliFlags
-  ]
- where
-  cliFlags = boptsCli.flags
 
 -- | Get the options to pass to @./Setup.hs configure@
 generalCabalConfigOpts ::
@@ -277,18 +330,28 @@ generalGhcOptions bconfig boptsCli isTarget isLocal = concat
       AGOLocals -> isLocal
       AGOEverything -> True
 
+-- | Yield a t'Package' from the settings common to dependency and project
+-- packages.
 loadCommonPackage ::
      forall env. (HasBuildConfig env, HasSourceMap env)
   => CommonPackage
   -> RIO env Package
 loadCommonPackage common = do
+  (_, _, pkg) <- loadCommonPackage' common
+  pure pkg
+
+loadCommonPackage' ::
+     forall env. (HasBuildConfig env, HasSourceMap env)
+  => CommonPackage
+  -> RIO env (PackageConfig, C.GenericPackageDescription, Package)
+loadCommonPackage' common = do
   config <-
     getPackageConfig
       common.flags
       common.ghcOptions
       common.cabalConfigOpts
   gpkg <- liftIO common.gpd
-  pure $ resolvePackage config gpkg
+  pure (config, gpkg, resolvePackage config gpkg)
 
 -- | Upgrade the initial project package info to a full-blown @LocalPackage@
 -- based on the selected components
@@ -301,11 +364,7 @@ loadLocalPackage pp = do
   let common = pp.projectCommon
   bopts <- view buildOptsL
   mcurator <- view $ buildConfigL . to (.curator)
-  config <- getPackageConfig
-              common.flags
-              common.ghcOptions
-              common.cabalConfigOpts
-  gpkg <- ppGPD pp
+  (config, gpkg, pkg) <- loadCommonPackage' common
   let name = common.name
       mtarget = M.lookup name sm.targets.targets
       (exeCandidates, testCandidates, benchCandidates) =
@@ -373,7 +432,6 @@ loadLocalPackage pp = do
       -- --enable-benchmarks or --enable-tests are configured. This allows us to
       -- do an optimization where these are passed if the deps are present. This
       -- can avoid doing later unnecessary reconfigures.
-      pkg = resolvePackage config gpkg
       btpkg
         | Set.null tests && Set.null benches = Nothing
         | otherwise = Just (resolvePackage btconfig gpkg)
@@ -445,10 +503,11 @@ checkBuildCache oldCache files = do
       fileDigests
       oldCache
  where
-  go :: FilePath
-     -> Maybe SHA256
-     -> Maybe FileCacheInfo
-     -> RIO env (Set FilePath, Map FilePath FileCacheInfo)
+  go ::
+       FilePath
+    -> Maybe SHA256
+    -> Maybe FileCacheInfo
+    -> RIO env (Set FilePath, Map FilePath FileCacheInfo)
   -- Filter out the cabal_macros file to avoid spurious recompilations
   go fp _ _ | takeFileName fp == "cabal_macros.h" = pure (Set.empty, Map.empty)
   -- Common case where it's in the cache and on the filesystem.
@@ -519,7 +578,7 @@ getFileDigestMaybe fp = do
     (Just <$> readFileDigest cache fp)
     (\e -> if isDoesNotExistError e then pure Nothing else throwM e)
 
--- | Get 'PackageConfig' for package given its name.
+-- | Get t'PackageConfig' for package given its name.
 getPackageConfig ::
      (HasBuildConfig env, HasSourceMap env)
   => Map FlagName Bool

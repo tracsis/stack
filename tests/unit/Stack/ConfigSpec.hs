@@ -27,7 +27,7 @@ import           Stack.Config (defaultConfigYaml, loadConfig, loadConfigYaml )
 import           Stack.Options.GlobalParser ( globalOptsFromMonoid )
 import           Stack.Prelude
 import           Stack.Runners ( withBuildConfig, withRunnerGlobal )
-import           Stack.Types.BuildConfig ( BuildConfig (..), projectRootL )
+import           Stack.Types.BuildConfig ( BuildConfig (..), configFileRootL )
 import           Stack.Types.BuildOpts
                    ( BenchmarkOpts (..), BuildOpts (..), HaddockOpts (..)
                    , TestOpts (..)
@@ -53,12 +53,12 @@ import           Test.Hspec
 
 sampleConfig :: String
 sampleConfig =
-  "snapshot: lts-22.21\n" ++
+  "snapshot: lts-23.24\n" ++
   "packages: ['.']\n"
 
 buildOptsConfig :: String
 buildOptsConfig =
-  "snapshot: lts-22.21\n" ++
+  "snapshot: lts-23.24\n" ++
   "packages: ['.']\n" ++
   "build:\n" ++
   "  library-profiling: true\n" ++
@@ -71,6 +71,9 @@ buildOptsConfig =
   "    - \"--css=/home/user/my-css\"\n" ++
   "  open-haddocks: true\n" ++
   "  haddock-deps: true\n" ++
+  "  haddock-executables: true\n" ++
+  "  haddock-tests: true\n" ++
+  "  haddock-benchmarks: true\n" ++
   "  haddock-internal: true\n" ++
   "  haddock-hyperlink-source: false\n" ++
   "  haddock-for-hackage: false\n" ++
@@ -101,12 +104,15 @@ buildOptsConfig =
 
 buildOptsHaddockForHackageConfig :: String
 buildOptsHaddockForHackageConfig =
-  "snapshot: lts-22.21\n" ++
+  "snapshot: lts-23.24\n" ++
   "packages: ['.']\n" ++
   "build:\n" ++
   "  haddock: true\n" ++
   "  open-haddocks: true\n" ++
   "  haddock-deps: true\n" ++
+  "  haddock-executables: true\n" ++
+  "  haddock-tests: true\n" ++
+  "  haddock-benchmarks: true\n" ++
   "  haddock-internal: true\n" ++
   "  haddock-hyperlink-source: false\n" ++
   "  haddock-for-hackage: true\n" ++
@@ -114,24 +120,24 @@ buildOptsHaddockForHackageConfig =
 
 hpackConfig :: String
 hpackConfig =
-  "snapshot: lts-22.21\n" ++
+  "snapshot: lts-23.24\n" ++
   "with-hpack: /usr/local/bin/hpack\n" ++
   "packages: ['.']\n"
 
 resolverConfig :: String
 resolverConfig =
-  "resolver: lts-22.21\n" ++
+  "resolver: lts-23.24\n" ++
   "packages: ['.']\n"
 
 snapshotConfig :: String
 snapshotConfig =
-  "snapshot: lts-22.21\n" ++
+  "snapshot: lts-23.24\n" ++
   "packages: ['.']\n"
 
 resolverSnapshotConfig :: String
 resolverSnapshotConfig =
-  "resolver: lts-22.21\n" ++
-  "snapshot: lts-22.21\n" ++
+  "resolver: lts-23.24\n" ++
+  "snapshot: lts-23.24\n" ++
   "packages: ['.']\n"
 
 stackDotYaml :: Path Rel File
@@ -162,7 +168,7 @@ spec = beforeAll setup $ do
 
   describe "parseProjectAndConfigMonoid" $ do
     let loadProject' fp inner = do
-          globalOpts <- globalOptsFromMonoid False mempty
+          globalOpts <- globalOptsFromMonoid "" Nothing False mempty
           withRunnerGlobal globalOpts { logLevel = logLevel } $ do
               iopc <- loadConfigYaml (
                 parseProjectAndConfigMonoid (parent fp)
@@ -181,11 +187,11 @@ spec = beforeAll setup $ do
 
     it "parses snapshot using 'resolver'" $ inTempDir $ do
       loadProject resolverConfig $ \project ->
-        project.resolver `shouldBe` RSLSynonym (LTS 22 21)
+        project.snapshot `shouldBe` RSLSynonym (LTS 23 24)
 
     it "parses snapshot using 'snapshot'" $ inTempDir $ do
       loadProject snapshotConfig $ \project ->
-        project.resolver `shouldBe` RSLSynonym (LTS 22 21)
+        project.snapshot `shouldBe` RSLSynonym (LTS 23 24)
 
     it "throws if both 'resolver' and 'snapshot' are present" $ inTempDir $ do
       loadProject resolverSnapshotConfig (const (pure ()))
@@ -193,7 +199,7 @@ spec = beforeAll setup $ do
 
   describe "loadConfig" $ do
     let loadConfig' inner = do
-          globalOpts <- globalOptsFromMonoid False mempty
+          globalOpts <- globalOptsFromMonoid "" Nothing False mempty
           withRunnerGlobal globalOpts { logLevel = logLevel } $
             loadConfig inner
     -- TODO(danburton): make sure parent dirs also don't have config file
@@ -232,6 +238,9 @@ spec = beforeAll setup $ do
           }
         bopts.openHaddocks `shouldBe` True
         bopts.haddockDeps `shouldBe` Just True
+        bopts.haddockExecutables `shouldBe` True
+        bopts.haddockTests `shouldBe` True
+        bopts.haddockBenchmarks `shouldBe` True
         bopts.haddockInternal `shouldBe` True
         bopts.haddockHyperlinkSource `shouldBe` False
         bopts.haddockForHackage `shouldBe` False
@@ -246,14 +255,14 @@ spec = beforeAll setup $ do
           { rerunTests = True
           , additionalArgs = ["-fprof"]
           , coverage = True
-          , disableRun = True
+          , runTests = False
           , maximumTimeSeconds = Nothing
           , allowStdin = True
           }
         bopts.benchmarks `shouldBe` True
         bopts.benchmarkOpts `shouldBe` BenchmarkOpts
            { additionalArgs = Just "-O2"
-           , disableRun = True
+           , runBenchmarks = False
            }
         bopts.reconfigure `shouldBe` True
         bopts.cabalVerbose `shouldBe` CabalVerbosity verbose
@@ -284,7 +293,7 @@ spec = beforeAll setup $ do
       setCurrentDirectory childDir
       loadConfig' $ \config -> liftIO $ do
         bc <- runRIO config $ withBuildConfig ask
-        view projectRootL bc `shouldBe` parentDir
+        view configFileRootL bc `shouldBe` parentDir
 
     it "respects the STACK_YAML env variable" $ inTempDir $ do
       withSystemTempDir "config-is-here" $ \dir -> do
@@ -294,8 +303,7 @@ spec = beforeAll setup $ do
         withEnvVar "STACK_YAML" stackYamlFp $
           loadConfig' $ \config -> liftIO $ do
             bc <- runRIO config $ withBuildConfig ask
-            bc.stackYaml `shouldBe` dir </> stackDotYaml
-            parent bc.stackYaml `shouldBe` dir
+            bc.configFile `shouldBe` Right (dir </> stackDotYaml)
 
     it "STACK_YAML can be relative" $ inTempDir $ do
         parentDir <- getCurrentDirectory >>= parseAbsDir
@@ -306,12 +314,12 @@ spec = beforeAll setup $ do
             packageYaml =
               childRel </> either impureThrow id (parseRelFile "package.yaml")
         createDirectoryIfMissing True $ toFilePath $ parent yamlAbs
-        writeFile (toFilePath yamlAbs) "snapshot: ghc-9.6.5"
+        writeFile (toFilePath yamlAbs) "snapshot: ghc-9.8.4"
         writeFile (toFilePath packageYaml) "name: foo"
         withEnvVar "STACK_YAML" (toFilePath yamlRel) $
           loadConfig' $ \config -> liftIO $ do
             bc <- runRIO config $ withBuildConfig ask
-            bc.stackYaml `shouldBe` yamlAbs
+            bc.configFile `shouldBe` Right yamlAbs
 
   describe "defaultConfigYaml" $
     it "is parseable" $ \_ -> do

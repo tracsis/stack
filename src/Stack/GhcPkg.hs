@@ -3,7 +3,13 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings   #-}
 
--- | Functions for the GHC package database.
+{-|
+Module      : Stack.GhcPkg
+Description : Functions for the GHC package database.
+License     : BSD-3-Clause
+
+Functions for the GHC package database.
+-}
 
 module Stack.GhcPkg
   ( createDatabase
@@ -33,6 +39,7 @@ import           Stack.Types.CompilerPaths
                    ( CompilerPaths (..), GhcPkgExe (..), HasCompiler
                    , compilerPathsL
                    )
+import           Stack.Types.GhcPkgExe ( GhcPkgPrettyException (..) )
 import           Stack.Types.GhcPkgId ( GhcPkgId, ghcPkgIdString )
 import           System.FilePath ( searchPathSeparator )
 
@@ -65,7 +72,16 @@ ghcPkg ::
 ghcPkg pkgexe@(GhcPkgExe pkgPath) pkgDbs args = do
   eres <- go
   case eres of
-    Left _ -> do
+    Left e -> do
+      prettyDebug $
+           fillSep
+             [ flow "While using"
+             , style Shell "ghc-pkg" <>","
+             , flow "Stack encountered the following error:"
+             ]
+        <> blankLine
+        <> string (displayException e)
+        <> flow "Trying again after considering database creation..."
       mapM_ (createDatabase pkgexe) pkgDbs
       go
     Right _ -> pure eres
@@ -145,7 +161,7 @@ findGhcPkgField pkgexe pkgDbs name field = do
 -- using GHC package id where available (from GHC 7.9)
 --
 -- The version of the ghc-pkg executable supplied with GHCs published before
--- 28 August 2023 does not efficiently bulk unregister. Until an 'efficient'
+-- 28 August 2023 does not efficiently bulk unregister. Until an \'efficient\'
 -- ghc-pkg is available, this function no longer uses:
 --
 -- >   eres <- ghcPkg pkgexe [pkgDb] args
@@ -170,13 +186,9 @@ unregisterGhcPkgIds ::
   -> RIO env ()
 unregisterGhcPkgIds isWarn pkgexe pkgDb epgids = do
   globalDb <- view $ compilerPathsL . to (.globalDB)
-  eres <- try $ do
+  eresUnregister <- try $ do
     ghcPkgUnregisterForce globalDb pkgDb hasIpid pkgarg_strs
-    -- ghcPkgUnregisterForce does not perform an effective
-    -- 'ghc-pkg recache', as that depends on a specific version of the Cabal
-    -- package.
-    ghcPkg pkgexe [pkgDb] ["recache"]
-  case eres of
+  case eresUnregister of
     Left (PrettyException e) -> when isWarn $
       prettyWarn $
         "[S-8729]"
@@ -185,6 +197,12 @@ unregisterGhcPkgIds isWarn pkgexe pkgDb epgids = do
                 \error:"
         <> blankLine
         <> pretty e
+    Right _ -> pure ()
+  -- ghcPkgUnregisterForce does not perform an effective 'ghc-pkg recache', as
+  -- that depends on a specific version of the Cabal package.
+  eresRecache <- ghcPkg pkgexe [pkgDb] ["recache"]
+  case eresRecache of
+    Left err -> prettyThrowM $ CannotRecacheAfterUnregister pkgDb err
     Right _ -> pure ()
  where
   (idents, gids) = partitionEithers $ toList epgids

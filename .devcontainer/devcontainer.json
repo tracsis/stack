@@ -3,16 +3,17 @@
   "build": {
     "dockerfile": "GHC.Dockerfile",
     "args": {
-      "GHC_VERSION": "9.6.5",
-      "HLS_VERSION": "2.6.0.0",
+      "GHC_VERSION": "9.8.4",
+      // "SUBTAG": "int-native",
+      "HLS_VERSION": "2.10.0.0",
       "USE_ZSH_FOR_ROOT": "unset-to-use-ash",
-      "SET_LANG": "C.UTF-8",
-      "SET_TZ": ""
+      "LANG": "C.UTF-8",
+      "TZ": ""
     }
   },
 
   "onCreateCommand": "onCreateCommand.sh",
-  "postCreateCommand": "cabal update",
+  "postCreateCommand": "postCreateCommand.sh",
 
   "features": {
     "ghcr.io/devcontainers/features/common-utils:2": {
@@ -48,8 +49,8 @@
   // Set 'remoteUser' to 'root' to connect as root instead.
   "remoteUser": "vscode",
 
-  // Pip: Install packages to the user site
   "remoteEnv": {
+    // Pip: Install packages to the user site
     "PIP_USER": "1"
   }
 }

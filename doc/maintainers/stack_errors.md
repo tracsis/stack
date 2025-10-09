@@ -5,7 +5,7 @@
 In connection with considering Stack's support of the
 [Haskell Error Index](https://errors.haskell.org/) initiative, this page seeks
 to take stock of the errors that Stack itself can raise, by reference to the
-`master` branch of the Stack repository. Last updated: 2024-03-02.
+`master` branch of the Stack repository. Last updated: 2025-05-12.
 
 *   `Stack.main`: catches exceptions from action `commandLineHandler`.
 
@@ -28,18 +28,6 @@ to take stock of the errors that Stack itself can raise, by reference to the
         [S-2816] = InconsistentDependenciesBug
         ~~~
 
-    -   `GHC.GHC.Utils.GhcPkg.Main.Compat`
-
-        ~~~haskell
-        [S-6512] = CannotParse String String String
-        [S-3384] | CannotOpenDBForModification FilePath IOException
-        [S-1430] | SingleFileDBUnsupported FilePath
-        [S-5996] | ParsePackageInfoExceptions String
-        [S-3189] | CannotFindPackage PackageArg (Maybe FilePath)
-        [S-9323] | CannotParseRelFileBug String
-        [S-7651] | CannotParseDirectoryWithDBug String
-        ~~~
-
     -   `Options.Applicative.Builder.Extra.OptionsApplicativeExtraException`
 
         ~~~haskell
@@ -58,12 +46,16 @@ to take stock of the errors that Stack itself can raise, by reference to the
         [S-1727] = NotOnlyLocal [PackageName] [Text]
         ~~~
 
+    -   `Stack.Build.ExecutePackage`
+
+        `[S-4541]` used in `copyPreCompiled`
+
     -   `Stack.BuildPlan.BuildPlanException`
 
         ~~~haskell
         [S-7571] = UnknownPackages (Path Abs File) (Map PackageName (Maybe Version, Set PackageName)) (Map PackageName (Set PackageIdentifier))
         [S-2045] | SnapshotNotFound SnapName
-        [S-8559] | NeitherCompilerOrResolverSpecified Text
+        [S-8559] | NeitherCompilerOrSnapshotSpecified Text
         [S-5743] | DuplicatePackagesBug
         ~~~
 
@@ -83,7 +75,7 @@ to take stock of the errors that Stack itself can raise, by reference to the
     -   `Stack.Config.Docker.ConfigDockerException`
 
         ~~~haskell
-        [S-8575] = ResolverNotSupportedException (Maybe Project) (Maybe AbstractResolver)
+        [S-8575] = SnapshotNotSupportedException (Maybe Project) (Maybe AbstractSnapshot)
         ~~~
 
     -   `Stack.Config.Nix.ConfigNixException`
@@ -140,21 +132,15 @@ to take stock of the errors that Stack itself can raise, by reference to the
 
         `[S-6716]` used in `unregisterGhcPkgIds`
 
-    -   `Stack.Ghci.GhciException`
-
-        ~~~haskell
-        [S-6716] = InvalidPackageOption String
-        [S-9632] | LoadingDuplicateModules
-        [S-3600] | MissingFileTarget String
-        [S-9906] | Can'tSpecifyFilesAndTargets
-        [S-5188] | Can'tSpecifyFilesAndMainIs
-        ~~~
-
     -   `Stack.Ghci.GhciPrettyException`
 
         ~~~haskell
         [S-6948] = GhciTargetParseException [StyleDoc]
         [S-1939] | CandidatesIndexOutOfRangeBug
+        [S-6716] | InvalidPackageOption String
+        [S-3600] | FileTargetIsInvalidAbsFile String
+        [S-9906] | Can'tSpecifyFilesAndTargets
+        [S-5188] | Can'tSpecifyFilesAndMainIs
         ~~~
 
     -   `Stack.Hoogle.HoogleException`
@@ -183,8 +169,8 @@ to take stock of the errors that Stack itself can raise, by reference to the
         [S-8009] | ConfigFileAlreadyExists FilePath
         [S-5267] | PackageNameInvalid [FilePath]
         [S-1833] | NoMatchingSnapshot (NonEmpty SnapName)
-        [S-6395] | ResolverMismatch RawSnapshotLocation String
-        [S-2422] | ResolverPartial RawSnapshotLocation String
+        [S-6395] | SnapshotMismatch RawSnapshotLocation String
+        [S-2422] | SnapshotPartial RawSnapshotLocation String
         ~~~
 
     -   `Stack.List.ListPrettyException`
@@ -381,10 +367,11 @@ to take stock of the errors that Stack itself can raise, by reference to the
         [S-6374] | SetupHsBuildFailure ExitCode (Maybe PackageIdentifier) (Path Abs File) [String] (Maybe (Path Abs File)) [Text]
         [S-8506] | TargetParseException [StyleDoc]
         [S-7086] | SomeTargetsNotBuildable [(PackageName, NamedComponent)]
-        [S-8664] | InvalidFlagSpecification (Set UnusedFlags)
+        [S-8664] | InvalidFlagSpecification [UnusedFlags]
         [S-8100] | GHCProfOptionInvalid
         [S-1727] | NotOnlyLocal [PackageName] [Text]
-        [S-6362] | CompilerVersionMismatch (Maybe (ActualCompiler, Arch)) (WantedCompiler, Arch) GHCVariant CompilerBuild VersionCheck (Maybe (Path Abs File)) Text
+        [S-6362] | CompilerVersionMismatch (Maybe (ActualCompiler, Arch)) (WantedCompiler, Arch) GHCVariant CompilerBuild VersionCheck WantedCompilerSetter Text
+        [S-4660] | ActionNotFilteredBug StyleDoc
         ~~~
 
     -   `Stack.Types.Compiler.CompilerException`
@@ -403,13 +390,14 @@ to take stock of the errors that Stack itself can raise, by reference to the
         [S-2040] | UnableToExtractArchive Text (Path Abs File)
         [S-1641] | BadStackVersionException VersionRange
         [S-8773] | NoSuchDirectory FilePath
+        [S-4335] | NoSuchFile FilePath
         [S-3938] | ParseGHCVariantException String
         [S-8530] | BadStackRoot (Path Abs Dir)
         [S-7613] | Won'tCreateStackRootInDirectoryOwnedByDifferentUser (Path Abs Dir) (Path Abs Dir)
         [S-8707] | UserDoesn'tOwnDirectory (Path Abs Dir)
         [S-3605] | ManualGHCVariantSettingsAreIncompatibleWithSystemGHC
         [S-6816] | NixRequiresSystemGhc
-        [S-5027] | NoResolverWhenUsingNoProject
+        [S-5027] | NoSnapshotWhenUsingNoProject
         [S-3803] | NoLTSWithMajorVersion Int
         [S-5472] | NoLTSFound
         ~~~
@@ -419,8 +407,11 @@ to take stock of the errors that Stack itself can raise, by reference to the
         ~~~haskell
         [S-6602] = ParseConfigFileException (Path Abs File) ParseException
         [S-7462] | StackWorkEnvNotRelativeDir String
-        [S-3251] | MultiplePackageIndices [PackageIndexConfig]
         [S-5470] | DuplicateLocalPackageNames [(PackageName, [PackageLocation])]
+        [S-6854] | BadMsysEnvironment MsysEnvironment Arch
+        [S-5006] | NoDefaultMsysEnvironmentBug
+        [S-8398] | ConfigFileNotProjectLevelBug
+        [S-6890] | NoExecutablePath String
         ~~~
 
     -   `Stack.Types.Config.ParseAbsolutePathException`
@@ -452,6 +443,19 @@ to take stock of the errors that Stack itself can raise, by reference to the
         [S-1512] | DockerStackExeParseException String
         ~~~
 
+    -   `Stack.Types.GhcPkgExe`
+
+        ~~~haskell
+        [S-6512] = CannotParse String String String
+        [S-3384] | CannotOpenDBForModification FilePath IOException
+        [S-1430] | SingleFileDBUnsupported FilePath
+        [S-5996] | ParsePackageInfoExceptions String
+        [S-3189] | CannotFindPackage PackageArg (Maybe FilePath)
+        [S-9323] | CannotParseRelFileBug String
+        [S-7651] | CannotParseDirectoryWithDBug String
+        [S-6590] | CannotRecacheAfterUnregister (Path Abs Dir) SomeException
+        ~~~
+
     -   `Stack.Types.GhcPkgId.GhcPkgIdParseFail`
 
         ~~~haskell
@@ -468,10 +472,10 @@ to take stock of the errors that Stack itself can raise, by reference to the
         [S-4623] | ComponentNotParsedBug
         ~~~
 
-    -   `Stack.Types.Resolver.TypesResolverException`
+    -   `Stack.Types.Snapshot.TypesSnapshotException`
 
         ~~~haskell
-        [S-8787] = ParseResolverException Text
+        [S-8787] = ParseSnapshotException Text
         [S-4865] | FilepathInDownloadedSnapshot Text
         ~~~
 
@@ -497,7 +501,7 @@ to take stock of the errors that Stack itself can raise, by reference to the
     -   `Stack.Upgrade.UpgradePrettyException`
 
         ~~~haskell
-        [S-8761] = ResolverOptionInvalid
+        [S-8761] = SnapshotOptionInvalid
         [S-3642] | NeitherBinaryOrSourceSpecified
         [S-8716] | ExecutableFailure
         [S-7114] | CommitsNotFound String String
@@ -538,12 +542,28 @@ to take stock of the errors that Stack itself can raise, by reference to the
 
 *   `Stack.Config.configFromConfigMonoid`:
 
+    Presented as a warning rather than as an error:
+
     ~~~text
-    [S-8432] Stack's 'programs' path contains a space character and has no alternative
+    [S-8432]
+    Stack's 'programs' path is <path>. It contains a space character. This will
+    prevent building with GHC 9.4.1 or later. It also has has no alternative
     short ('8 dot 3') name. This will cause problems with packages that use the
-    GNU project's 'configure' shell script. Use the 'local-programs-path'
-    configuration option to specify an alternative path. The current path is:
-    <path>
+    GNU project's 'configure' shell script.
+
+    To avoid such problems, use the local-programs-path non-project specific
+    configuration option to specify an alternative space-free path.
+    ~~~
+
+    or
+
+    ~~~text
+    [S-8432]
+    Stack's 'programs' path is <path>. It contains a space character. This will
+    prevent building with GHC 9.4.1 or later.
+
+    To avoid such problems, use the local-programs-path non-project specific
+    configuration option to specify an alternative space-free path.
     ~~~
 
 *   `Stack.Coverage.generateHpcReport`: catches exceptions from

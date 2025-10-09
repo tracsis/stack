@@ -3,6 +3,11 @@
 {-# LANGUAGE NoFieldSelectors      #-}
 {-# LANGUAGE OverloadedRecordDot   #-}
 
+{-|
+Module      : Stack.Types.DotConfig
+License     : BSD-3-Clause
+-}
+
 module Stack.Types.DotConfig
   ( DotConfig (..)
   ) where
@@ -19,6 +24,7 @@ import           Stack.Types.Platform ( HasPlatform (..) )
 import           Stack.Types.Runner ( HasRunner (..) )
 import           Stack.Types.SourceMap ( SourceMap (..) )
 
+-- | Type representing configurations for the creation of a dependency graph.
 data DotConfig = DotConfig
   { buildConfig :: !BuildConfig
   , sourceMap :: !SourceMap

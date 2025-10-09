@@ -2,6 +2,11 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings   #-}
 
+{-|
+Module      : Stack.PackageDump
+License     : BSD-3-Clause
+-}
+
 module Stack.PackageDump
   ( Line
   , eachSection
@@ -10,10 +15,12 @@ module Stack.PackageDump
   , conduitDumpPackage
   , ghcPkgDump
   , ghcPkgDescribe
+  , ghcPkgField
   , sinkMatching
   , pruneDeps
   ) where
 
+import           Control.Monad.Extra ( whenJust )
 import           Data.Attoparsec.Args ( EscapingMode (..), argsParser )
 import           Data.Attoparsec.Text as P
 import           Data.Conduit ( await, leftover, toConsumer, yield )
@@ -21,6 +28,7 @@ import qualified Data.Conduit.List as CL
 import qualified Data.Conduit.Text as CT
 import qualified Data.Map as Map
 import qualified Data.Set as Set
+import qualified Distribution.Pretty as C
 import qualified Distribution.Text as C
 import           Distribution.Types.MungedPackageName
                    ( decodeCompatPackageName )
@@ -31,7 +39,7 @@ import           Stack.Component ( fromCabalName )
 import           Stack.GhcPkg ( createDatabase )
 import           Stack.Prelude
 import           Stack.Types.CompilerPaths ( GhcPkgExe (..), HasCompiler (..) )
-import           Stack.Types.Component ( StackUnqualCompName(..) )
+import           Stack.Types.ComponentUtils ( unqualCompFromText )
 import           Stack.Types.DumpPackage ( DumpPackage (..), SublibDump (..) )
 import           Stack.Types.GhcPkgId ( GhcPkgId, parseGhcPkgId )
 
@@ -89,6 +97,27 @@ ghcPkgDescribe ::
 ghcPkgDescribe pkgexe pkgName' = ghcPkgCmdArgs
   pkgexe
   ["describe", "--simple-output", packageNameString pkgName']
+
+-- | Call @ghc-pkg field@ with appropriate flags and stream to the given sink,
+-- using the given package database. Throws 'RIO.Process.ExitCodeException' if
+-- the process fails (for example, if the package is not found in the package
+-- database or the field is not found in the package's *.conf file).
+ghcPkgField ::
+     (HasCompiler env, HasProcessContext env, HasTerm env)
+  => GhcPkgExe
+  -> Path Abs Dir
+     -- ^ A package database.
+  -> MungedPackageId
+     -- ^ A munged package identifier.
+  -> String
+     -- ^ A field name.
+  -> ConduitM Text Void (RIO env) a
+     -- ^ Sink.
+  -> RIO env a
+ghcPkgField pkgexe pkgDb mungedPkgId fieldName = ghcPkgCmdArgs
+  pkgexe
+  ["field", C.prettyShow mungedPkgId, fieldName, "--simple-output" ]
+  [pkgDb]
 
 -- | Call @ghc-pkg@ and stream to the given sink, using the either the global
 -- package database or the given package databases.
@@ -165,9 +194,10 @@ pruneDeps getName getId getDepends chooseBest =
 
 -- | Find the package IDs matching the given constraints with all dependencies installed.
 -- Packages not mentioned in the provided @Map@ are allowed to be present too.
-sinkMatching :: Monad m
-             => Map PackageName Version -- ^ allowed versions
-             -> ConduitM DumpPackage o m (Map PackageName DumpPackage)
+sinkMatching ::
+     Monad m
+  => Map PackageName Version -- ^ allowed versions
+  -> ConduitM DumpPackage o m (Map PackageName DumpPackage)
 sinkMatching allowed =
     Map.fromList
   . map (pkgName . (.packageIdent) &&& id)
@@ -237,7 +267,7 @@ conduitDumpPackage = (.| CL.catMaybes) $ eachSection $ do
               fromCabalName libName'
             MungedPackageName _parentPackageName _ -> ""
           libName =
-            maybe getLibNameFromLegacyName StackUnqualCompName maybeLibName
+            maybe getLibNameFromLegacyName unqualCompFromText maybeLibName
           sublib = flip SublibDump libName <$> maybePackageName
           parseQuoted key =
             case mapM (P.parseOnly (argsParser NoEscaping)) val of
@@ -283,9 +313,10 @@ stripSuffixText x y
 type Line = Text
 
 -- | Apply the given Sink to each section of output, broken by a single line containing ---
-eachSection :: Monad m
-            => ConduitM Line Void m a
-            -> ConduitM Text a m ()
+eachSection ::
+     Monad m
+  => ConduitM Line Void m a
+  -> ConduitM Text a m ()
 eachSection inner = CL.map (T.filter (/= '\r')) .| CT.lines .| start
  where
   peekText = await >>= maybe (pure Nothing) (\bs ->
@@ -302,9 +333,10 @@ eachSection inner = CL.map (T.filter (/= '\r')) .| CT.lines .| start
     start
 
 -- | Grab each key/value pair
-eachPair :: Monad m
-         => (Text -> ConduitM Line Void m a)
-         -> ConduitM Line a m ()
+eachPair ::
+     Monad m
+  => (Text -> ConduitM Line Void m a)
+  -> ConduitM Line a m ()
 eachPair inner = start
  where
   start = await >>= maybe (pure ()) start'
@@ -321,15 +353,13 @@ eachPair inner = start
 
   noIndent = do
     mx <- await
-    case mx of
-      Nothing -> pure ()
-      Just bs -> do
-        let (spaces, val) = T.span (== ' ') bs
-        if T.length spaces == 0
-          then leftover val
-          else do
-            yield val
-            loopIndent (T.length spaces)
+    whenJust mx $ \bs -> do
+      let (spaces, val) = T.span (== ' ') bs
+      if T.length spaces == 0
+        then leftover val
+        else do
+          yield val
+          loopIndent (T.length spaces)
 
   loopIndent i = loop
    where

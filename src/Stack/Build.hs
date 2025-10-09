@@ -3,7 +3,13 @@
 {-# LANGUAGE OverloadedRecordDot   #-}
 {-# LANGUAGE OverloadedStrings     #-}
 
--- | Build the project.
+{-|
+Module      : Stack.Build
+Description : Build the project.
+License     : BSD-3-Clause
+
+Build the project.
+-}
 
 module Stack.Build
   ( buildCmd
@@ -15,11 +21,11 @@ module Stack.Build
   ) where
 
 import           Data.Attoparsec.Args ( EscapingMode (Escaping), parseArgs )
+import qualified Data.Either.Extra as EE
 import           Data.List ( (\\) )
 import           Data.List.Extra ( groupSort )
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import qualified Data.Text as T
 -- import qualified Distribution.PackageDescription as C
 -- import           Distribution.Types.Dependency ( Dependency (..), depLibraries )
 import           Distribution.Version ( mkVersion )
@@ -41,7 +47,7 @@ import           Stack.Types.Build
                    )
 import           Stack.Types.Build.Exception
                    ( BuildException (..), BuildPrettyException (..) )
-import           Stack.Types.BuildConfig ( HasBuildConfig, stackYamlL )
+import           Stack.Types.BuildConfig ( HasBuildConfig, configFileL )
 import           Stack.Types.BuildOpts ( BuildOpts (..) )
 import           Stack.Types.BuildOptsCLI
                    ( BuildCommand (..), BuildOptsCLI (..), FileWatchOpts (..) )
@@ -49,11 +55,10 @@ import           Stack.Types.BuildOptsMonoid
                    ( buildOptsMonoidBenchmarksL, buildOptsMonoidHaddockL
                    , buildOptsMonoidInstallExesL, buildOptsMonoidTestsL
                    )
-import           Stack.Types.Compiler ( getGhcVersion )
-import           Stack.Types.CompilerPaths ( cabalVersionL )
-import           Stack.Types.Config
-                   ( Config (..), HasConfig (..), buildOptsL
-                   )
+import           Stack.Types.CompilerPaths ( HasCompiler, cabalVersionL )
+import           Stack.Types.ComponentUtils
+                   ( StackUnqualCompName, unqualCompToString )
+import           Stack.Types.Config ( Config (..), HasConfig (..), buildOptsL )
 import           Stack.Types.ConfigureOpts ( BaseConfigOpts (..) )
 import           Stack.Types.EnvConfig
                    ( EnvConfig (..), HasEnvConfig (..), HasSourceMap
@@ -70,9 +75,7 @@ import           Stack.Types.Package
 import           Stack.Types.Platform ( HasPlatform (..) )
 import           Stack.Types.Runner ( Runner, globalOptsL )
 import           Stack.Types.SourceMap
-                   ( SMTargets (..)
-                   , SourceMap (..), Target (..) )
-import           System.Terminal ( fixCodePage )
+                   ( SMTargets (..), SourceMap (..), Target (..) )
 
 newtype CabalVersionPrettyException
   = CabalVersionNotSupported Version
@@ -83,15 +86,24 @@ instance Pretty CabalVersionPrettyException where
     "[S-5973]"
     <> line
     <> fillSep
-         [ flow "Stack does not support Cabal versions before 1.24, but \
-                \version"
+         [ flow "Stack builds with the version of the Cabal package that comes \
+                \with the specified version of GHC. However, Stack no longer \
+                \supports such Cabal versions before 2.2. Version"
          , fromString $ versionString cabalVer
-         , flow "was found. To fix this, consider updating the snapshot to"
-         , style Shell "lts-7.0"
-         , flow "or later or to"
-         , style Shell "nightly-2016-05-26"
-         , flow "or later."
+         , flow "was found. To fix this, either use Stack"
+         , downgradeRecommendation
+         , flow "or earlier or use a snapshot that specifies a version of GHC \
+                \that is 8.4 or later. Stackage LTS Haskell 12.0"
+         , parens (style Shell "lts-12.0")
+         , flow "or later or Nightly 2018-03-13"
+         , parens (style Shell "nightly-2018-03-13")
+         , flow "or later specify such GHC versions."
          ]
+   where
+    -- Due to a bug, Stack 2.15.1 does not support Cabal < 2.
+    downgradeRecommendation = if cabalVer < mkVersion [2]
+      then "2.15.3 or 2.13.1"
+      else "2.15.3"
 
 instance Exception CabalVersionPrettyException
 
@@ -102,15 +114,20 @@ buildCmd opts = do
     prettyThrowIO GHCProfOptionInvalid
   local (over globalOptsL modifyGO) $
     case opts.fileWatch of
-      FileWatchPoll -> fileWatchPoll (inner . Just)
-      FileWatch -> fileWatch (inner . Just)
+      FileWatchPoll -> withFileWatchHook fileWatchPoll
+      FileWatch -> withFileWatchHook fileWatch
       NoFileWatch -> inner Nothing
  where
+  withFileWatchHook fileWatchAction =
+    -- This loads the full configuration in order to obtain the file-watch-hook
+    -- setting. That is likely not the most efficient approach.
+    withConfig YesReexec $ withEnvConfig NeedTargets opts $
+      fileWatchAction (inner . Just)
   inner ::
        Maybe (Set (Path Abs File) -> IO ())
     -> RIO Runner ()
   inner setLocalFiles = withConfig YesReexec $ withEnvConfig NeedTargets opts $
-      Stack.Build.build setLocalFiles
+    Stack.Build.build setLocalFiles
   -- Read the build command from the CLI and enable it to run
   modifyGO =
     case opts.command of
@@ -137,76 +154,90 @@ build :: HasEnvConfig env
       => Maybe (Set (Path Abs File) -> IO ()) -- ^ callback after discovering all local files
       -> RIO env ()
 build msetLocalFiles = do
-  mcp <- view $ configL . to (.modifyCodePage)
-  ghcVersion <- view $ actualCompilerVersionL . to getGhcVersion
-  fixCodePage mcp ghcVersion $ do
-    bopts <- view buildOptsL
-    sourceMap <- view $ envConfigL . to (.sourceMap)
-    locals <- projectLocalPackages
-    depsLocals <- localDependencies
-    let allLocals = locals <> depsLocals
+  bopts <- view buildOptsL
+  sourceMap <- view $ envConfigL . to (.sourceMap)
+  locals <- projectLocalPackages
+  depsLocals <- localDependencies
+  boptsCli <- view $ envConfigL . to (.buildOptsCLI)
+  -- Set local files, necessary for file watching
+  configFile <- view configFileL
+  let allLocals = locals <> depsLocals
+      -- We are indifferent as to whether the configuration file is a
+      -- user-specifc global or a project-level one.
+      eitherConfigFile = EE.fromEither configFile
+  for_ msetLocalFiles $ \setLocalFiles -> do
+    files <-
+      if boptsCli.watchAll
+      then sequence [lpFiles lp | lp <- allLocals]
+      else forM allLocals $ \lp -> do
+        let pn = lp.package.name
+        case Map.lookup pn sourceMap.targets.targets of
+          Nothing ->
+            pure Set.empty
+          Just (TargetAll _) ->
+            lpFiles lp
+          Just (TargetComps components) ->
+            lpFilesForComponents components lp
+    liftIO $ setLocalFiles $ Set.insert eitherConfigFile $ Set.unions files
 
-    boptsCli <- view $ envConfigL . to (.buildOptsCLI)
-    -- Set local files, necessary for file watching
-    stackYaml <- view stackYamlL
-    for_ msetLocalFiles $ \setLocalFiles -> do
-      files <-
-        if boptsCli.watchAll
-        then sequence [lpFiles lp | lp <- allLocals]
-        else forM allLocals $ \lp -> do
-          let pn = lp.package.name
-          case Map.lookup pn sourceMap.targets.targets of
-            Nothing ->
-              pure Set.empty
-            Just (TargetAll _) ->
-              lpFiles lp
-            Just (TargetComps components) ->
-              lpFilesForComponents components lp
-      liftIO $ setLocalFiles $ Set.insert stackYaml $ Set.unions files
+  checkComponentsBuildable allLocals
 
-    checkComponentsBuildable allLocals
+  installMap <- toInstallMap sourceMap
+  (installedMap, globalDumpPkgs, snapshotDumpPkgs, localDumpPkgs) <-
+      getInstalled installMap
 
-    installMap <- toInstallMap sourceMap
-    (installedMap, globalDumpPkgs, snapshotDumpPkgs, localDumpPkgs) <-
-        getInstalled installMap
+  baseConfigOpts <- mkBaseConfigOpts boptsCli
+  plan <- constructPlan
+            baseConfigOpts
+            localDumpPkgs
+            loadPackage
+            sourceMap
+            installedMap
+            boptsCli.initialBuildSteps
 
-    baseConfigOpts <- mkBaseConfigOpts boptsCli
-    plan <- constructPlan
-              baseConfigOpts
-              localDumpPkgs
-              loadPackage
-              sourceMap
-              installedMap
-              boptsCli.initialBuildSteps
+  allowLocals <- view $ configL . to (.allowLocals)
+  unless allowLocals $ case justLocals plan of
+    [] -> pure ()
+    localsIdents -> throwM $ LocalPackagesPresent localsIdents
 
-    allowLocals <- view $ configL . to (.allowLocals)
-    unless allowLocals $ case justLocals plan of
-      [] -> pure ()
-      localsIdents -> throwM $ LocalPackagesPresent localsIdents
+  checkCabalVersion
+  haddockCompsSupported <- warnAboutHaddockComps bopts
+  let disableHaddockComps =
+        local $ over buildOptsL $ \bo ->
+          bo
+            { haddockExecutables = False
+            , haddockTests = False
+            , haddockBenchmarks = False
+            }
+      withHaddockCompsGuarded = if haddockCompsSupported
+        then id
+        else disableHaddockComps
+  warnAboutSplitObjs bopts
+  warnIfExecutablesWithSameNameCouldBeOverwritten locals plan
 
-    checkCabalVersion
-    warnAboutSplitObjs bopts
-    warnIfExecutablesWithSameNameCouldBeOverwritten locals plan
+  when bopts.preFetch $
+      preFetch plan
 
-    when bopts.preFetch $
-        preFetch plan
+  if boptsCli.dryrun
+    then
+      printPlan plan
+    else
+      withHaddockCompsGuarded $ executePlan
+        boptsCli
+        baseConfigOpts
+        locals
+        globalDumpPkgs
+        snapshotDumpPkgs
+        localDumpPkgs
+        installedMap
+        sourceMap.targets.targets
+        plan
 
-    if boptsCli.dryrun
-      then printPlan plan
-      else executePlan
-             boptsCli
-             baseConfigOpts
-             locals
-             globalDumpPkgs
-             snapshotDumpPkgs
-             localDumpPkgs
-             installedMap
-             sourceMap.targets.targets
-             plan
-
+-- | Build one or more local targets.
 buildLocalTargets ::
      HasEnvConfig env
   => NonEmpty Text
+     -- ^ Local targets to build.
   -> RIO env (Either SomeException ())
 buildLocalTargets targets =
   tryAny $ withNewLocalBuildTargets (NE.toList targets) $ build Nothing
@@ -221,7 +252,7 @@ justLocals =
 checkCabalVersion :: HasEnvConfig env => RIO env ()
 checkCabalVersion = do
   cabalVer <- view cabalVersionL
-  when (cabalVer < mkVersion [1, 24]) $
+  when (cabalVer < mkVersion [2, 2]) $
     prettyThrowM $ CabalVersionNotSupported cabalVer
 
 -- | See https://github.com/commercialhaskell/stack/issues/1198.
@@ -241,7 +272,7 @@ warnIfExecutablesWithSameNameCouldBeOverwritten locals plan = do
             ","
             [ style
                 PkgComponent
-                (fromString $ packageNameString p <> ":" <> T.unpack exe)
+                (fromString $ packageNameString p <> ":" <> unqualCompToString exe)
             | p <- pkgs
             ]
     prettyWarnL $
@@ -263,21 +294,21 @@ warnIfExecutablesWithSameNameCouldBeOverwritten locals plan = do
          | not (null otherLocals)
          ]
  where
-  -- Cases of several local packages having executables with the same name.
+  -- Cases of several project packages having executables with the same name.
   -- The Map entries have the following form:
   --
   --  executable name: ( package names for executables that are being built
-  --                   , package names for other local packages that have an
+  --                   , package names for other project packages that have an
   --                     executable with the same name
   --                   )
-  warnings :: Map Text ([PackageName],[PackageName])
+  warnings :: Map StackUnqualCompName ([PackageName],[PackageName])
   warnings =
     Map.mapMaybe
       (\(pkgsToBuild, localPkgs) ->
         case (pkgsToBuild, NE.toList localPkgs \\ NE.toList pkgsToBuild) of
           (_ :| [], []) ->
-            -- We want to build the executable of single local package
-            -- and there are no other local packages with an executable of
+            -- We want to build the executable of single project package
+            -- and there are no other project packages with an executable of
             -- the same name. Nothing to warn about, ignore.
             Nothing
           (_, otherLocals) ->
@@ -285,12 +316,12 @@ warnIfExecutablesWithSameNameCouldBeOverwritten locals plan = do
             -- 1) We are building two or more executables with the same
             --    name that will end up overwriting each other.
             -- 2) In addition to the executable(s) that we want to build
-            --    there are other local packages with an executable of the
+            --    there are other project packages with an executable of the
             --    same name that might get overwritten.
             -- Both cases warrant a warning.
             Just (NE.toList pkgsToBuild, otherLocals))
       (Map.intersectionWith (,) exesToBuild localExes)
-  exesToBuild :: Map Text (NonEmpty PackageName)
+  exesToBuild :: Map StackUnqualCompName (NonEmpty PackageName)
   exesToBuild =
     collect
       [ (exe, pkgName')
@@ -298,7 +329,7 @@ warnIfExecutablesWithSameNameCouldBeOverwritten locals plan = do
       , TTLocalMutable lp <- [task.taskType]
       , exe <- (Set.toList . exeComponents . (.components)) lp
       ]
-  localExes :: Map Text (NonEmpty PackageName)
+  localExes :: Map StackUnqualCompName (NonEmpty PackageName)
   localExes =
     collect
       [ (exe, pkg.name)
@@ -307,6 +338,36 @@ warnIfExecutablesWithSameNameCouldBeOverwritten locals plan = do
       ]
   collect :: Ord k => [(k, v)] -> Map k (NonEmpty v)
   collect = Map.mapMaybe nonEmpty . Map.fromDistinctAscList . groupSort
+
+warnAboutHaddockComps ::
+     (HasCompiler env, HasTerm env)
+  => BuildOpts
+  -> RIO env Bool
+warnAboutHaddockComps bopts = do
+  let haddockCompsWanted =
+           bopts.haddockExecutables
+        || bopts.haddockTests
+        || bopts.haddockBenchmarks
+  cabalVer <- view cabalVersionL
+  if haddockCompsWanted && cabalVer < mkVersion [3, 8, 1]
+    then do
+      prettyWarnL
+        [ flow "Stack builds Haddock documentation with the version of the \
+               \Cabal package that comes with the specified version of GHC. \
+               \Version"
+        , fromString $ versionString cabalVer
+        , flow "was found, which does not support the building of \
+               \documentation for executables, test suites or benchmarks. \
+               \Options to build such documentation will be ignored. To use \
+               \the options, use a snapshot that specifies a version of GHC \
+               \that is 9.4 or later. Stackage LTS Haskell 21.0"
+        , parens (style Shell "lts-21.0")
+        , flow "or later or Nightly 2022-11-19"
+        , parens (style Shell "nightly-2022-11-19")
+        , flow "or later specify such GHC versions."
+        ]
+      pure False
+    else pure haddockCompsWanted
 
 warnAboutSplitObjs :: HasTerm env => BuildOpts -> RIO env ()
 warnAboutSplitObjs bopts |  bopts.splitObjs =
@@ -318,6 +379,7 @@ warnAboutSplitObjs bopts |  bopts.splitObjs =
     ]
 warnAboutSplitObjs _ = pure ()
 
+-- | Text warning about the experimental nature of Stack's @--split-objs@ flag.
 splitObjsWarning :: String
 splitObjsWarning =
   "Note that this feature is EXPERIMENTAL, and its behavior may be changed and \

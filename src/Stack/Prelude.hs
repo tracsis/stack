@@ -3,6 +3,14 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings   #-}
 
+{-|
+Module      : Stack.Prelude
+Description : Common types and functions.
+License     : BSD-3-Clause
+
+Common types and functions.
+-}
+
 module Stack.Prelude
   ( withSystemTempDir
   , withKeepSystemTempDir
@@ -146,10 +154,11 @@ withSystemTempDir str inner = withRunInIO $ \run ->
   Path.IO.withSystemTempDir str $ run . inner
 
 -- | Like `withSystemTempDir`, but the temporary directory is not deleted.
-withKeepSystemTempDir :: MonadUnliftIO m
-                      => String
-                      -> (Path Abs Dir -> m a)
-                      -> m a
+withKeepSystemTempDir ::
+     MonadUnliftIO m
+  => String
+  -> (Path Abs Dir -> m a)
+  -> m a
 withKeepSystemTempDir str inner = withRunInIO $ \run -> do
   path <- Path.IO.getTempDir
   dir <- Path.IO.createTempDir path str
@@ -158,8 +167,8 @@ withKeepSystemTempDir str inner = withRunInIO $ \run -> do
 -- | Consume the stdout and stderr of a process feeding strict 'ByteString's to
 -- the consumers.
 --
--- Throws a 'ReadProcessException' if unsuccessful in launching, or
--- 'ExitCodeException' if the process itself fails.
+-- Throws a 'Rio.Process.ReadProcessException' if unsuccessful in launching, or
+-- 'Rio.Process.ExitCodeException' if the process itself fails.
 sinkProcessStderrStdout ::
      forall e o env. (HasProcessContext env, HasLogFunc env, HasCallStack)
   => String -- ^ Command
@@ -184,7 +193,7 @@ sinkProcessStderrStdout name args sinkStderr sinkStdout =
 -- level. Should not be used for long-running processes or ones with
 -- lots of output; for that use 'sinkProcessStderrStdout'.
 --
--- Throws a 'ReadProcessException' if unsuccessful.
+-- Throws a 'Rio.Process.ReadProcessException' if unsuccessful.
 sinkProcessStdout ::
      (HasProcessContext env, HasLogFunc env, HasCallStack)
   => String -- ^ Command
@@ -209,21 +218,23 @@ logProcessStderrStdout pc = withLoggedProcess_ pc $ \p ->
 
 -- | Read from the process, ignoring any output.
 --
--- Throws a 'ReadProcessException' exception if the process fails.
-readProcessNull :: (HasProcessContext env, HasLogFunc env, HasCallStack)
-                => String -- ^ Command
-                -> [String] -- ^ Command line arguments
-                -> RIO env ()
+-- Throws a 'Rio.Process.ReadProcessException' exception if the process fails.
+readProcessNull ::
+     (HasProcessContext env, HasLogFunc env, HasCallStack)
+  => String -- ^ Command
+  -> [String] -- ^ Command line arguments
+  -> RIO env ()
 readProcessNull name args =
   -- We want the output to appear in any exceptions, so we capture and drop it
   void $ proc name args readProcess_
 
 -- | Use the new 'ProcessContext', but retain the working directory
 -- from the parent environment.
-withProcessContext :: HasProcessContext env
-                   => ProcessContext
-                   -> RIO env a
-                   -> RIO env a
+withProcessContext ::
+     HasProcessContext env
+  => ProcessContext
+  -> RIO env a
+  -> RIO env a
 withProcessContext pcNew inner = do
   pcOld <- view processContextL
   let pcNew' = set workingDirL (view workingDirL pcOld) pcNew
@@ -361,7 +372,7 @@ bugRequest =  "Please report this bug at Stack's repository."
 mcons :: Maybe a -> [a] -> [a]
 mcons ma as = maybe as (:as) ma
 
--- | Write a 'Utf8Builder' to the standard output stream.
+-- | Write a t'Utf8Builder' to the standard output stream.
 putUtf8Builder :: MonadIO m => Utf8Builder -> m ()
 putUtf8Builder = putBuilder . getUtf8Builder
 

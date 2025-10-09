@@ -1,6 +1,11 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 
+{-|
+Module      : Stack.Types.Cache
+License     : BSD-3-Clause
+-}
+
 module Stack.Types.Cache
   ( ConfigCacheType (..)
   , Action (..)
@@ -12,7 +17,8 @@ import           Database.Persist.Sql
                    , SqlType (..)
                    )
 import           Stack.Prelude
-import           Stack.Types.GhcPkgId ( GhcPkgId, parseGhcPkgId, unGhcPkgId )
+import           Stack.Types.GhcPkgId
+                   ( GhcPkgId, ghcPkgIdToText, parseGhcPkgId )
 
 -- | Type of config cache
 data ConfigCacheType
@@ -24,7 +30,7 @@ data ConfigCacheType
 instance PersistField ConfigCacheType where
   toPersistValue ConfigCacheTypeConfig = PersistText "config"
   toPersistValue (ConfigCacheTypeFlagLibrary v) =
-    PersistText $ "lib:" <> unGhcPkgId v
+    PersistText $ "lib:" <> ghcPkgIdToText v
   toPersistValue (ConfigCacheTypeFlagExecutable v) =
     PersistText $ "exe:" <> T.pack (packageIdentifierString v)
   fromPersistValue (PersistText t) =
@@ -48,6 +54,8 @@ instance PersistField ConfigCacheType where
 instance PersistFieldSql ConfigCacheType where
   sqlType _ = SqlString
 
+-- | Type representing actions for which the last time the action was performed
+-- should be cached.
 data Action
   = UpgradeCheck
   deriving (Eq, Ord, Show)

@@ -3,14 +3,22 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings   #-}
 
--- | Main Stack tool entry point.
+{-|
+Module      : Stack
+Description : Main Stack tool entry point.
+License     : BSD-3-Clause
+
+Main Stack tool entry point.
+-}
 
 module Stack
   ( main
   ) where
 
+import           Control.Monad.Extra ( whenJust )
 import           GHC.IO.Encoding ( mkTextEncoding, textEncodingName )
 import           Options.Applicative.Builder.Extra ( execExtraHelp )
+import           Path ( parseAbsFile )
 import           Stack.BuildInfo ( versionString' )
 import           Stack.CLI ( commandLineHandler )
 import           Stack.Constants ( stackProgName )
@@ -29,7 +37,7 @@ import           Stack.Types.Version
                    , stackVersion
                    )
 import           System.Directory ( getCurrentDirectory )
-import           System.Environment ( getArgs, getProgName )
+import           System.Environment ( executablePath, getArgs, getProgName )
 import           System.IO ( hGetEncoding, hPutStrLn, hSetEncoding )
 import           System.Terminal ( hIsTerminalDeviceOrMinTTY )
 
@@ -49,6 +57,7 @@ instance Exception StackException where
     , actual
     ]
 
+-- | Main Stack tool entry point.
 main :: IO ()
 main = do
   -- Line buffer the output by default, particularly for non-terminal runs.
@@ -60,6 +69,8 @@ main = do
   hSetTranslit stderr
   args <- getArgs
   progName <- getProgName
+  mExecutableFilePath <- fromMaybe (pure Nothing) executablePath
+  let mExecutablePath = mExecutableFilePath >>= parseAbsFile
   isTerminal <- hIsTerminalDeviceOrMinTTY stdout
   execExtraHelp
     args
@@ -72,21 +83,20 @@ main = do
     (nixOptsParser False)
     ("Only showing --" ++ nixCmdName ++ "* options.")
   currentDir <- getCurrentDirectory
-  eGlobalRun <- try $ commandLineHandler currentDir progName False
+  eGlobalRun <-
+    try $ commandLineHandler currentDir progName mExecutablePath False
   case eGlobalRun of
     Left (exitCode :: ExitCode) ->
       throwIO exitCode
     Right (globalMonoid, run) -> do
-      global <- globalOptsFromMonoid isTerminal globalMonoid
+      global <-
+        globalOptsFromMonoid progName mExecutablePath isTerminal globalMonoid
       when (global.logLevel == LevelDebug) $
         hPutStrLn stderr versionString'
-      case global.reExecVersion of
-        Just expectVersion -> do
-          expectVersion' <- parseVersionThrowing expectVersion
-          unless (checkVersion MatchMinor expectVersion' stackVersion) $
-            throwIO $
-              InvalidReExecVersion expectVersion showStackVersion
-        _ -> pure ()
+      whenJust global.reExecVersion $ \expectVersion -> do
+        expectVersion' <- parseVersionThrowing expectVersion
+        unless (checkVersion MatchMinor expectVersion' stackVersion) $
+          throwIO $ InvalidReExecVersion expectVersion showStackVersion
       withRunnerGlobal global $ run `catches`
         [ Handler handleExitCode
         , Handler handlePrettyException
@@ -99,12 +109,10 @@ main = do
 hSetTranslit :: Handle -> IO ()
 hSetTranslit h = do
   menc <- hGetEncoding h
-  case fmap textEncodingName menc of
-    Just name
-      | '/' `notElem` name -> do
-          enc' <- mkTextEncoding $ name ++ "//TRANSLIT"
-          hSetEncoding h enc'
-    _ -> pure ()
+  whenJust (fmap textEncodingName menc) $ \name ->
+    unless ('/' `elem` name) $ do
+      enc' <- mkTextEncoding $ name ++ "//TRANSLIT"
+      hSetEncoding h enc'
 
 -- | Handle ExitCode exceptions.
 handleExitCode :: ExitCode -> RIO Runner a

@@ -1,7 +1,13 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 
--- | Functions to parse command line arguments for Stack's @sdist@ and @upload@
--- commands.
+{-|
+Module      : Stack.Options.SDistParser
+Description : Parse arguments for Stack's @sdist@ command.
+License     : BSD-3-Clause
+
+Functions to parse command line arguments for Stack's @sdist@ command.
+-}
+
 module Stack.Options.SDistParser
  ( sdistOptsParser
  ) where
@@ -12,29 +18,31 @@ import           Options.Applicative
                    )
 import           Options.Applicative.Builder.Extra ( boolFlags, dirCompleter )
 import           Stack.Prelude
-import           Stack.SDist ( SDistOpts (..) )
-import           Stack.Options.HpcReportParser ( pvpBoundsOption )
+import           Stack.Types.SDistOpts ( SDistOpts (..) )
+import           Stack.Options.PvpBoundsParser ( pvpBoundsParser )
 
--- | Parse command line arguments for Stack's @sdist@ and @upload@ commands.
+-- | Parse command line arguments for Stack's @sdist@ command.
 sdistOptsParser :: Parser SDistOpts
 sdistOptsParser = SDistOpts
   <$> many (strArgument
         (  metavar "DIR"
         <> completer dirCompleter
+        <> help "A relative path to a package directory. Can be specified \
+                \multiple times. If none specified, use all project packages."
         ))
-  <*> optional pvpBoundsOption
+  <*> optional (pvpBoundsParser Nothing)
   <*> ignoreCheckSwitch
   <*> buildPackageOption
   <*> optional (strOption
         (  long "tar-dir"
-        <> help "If specified, copy all the tar to this directory."
+        <> help "If specified, copy all the generated files to this directory."
         ))
  where
   ignoreCheckSwitch = switch
     (  long "ignore-check"
-    <> help "Do not check package for common mistakes."
+    <> help "Do not check packages for common mistakes."
     )
   buildPackageOption = boolFlags False
     "test-tarball"
-    "building of the resulting tarball."
+    "building of the resulting generated files."
     idm

@@ -10,24 +10,30 @@
 {-# LANGUAGE ScopedTypeVariables   #-}
 {-# LANGUAGE TupleSections         #-}
 
--- This module is based on GHC's utils\ghc-pkg\Main.hs at
--- commit f66fc15f2e6849125074bcfeb44334a663323ca6 (see GHC merge request
--- !11142), with:
--- * changeDBDir' does not perform an effective @ghc-pkg recache@,
--- * the cache is not used,
--- * consistency checks are not performed,
--- * use Stack program name,
--- * use "Stack.Prelude" rather than "Prelude",
--- * use 'RIO' @env@ monad,
--- * use well-typed representations of paths from the @path@ package,
--- * add pretty messages and exceptions,
--- * redundant code deleted,
--- * Hlint applied, and
--- * explicit import lists.
---
--- The version of the ghc-pkg executable supplied with GHCs published before
--- 28 August 2023 does not efficiently bulk unregister. This module exports a
--- function that does efficiently bulk unregister.
+{-|
+Module      : GHC.Utils.GhcPkg.Main.Compat
+License     : BSD-3-Clause
+
+This module is based on GHC's utils\ghc-pkg\Main.hs at
+commit f66fc15f2e6849125074bcfeb44334a663323ca6 (see GHC merge request !11142),
+with:
+
+* changeDBDir' does not perform an effective @ghc-pkg recache@,
+* the cache is not used,
+* consistency checks are not performed,
+* use Stack program name,
+* use "Stack.Prelude" rather than "Prelude",
+* use t'RIO' @env@ monad,
+* use well-typed representations of paths from the @path@ package,
+* add pretty messages and exceptions,
+* redundant code deleted,
+* Hlint applied, and
+* explicit import lists.
+
+The version of the ghc-pkg executable supplied with GHCs published before
+28 August 2023 does not efficiently bulk unregister. This module exports a
+function that does efficiently bulk unregister.
+-}
 
 module GHC.Utils.GhcPkg.Main.Compat
   ( ghcPkgUnregisterForce
@@ -63,6 +69,10 @@ import           RIO.NonEmpty ( nonEmpty )
 import qualified RIO.NonEmpty as NE
 import           Stack.Constants ( relFilePackageCache )
 import           Stack.Prelude hiding ( display )
+import           Stack.Types.GhcPkgExe
+                   ( GhcPkgPrettyException (..), GlobPackageIdentifier (..)
+                   , PackageArg (..)
+                   )
 import           System.Environment ( getEnv )
 import           System.FilePath as FilePath
 import           System.IO ( readFile )
@@ -91,83 +101,6 @@ ghcPkgUnregisterForce globalDb pkgDb hasIpid pkgarg_strs = do
  where
   as_arg = if hasIpid then AsUnitId else AsDefault
 
--- | Type representing \'pretty\' exceptions thrown by functions exported by the
--- "GHC.Utils.GhcPkg.Main.Compat" module.
-data GhcPkgPrettyException
-  = CannotParse !String !String !String
-  | CannotOpenDBForModification !(SomeBase Dir) !IOException
-  | SingleFileDBUnsupported !(SomeBase Dir)
-  | ParsePackageInfoExceptions !String
-  | CannotFindPackage !PackageArg !(Maybe (SomeBase Dir))
-  | CannotParseRelFileBug !String
-  | CannotParseDirectoryWithDBug !String
-  deriving (Show, Typeable)
-
-instance Pretty GhcPkgPrettyException where
-  pretty (CannotParse str what e) =
-    "[S-6512]"
-    <> line
-    <> fillSep
-         [ flow "cannot parse"
-         , style Current (fromString str)
-         , flow "as a"
-         , fromString what <> ":"
-         ]
-    <> blankLine
-    <> fromString e
-  pretty (CannotOpenDBForModification db_path e) =
-    "[S-3384]"
-    <> line
-    <> fillSep
-         [ flow "Couldn't open database"
-         , pretty db_path
-         , flow "for modification:"
-         ]
-    <> blankLine
-    <> string (displayException e)
-  pretty (SingleFileDBUnsupported path) =
-    "[S-1430]"
-    <> line
-    <> fillSep
-         [ flow "ghc no longer supports single-file style package databases"
-         , parens (pretty path)
-         , "use"
-         , style Shell (flow "ghc-pkg init")
-         , flow "to create the database with the correct format."
-         ]
-  pretty (ParsePackageInfoExceptions errs) =
-    "[S-5996]"
-    <> line
-    <> flow errs
-  pretty (CannotFindPackage pkgarg mdb_path) =
-    "[S-3189]"
-    <> line
-    <> fillSep
-         [ flow "cannot find package"
-         , style Current (pkg_msg pkgarg)
-         , maybe
-             ""
-             (\db_path -> fillSep ["in", pretty db_path])
-             mdb_path
-         ]
-   where
-    pkg_msg (Substring pkgpat _) = fillSep ["matching", fromString pkgpat]
-    pkg_msg pkgarg' = fromString $ show pkgarg'
-  pretty (CannotParseRelFileBug relFileName) = bugPrettyReport "[S-9323]" $
-    fillSep
-      [ flow "changeDBDir': Could not parse"
-      , style File (fromString relFileName)
-      , flow "as a relative path to a file."
-      ]
-  pretty (CannotParseDirectoryWithDBug dirName) = bugPrettyReport "[S-7651]" $
-    fillSep
-      [ flow "adjustOldDatabasePath: Could not parse"
-      , style Dir (fromString dirName)
-      , flow "as a directory."
-      ]
-
-instance Exception GhcPkgPrettyException
-
 -- -----------------------------------------------------------------------------
 -- Do the business
 
@@ -176,38 +109,11 @@ data AsPackageArg
   = AsUnitId
   | AsDefault
 
--- | Represents how a package may be specified by a user on the command line.
-data PackageArg
-    -- | A package identifier foo-0.1, or a glob foo-*
-  = Id GlobPackageIdentifier
-    -- | An installed package ID foo-0.1-HASH.  This is guaranteed to uniquely
-    -- match a single entry in the package database.
-  | IUId UnitId
-    -- | A glob against the package name.  The first string is the literal
-    -- glob, the second is a function which returns @True@ if the argument
-    -- matches.
-  | Substring String (String -> Bool)
-
-instance Show PackageArg where
-  show (Id pkgid) = displayGlobPkgId pkgid
-  show (IUId ipid) = display ipid
-  show (Substring pkgpat _) = pkgpat
-
 parseCheck :: Cabal.Parsec a => String -> String -> RIO env a
 parseCheck str what =
   case Cabal.eitherParsec str of
     Left e  -> prettyThrowIO $ CannotParse str what e
     Right x -> pure x
-
--- | Either an exact 'PackageIdentifier', or a glob for all packages
--- matching 'PackageName'.
-data GlobPackageIdentifier
-  = ExactPackageIdentifier MungedPackageId
-  | GlobPackageIdentifier  MungedPackageName
-
-displayGlobPkgId :: GlobPackageIdentifier -> String
-displayGlobPkgId (ExactPackageIdentifier pid) = display pid
-displayGlobPkgId (GlobPackageIdentifier pn) = display pn ++ "-*"
 
 readGlobPkgId :: String -> RIO env GlobPackageIdentifier
 readGlobPkgId str = case stripSuffix "-*" str of
@@ -237,8 +143,8 @@ data PackageDB (mode :: GhcPkg.DbMode) = PackageDB
 -- | A stack of package databases. Convention: head is the topmost in the stack.
 type PackageDBStack = [PackageDB 'GhcPkg.DbReadOnly]
 
--- | Selector for picking the right package DB to modify as 'modify' changes the
--- first database that contains a specific package.
+-- | Selector for picking the right package DB to modify as \'modify\' changes
+-- the first database that contains a specific package.
 newtype DbModifySelector = ContainsPkg PackageArg
 
 getPkgDatabases ::
@@ -554,13 +460,14 @@ unregisterPackages globalDb pkgargs pkgDb = do
  where
   -- Update a list of 'packages by package database' for a package. Assumes that
   -- a package to be unregistered is in no more than one database.
-  getPkgsByPkgDBs :: [(PackageDB GhcPkg.DbReadWrite, [UnitId])]
-                  -- ^ List of considered 'packages by package database'
-                  -> [(PackageDB GhcPkg.DbReadWrite, [UnitId])]
-                  -- ^ List of to be considered 'packages by package database'
-                  -> PackageArg
-                  -- Package to update
-                  -> RIO env [(PackageDB GhcPkg.DbReadWrite, [UnitId])]
+  getPkgsByPkgDBs ::
+       [(PackageDB GhcPkg.DbReadWrite, [UnitId])]
+       -- ^ List of considered 'packages by package database'
+    -> [(PackageDB GhcPkg.DbReadWrite, [UnitId])]
+       -- ^ List of to be considered 'packages by package database'
+    -> PackageArg
+       -- Package to update
+    -> RIO env [(PackageDB GhcPkg.DbReadWrite, [UnitId])]
   -- No more 'packages by package database' to consider? We need to try to get
   -- another package database.
   getPkgsByPkgDBs pkgsByPkgDBs [] pkgarg =

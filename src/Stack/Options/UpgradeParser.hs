@@ -1,6 +1,13 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 
--- | Functions to parse command line arguments for Stack's @upgrade@ command.
+{-|
+Module      : Stack.Options.UpgradeParser
+Description : Parse arguments for Stack's @upgrade@ command.
+License     : BSD-3-Clause
+
+Function to parse command line arguments for Stack's @upgrade@ command.
+-}
+
 module Stack.Options.UpgradeParser
   ( upgradeOptsParser
   ) where
@@ -11,7 +18,7 @@ import         Options.Applicative
                  )
 import         Options.Applicative.Builder.Extra ( boolFlags )
 import         Stack.Prelude
-import         Stack.Upgrade
+import         Stack.Types.UpgradeOpts
                  ( BinaryOpts (..), SourceOpts (..), UpgradeOpts (..) )
 
 -- | Parse command line arguments for Stack's @upgrade@ command.

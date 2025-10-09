@@ -2,9 +2,14 @@
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- |
--- Wrapper functions of 'Network.HTTP.Simple' and 'Network.HTTP.Client' to
--- add the 'User-Agent' HTTP request header to each request.
+{-|
+Module      : Network.HTTP.StackClient
+License     : BSD-3-Clause
+
+Wrapper functions of 'Network.HTTP.Simple' and 'Network.HTTP.Client' to add the
+'User-Agent' HTTP request header to each request.
+-}
+
 module Network.HTTP.StackClient
   ( httpJSON
   , httpLbs
@@ -112,22 +117,24 @@ import           RIO
 import           RIO.PrettyPrint ( HasTerm )
 import           Text.Printf ( printf )
 
+-- | Set the User-Agent request header to @The Haskell Stack@.
 setUserAgent :: Request -> Request
 setUserAgent = setRequestHeader "User-Agent" ["The Haskell Stack"]
 
-
+-- | Like 'Network.HTTP.Simple.httpJSON' but sets the User-Agent request header.
 httpJSON :: (MonadIO m, FromJSON a) => Request -> m (Response a)
 httpJSON = Network.HTTP.Simple.httpJSON . setUserAgent
 
-
+-- | Like 'Network.HTTP.Simple.httpLbs' but sets the User-Agent request header.
 httpLbs :: MonadIO m => Request -> m (Response LByteString)
 httpLbs = Network.HTTP.Simple.httpLbs . setUserAgent
 
-
+-- | Like 'Network.HTTP.Simple.httpNoBody' but sets the User-Agent request
+-- header.
 httpNoBody :: MonadIO m => Request -> m (Response ())
 httpNoBody = Network.HTTP.Simple.httpNoBody . setUserAgent
 
-
+-- | Like 'Network.HTTP.Simple.httpSink' but sets the User-Agent request header.
 httpSink ::
      MonadUnliftIO m
   => Request
@@ -135,7 +142,8 @@ httpSink ::
   -> m a
 httpSink = Network.HTTP.Simple.httpSink . setUserAgent
 
-
+-- | Like 'Network.HTTP.Simple.withResponse' but sets the User-Agent request
+-- header.
 withResponse ::
      (MonadUnliftIO m, MonadIO n)
   => Request
@@ -143,7 +151,7 @@ withResponse ::
   -> m a
 withResponse = Network.HTTP.Simple.withResponse . setUserAgent
 
--- | Set the user-agent request header
+-- | Set the Accept request header to specify GitHub API v3.
 setGitHubHeaders :: Request -> Request
 setGitHubHeaders = setRequestHeader "Accept" ["application/vnd.github.v3+json"]
 
@@ -153,19 +161,24 @@ setGitHubHeaders = setRequestHeader "Accept" ["application/vnd.github.v3+json"]
 -- appropriate destination.
 --
 -- Throws an exception if things go wrong
-download :: HasTerm env
-         => Request
-         -> Path Abs File -- ^ destination
-         -> RIO env Bool -- ^ Was a downloaded performed (True) or did the file already exist (False)?
+download ::
+     HasTerm env
+  => Request
+  -> Path Abs File
+     -- ^ destination
+  -> RIO env Bool
+     -- ^ Was a downloaded performed (True) or did the file already exist
+     -- (False)?
 download req = Download.download (setUserAgent req)
 
 -- | Same as 'download', but will download a file a second time if it is already present.
 --
 -- Returns 'True' if the file was downloaded, 'False' otherwise
-redownload :: HasTerm env
-           => Request
-           -> Path Abs File -- ^ destination
-           -> RIO env Bool
+redownload ::
+     HasTerm env
+  => Request
+  -> Path Abs File -- ^ destination
+  -> RIO env Bool
 redownload req = Download.redownload (setUserAgent req)
 
 -- | Copied and extended version of Network.HTTP.Download.download.

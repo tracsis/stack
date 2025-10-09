@@ -8,11 +8,16 @@
 {-# LANGUAGE OverloadedStrings        #-}
 {-# LANGUAGE ScopedTypeVariables      #-}
 
--- | All utility functions for Components in Stack (library, internal library,
--- foreign library, executable, tests, benchmarks). In particular, this module
--- gathers all the Cabal-to-Stack component translations, which previously
--- occurred in the "Stack.Package" module. See "Stack.Types.Component" for more
--- details about the design choices.
+{-|
+Module      : Stack.Component
+License     : BSD-3-Clause
+
+All utility functions for Components in Stack (library, internal library,
+foreign library, executable, tests, benchmarks). In particular, this module
+gathers all the Cabal-to-Stack component translations, which previously occurred
+in the "Stack.Package" module. See "Stack.Types.Component" for more details
+about the design choices.
+-}
 
 module Stack.Component
   ( isComponentBuildable
@@ -22,7 +27,6 @@ module Stack.Component
   , stackBenchmarkFromCabal
   , stackTestFromCabal
   , foldOnNameAndBuildInfo
-  , stackUnqualToQual
   , componentDependencyMap
   , fromCabalName
   ) where
@@ -47,13 +51,6 @@ import           Stack.Types.Component
                    )
 import           Stack.Types.ComponentUtils ( fromCabalName )
 import           Stack.Types.Dependency ( cabalExeToStackDep, cabalToStackDep )
-import           Stack.Types.NamedComponent ( NamedComponent )
-
-stackUnqualToQual ::
-     (Text -> NamedComponent)
-  -> StackUnqualCompName
-  -> NamedComponent
-stackUnqualToQual c (StackUnqualCompName n) = c n
 
 foldOnNameAndBuildInfo ::
      ( HasField "buildInfo" a StackBuildInfo
@@ -133,10 +130,12 @@ stackBuildInfoFromCabal buildInfoV = gatherComponentToolsAndDepsFromCabal
     }
 
 -- | Iterate on all three dependency list given, and transform and sort them
--- between 'sbiUnknownTools' and legitimate 'DepValue' sbiDependency. Bear in
--- mind that this only gathers the component level dependencies.
-gatherComponentToolsAndDepsFromCabal
-  :: [Cabal.LegacyExeDependency]
+-- between 'Stack.Types.Component.unknownTools' and
+-- legitimate t'Stack.Types.Dependency.DepValue'
+-- 'Stack.Types.Component.dependency'. Bear in mind that this only gathers the
+-- component level dependencies.
+gatherComponentToolsAndDepsFromCabal ::
+    [Cabal.LegacyExeDependency]
      -- ^ Legacy build tools dependency from
      -- 'Distribution.Types.BuildInfo.buildTools'.
   -> [Cabal.ExeDependency]

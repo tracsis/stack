@@ -6,21 +6,27 @@
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE TypeFamilies          #-}
 
--- | Provides all the necessary types and functions for running cabal Setup.hs
--- commands. Only used in the "Execute" and "ExecutePackage" modules
+{-|
+Module      : Stack.Build.ExecuteEnv
+License     : BSD-3-Clause
+
+Provides all the necessary types and functions for running cabal Setup.hs
+commands. Only used in the "Execute" and "ExecutePackage" modules.
+-}
+
 module Stack.Build.ExecuteEnv
   ( ExecuteEnv (..)
   , withExecuteEnv
   , withSingleContext
   , ExcludeTHLoading (..)
   , KeepOutputOpen (..)
-  , ExecutableBuildStatus (..)
   , OutputType (..)
   ) where
 
 import           Control.Concurrent.Companion ( Companion, withCompanion )
 import           Control.Concurrent.Execute
                    ( ActionContext (..), ActionId (..), Concurrency (..) )
+import           Control.Monad.Extra ( whenJust )
 import           Crypto.Hash ( SHA256 (..), hashWith )
 import           Data.Attoparsec.Text ( char, choice, digit, parseOnly )
 import qualified Data.Attoparsec.Text as P ( string )
@@ -49,7 +55,6 @@ import qualified Distribution.Simple.Build.Macros as C
 import           Distribution.System ( OS (..), Platform (..) )
 import           Distribution.Types.PackageName ( mkPackageName )
 import           Distribution.Verbosity ( showForCabal )
-import           Distribution.Version ( mkVersion )
 import           Path
                    ( PathException, (</>), parent, parseRelDir, parseRelFile )
 import           Path.Extra ( forgivingResolveFile, toFilePathNoTrailingSep )
@@ -83,9 +88,7 @@ import           Stack.Types.BuildOpts ( BuildOpts (..) )
 import           Stack.Types.BuildOptsCLI ( BuildOptsCLI (..) )
 import           Stack.Types.BuildOptsMonoid ( CabalVerbosity (..) )
 import           Stack.Types.Compiler
-                   ( ActualCompiler (..), WhichCompiler (..)
-                   , compilerVersionString, getGhcVersion, whichCompilerL
-                   )
+                   ( WhichCompiler (..), compilerVersionString, whichCompilerL )
 import           Stack.Types.CompilerPaths
                    ( CompilerPaths (..), HasCompiler (..), cabalVersionL
                    , getCompilerPath
@@ -112,12 +115,8 @@ import           System.Environment ( lookupEnv )
 import           System.FileLock
                    ( SharedExclusive (..), withFileLock, withTryFileLock )
 
--- | Has an executable been built or not?
-data ExecutableBuildStatus
-  = ExecutableBuilt
-  | ExecutableNotBuilt
-  deriving (Eq, Ord, Show)
-
+-- | Type representing environments in which the @Setup.hs@ commands of Cabal
+-- (the library) can be executed.
 data ExecuteEnv = ExecuteEnv
   { installLock    :: !(MVar ())
   , buildOpts      :: !BuildOpts
@@ -189,11 +188,15 @@ simpleSetupHash =
   <> simpleSetupCode
 
 -- | Get a compiled Setup exe
-getSetupExe :: HasEnvConfig env
-            => Path Abs File -- ^ Setup.hs input file
-            -> Path Abs File -- ^ SetupShim.hs input file
-            -> Path Abs Dir -- ^ temporary directory
-            -> RIO env (Maybe (Path Abs File))
+getSetupExe ::
+     HasEnvConfig env
+  => Path Abs File
+     -- ^ Setup.hs input file
+  -> Path Abs File
+     -- ^ SetupShim.hs input file
+  -> Path Abs Dir
+     -- ^ temporary directory
+  -> RIO env (Maybe (Path Abs File))
 getSetupExe setupHs setupShimHs tmpdir = do
   wc <- view $ actualCompilerVersionL . whichCompilerL
   platformDir <- platformGhcRelDir
@@ -252,17 +255,21 @@ getSetupExe setupHs setupShimHs tmpdir = do
       renameFile tmpExePath exePath
       pure $ Just exePath
 
--- | Execute a function that takes an 'ExecuteEnv'.
+-- | Execute a function that takes an t'ExecuteEnv'.
 withExecuteEnv ::
      forall env a. HasEnvConfig env
   => BuildOpts
   -> BuildOptsCLI
   -> BaseConfigOpts
   -> [LocalPackage]
-  -> [DumpPackage] -- ^ global packages
-  -> [DumpPackage] -- ^ snapshot packages
-  -> [DumpPackage] -- ^ local packages
-  -> Maybe Int -- ^ largest package name, for nicer interleaved output
+  -> [DumpPackage]
+     -- ^ global packages
+  -> [DumpPackage]
+     -- ^ snapshot packages
+  -> [DumpPackage]
+     -- ^ project packages and local extra-deps
+  -> Maybe Int
+     -- ^ largest package name, for nicer interleaved output
   -> (ExecuteEnv -> RIO env a)
   -> RIO env a
 withExecuteEnv
@@ -294,11 +301,6 @@ withExecuteEnv
           setupO =  setupSrcDir </> setupOName
       setupHsExists <- doesFileExist setupHs
       unless setupHsExists $ writeBinaryFileAtomic setupHs simpleSetupCode
-      -- See https://github.com/commercialhaskell/stack/issues/6267. Remove any
-      -- historical *.hi or *.o files. This can be dropped when Stack drops
-      -- support for the problematic versions of GHC.
-      ignoringAbsence (removeFile setupHi)
-      ignoringAbsence (removeFile setupO)
       let setupShimStub = "setup-shim-" ++ simpleSetupHash
       setupShimFileName <- parseRelFile (setupShimStub ++ ".hs")
       setupShimHiName <- parseRelFile (setupShimStub ++ ".hi")
@@ -309,12 +311,14 @@ withExecuteEnv
       setupShimHsExists <- doesFileExist setupShimHs
       unless setupShimHsExists $
         writeBinaryFileAtomic setupShimHs setupGhciShimCode
+      setupExe <- getSetupExe setupHs setupShimHs tempDir
       -- See https://github.com/commercialhaskell/stack/issues/6267. Remove any
       -- historical *.hi or *.o files. This can be dropped when Stack drops
       -- support for the problematic versions of GHC.
+      ignoringAbsence (removeFile setupHi)
+      ignoringAbsence (removeFile setupO)
       ignoringAbsence (removeFile setupShimHi)
       ignoringAbsence (removeFile setupShimO)
-      setupExe <- getSetupExe setupHs setupShimHs tempDir
       cabalPkgVer <- view cabalVersionL
       globalDB <- view $ compilerPathsL . to (.globalDB)
       let globalDumpPkgs = toDumpPackagesByGhcPkgId globalPackages
@@ -426,12 +430,11 @@ withExecuteEnv
            : [ pretty filepath <> "." ]
            )
       <> line
-    compilerVer <- view actualCompilerVersionL
     withSourceFile (toFilePath filepath) $ \src ->
          runConduit
        $ src
       .| CT.decodeUtf8Lenient
-      .| mungeBuildOutput ExcludeTHLoading ConvertPathsToAbsolute pkgDir compilerVer
+      .| mungeBuildOutput ExcludeTHLoading ConvertPathsToAbsolute pkgDir
       .| CL.mapM_ (logInfo . display)
     prettyNote $
          fillSep
@@ -454,13 +457,11 @@ withExecuteEnv
     noColors = do
       CB.takeWhile (/= 27) -- ESC
       mnext <- CB.head
-      case mnext of
-        Nothing -> pure ()
-        Just x -> assert (x == 27) $ do
-          -- Color sequences always end with an m
-          CB.dropWhile (/= 109) -- m
-          CB.drop 1 -- drop the m itself
-          noColors
+      whenJust mnext $ \x -> assert (x == 27) $ do
+        -- Color sequences always end with an m
+        CB.dropWhile (/= 109) -- m
+        CB.drop 1 -- drop the m itself
+        noColors
 
 -- | Make a padded prefix for log messages
 packageNamePrefix :: ExecuteEnv -> PackageName -> String
@@ -499,8 +500,10 @@ prettyAnnounceTask ee taskType action = prettyInfo $
 -- <https://github.com/commercialhaskell/stack/issues/2730>
 withLockedDistDir ::
      forall env a. HasEnvConfig env
-  => (StyleDoc -> RIO env ()) -- ^ A pretty announce function
-  -> Path Abs Dir -- ^ root directory for package
+  => (StyleDoc -> RIO env ())
+     -- ^ A pretty announce function
+  -> Path Abs Dir
+     -- ^ root directory for package
   -> RIO env a
   -> RIO env a
 withLockedDistDir announce root inner = do
@@ -740,13 +743,21 @@ withSingleContext
               -- providing an explicit list of dependencies, and we should
               -- simply use all of them.
               Just customSetupDeps -> do
-                unless (Map.member (mkPackageName "Cabal") customSetupDeps) $
-                  prettyWarnL
-                    [ fromPackageName package.name
-                    , flow "has a setup-depends field, but it does not mention \
-                           \a Cabal dependency. This is likely to cause build \
-                           \errors."
-                    ]
+                cabalPackageArg' <-
+                  if Map.member (mkPackageName "Cabal") customSetupDeps
+                    then pure []
+                    else do
+                      prettyWarnL
+                        [ style Current (fromPackageName package.name)
+                        , flow "has a"
+                        , style Shell "setup-depends"
+                        , flow "field, but it does not mention a"
+                        , style Current "Cabal"
+                        , flow "dependency. Stack customizes setup using \
+                               \Cabal, so it has added the GHC boot package as \
+                               \a dependency."
+                        ]
+                      pure cabalPackageArg
                 matchedDeps <-
                   forM (Map.toList customSetupDeps) $ \(name, depValue) -> do
                     let matches (PackageIdentifier name' version) =
@@ -783,7 +794,7 @@ withSingleContext
                           )
                       )
                   )
-                pure (packageDBArgs ++ depsArgs ++ cppArgs)
+                pure (packageDBArgs ++ depsArgs ++ cabalPackageArg' ++ cppArgs)
 
               -- This branch is usually taken for builds, and is always taken
               -- for `stack sdist`.
@@ -831,8 +842,7 @@ withSingleContext
 
           runExe :: Path Abs File -> [String] -> RIO env ()
           runExe exeName fullArgs = do
-            compilerVer <- view actualCompilerVersionL
-            runAndOutput compilerVer `catch` \ece -> do
+            runAndOutput `catch` \ece -> do
               (mlogFile, bss) <-
                 case outputType of
                   OTConsole _ -> pure (Nothing, [])
@@ -847,14 +857,13 @@ withSingleContext
                              runConduit
                            $ src
                           .| CT.decodeUtf8Lenient
-                          .| mungeBuildOutput
-                               stripTHLoading makeAbsolute pkgDir compilerVer
+                          .| mungeBuildOutput stripTHLoading makeAbsolute pkgDir
                           .| CL.consume
               prettyThrowM $ CabalExitedUnsuccessfully
                 (eceExitCode ece) pkgId exeName fullArgs mlogFile bss
            where
-            runAndOutput :: ActualCompiler -> RIO env ()
-            runAndOutput compilerVer = withWorkingDir (toFilePath pkgDir) $
+            runAndOutput :: RIO env ()
+            runAndOutput = withWorkingDir (toFilePath pkgDir) $
               withProcessContext menv $ case outputType of
                 OTLogFile _ h -> do
                   let prefixWithTimestamps =
@@ -869,18 +878,17 @@ withSingleContext
                   in  void $ sinkProcessStderrStdout
                         (toFilePath exeName)
                         fullArgs
-                        (outputSink KeepTHLoading LevelWarn compilerVer prefix)
-                        (outputSink stripTHLoading LevelInfo compilerVer prefix)
+                        (outputSink KeepTHLoading LevelWarn prefix)
+                        (outputSink stripTHLoading LevelInfo prefix)
             outputSink ::
                  HasCallStack
               => ExcludeTHLoading
               -> LogLevel
-              -> ActualCompiler
               -> Utf8Builder
               -> ConduitM S.ByteString Void (RIO env) ()
-            outputSink excludeTH level compilerVer prefix =
+            outputSink excludeTH level prefix =
               CT.decodeUtf8Lenient
-              .| mungeBuildOutput excludeTH makeAbsolute pkgDir compilerVer
+              .| mungeBuildOutput excludeTH makeAbsolute pkgDir
               .| CL.mapM_ (logGeneric "" level . (prefix <>) . display)
             -- If users want control, we should add a config option for this
             makeAbsolute :: ConvertPathsToAbsolute
@@ -941,12 +949,14 @@ withSingleContext
 -- | Strip Template Haskell "Loading package" lines and making paths absolute.
 mungeBuildOutput ::
      forall m. (MonadIO m, MonadUnliftIO m)
-  => ExcludeTHLoading       -- ^ exclude TH loading?
-  -> ConvertPathsToAbsolute -- ^ convert paths to absolute?
-  -> Path Abs Dir           -- ^ package's root directory
-  -> ActualCompiler         -- ^ compiler we're building with
+  => ExcludeTHLoading
+     -- ^ exclude TH loading?
+  -> ConvertPathsToAbsolute
+     -- ^ convert paths to absolute?
+  -> Path Abs Dir
+     -- ^ package's root directory
   -> ConduitM Text Text m ()
-mungeBuildOutput excludeTHLoading makeAbsolute pkgDir compilerVer = void $
+mungeBuildOutput excludeTHLoading makeAbsolute pkgDir = void $
   CT.lines
   .| CL.map stripCR
   .| CL.filter (not . isTHLoading)
@@ -963,18 +973,10 @@ mungeBuildOutput excludeTHLoading makeAbsolute pkgDir compilerVer = void $
       ("done." `T.isSuffixOf` bs || "done.\r" `T.isSuffixOf` bs)
 
   filterLinkerWarnings :: ConduitM Text Text m ()
-  filterLinkerWarnings
+  filterLinkerWarnings =
     -- Check for ghc 7.8 since it's the only one prone to producing
     -- linker warnings on Windows x64
-    | getGhcVersion compilerVer >= mkVersion [7, 8] = doNothing
-    | otherwise = CL.filter (not . isLinkerWarning)
-
-  isLinkerWarning :: Text -> Bool
-  isLinkerWarning str =
-       (  "ghc.exe: warning:" `T.isPrefixOf` str
-       || "ghc.EXE: warning:" `T.isPrefixOf` str
-       )
-    && "is linked instead of __imp_" `T.isInfixOf` str
+    doNothing
 
   -- | Convert GHC error lines with file paths to have absolute file paths
   toAbsolute :: ConduitM Text Text m ()
@@ -1043,8 +1045,9 @@ formatZonedTimeForLog =
 
 -- | Find the Setup.hs or Setup.lhs in the given directory. If none exists,
 -- throw an exception.
-getSetupHs :: Path Abs Dir -- ^ project directory
-           -> IO (Path Abs File)
+getSetupHs ::
+     Path Abs Dir -- ^ project directory
+  -> IO (Path Abs File)
 getSetupHs dir = do
   exists1 <- doesFileExist fp1
   if exists1

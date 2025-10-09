@@ -2,7 +2,14 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedRecordDot   #-}
 
--- | Default configuration options for building.
+{-|
+Module      : Stack.BuildOpts
+Description : Default configuration options for building.
+License     : BSD-3-Clause
+
+Default configuration options for building.
+-}
+
 module Stack.BuildOpts
   ( defaultBuildOpts
   , defaultTestOpts
@@ -17,8 +24,9 @@ import           Stack.Types.BuildOpts
                    , TestOpts (..)
                    )
 import           Stack.Types.BuildOptsMonoid
-                   ( BuildOptsMonoid (..), CabalVerbosity (..)
-                   , ProgressBarFormat (..), TestOptsMonoid (..)
+                   ( BenchmarkOptsMonoid (..), BuildOptsMonoid (..)
+                   , CabalVerbosity (..), ProgressBarFormat (..)
+                   , TestOptsMonoid (..)
                    )
 
 defaultBuildOpts :: BuildOpts
@@ -31,6 +39,9 @@ defaultBuildOpts = BuildOpts
   , haddockOpts = defaultHaddockOpts
   , openHaddocks = defaultFirstFalse buildMonoid.openHaddocks
   , haddockDeps = Nothing
+  , haddockExecutables = defaultFirstFalse buildMonoid.haddockExecutables
+  , haddockTests = defaultFirstFalse buildMonoid.haddockTests
+  , haddockBenchmarks = defaultFirstFalse buildMonoid.haddockBenchmarks
   , haddockInternal = defaultFirstFalse buildMonoid.haddockInternal
   , haddockHyperlinkSource = defaultFirstTrue buildMonoid.haddockHyperlinkSource
   , haddockForHackage = defaultFirstFalse buildMonoid.haddockForHackage
@@ -60,7 +71,7 @@ defaultTestOpts = TestOpts
   { rerunTests = defaultFirstTrue toMonoid.rerunTests
   , additionalArgs = []
   , coverage = defaultFirstFalse toMonoid.coverage
-  , disableRun = defaultFirstFalse toMonoid.disableRun
+  , runTests = defaultFirstTrue toMonoid.runTests
   , maximumTimeSeconds = Nothing
   , allowStdin = defaultFirstTrue toMonoid.allowStdin
   }
@@ -73,5 +84,7 @@ defaultHaddockOpts = HaddockOpts { additionalArgs = [] }
 defaultBenchmarkOpts :: BenchmarkOpts
 defaultBenchmarkOpts = BenchmarkOpts
   { additionalArgs = Nothing
-  , disableRun = False
+  , runBenchmarks = defaultFirstTrue beoMonoid.runBenchmarks
   }
+ where
+  beoMonoid = undefined :: BenchmarkOptsMonoid

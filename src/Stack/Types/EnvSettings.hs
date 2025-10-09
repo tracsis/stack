@@ -1,6 +1,11 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE NoFieldSelectors  #-}
 
+{-|
+Module      : Stack.Types.EnvSettings
+License     : BSD-3-Clause
+-}
+
 module Stack.Types.EnvSettings
   ( EnvSettings (..)
   , minimalEnvSettings
@@ -13,7 +18,7 @@ import           Stack.Prelude
 -- | Controls which version of the environment is used
 data EnvSettings = EnvSettings
   { includeLocals :: !Bool
-  -- ^ include local project bin directory, GHC_PACKAGE_PATH, etc
+  -- ^ include project's local bin directory, GHC_PACKAGE_PATH, etc
   , includeGhcPackagePath :: !Bool
   -- ^ include the GHC_PACKAGE_PATH variable
   , stackExe :: !Bool
@@ -25,6 +30,9 @@ data EnvSettings = EnvSettings
   }
   deriving (Eq, Ord, Show)
 
+-- | Minimal @EnvSettings@ which do not embellish the environment and do not
+-- pass through the GHCRTS environment variable. See
+-- https://github.com/commercialhaskell/stack/issues/3444
 minimalEnvSettings :: EnvSettings
 minimalEnvSettings =
   EnvSettings
@@ -37,8 +45,8 @@ minimalEnvSettings =
 
 -- | Default @EnvSettings@ which includes locals and GHC_PACKAGE_PATH.
 --
--- Note that this also passes through the GHCRTS environment variable.
--- See https://github.com/commercialhaskell/stack/issues/3444
+-- Note that this also passes through the GHCRTS environment variable. See
+-- https://github.com/commercialhaskell/stack/issues/3444
 defaultEnvSettings :: EnvSettings
 defaultEnvSettings = EnvSettings
   { includeLocals = True
@@ -50,8 +58,8 @@ defaultEnvSettings = EnvSettings
 
 -- | Environment settings which do not embellish the environment
 --
--- Note that this also passes through the GHCRTS environment variable.
--- See https://github.com/commercialhaskell/stack/issues/3444
+-- Note that this also passes through the GHCRTS environment variable. See
+-- https://github.com/commercialhaskell/stack/issues/3444
 plainEnvSettings :: EnvSettings
 plainEnvSettings = EnvSettings
   { includeLocals = False

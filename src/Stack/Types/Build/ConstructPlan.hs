@@ -1,8 +1,15 @@
 {-# LANGUAGE NoImplicitPrelude   #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 
--- | A module providing types and related helper functions used in module
--- "Stack.Build.ConstructPlan".
+{-|
+Module      : Stack.Storage.Util
+Description : Utilities for module "Stack.Build.ConstructPlan".
+License     : BSD-3-Clause
+
+A module providing types and related helper functions used in module
+"Stack.Build.ConstructPlan".
+-}
+
 module Stack.Types.Build.ConstructPlan
   ( PackageInfo (..)
   , CombinedMap
@@ -12,9 +19,11 @@ module Stack.Types.Build.ConstructPlan
   , toTask
   , adrVersion
   , adrHasLibrary
+  , isAdrToInstall
   , Ctx (..)
   , UnregisterState (..)
   , ToolWarning (..)
+  , MissingPresentDeps (..)
   ) where
 
 import           Generics.Deriving.Monoid ( mappenddefault, memptydefault )
@@ -29,6 +38,7 @@ import           Stack.Types.Build.Exception ( ConstructPlanException )
 import           Stack.Types.BuildConfig
                    ( BuildConfig (..), HasBuildConfig(..) )
 import           Stack.Types.CompilerPaths ( HasCompiler (..) )
+import           Stack.Types.ComponentUtils ( StackUnqualCompName )
 import           Stack.Types.Config ( HasConfig (..) )
 import           Stack.Types.ConfigureOpts ( BaseConfigOpts )
 import           Stack.Types.Curator ( Curator )
@@ -39,6 +49,7 @@ import           Stack.Types.GhcPkgId ( GhcPkgId )
 import           Stack.Types.GHCVariant ( HasGHCVariant (..) )
 import           Stack.Types.Installed
                    ( InstallLocation, Installed (..), installedVersion )
+import           Stack.Types.IsMutable ( IsMutable )
 import           Stack.Types.Package
                    ( ExeName (..), LocalPackage (..), Package (..)
                    , PackageSource (..)
@@ -87,7 +98,7 @@ data W = W
   { wFinals :: !(Map PackageName (Either ConstructPlanException Task))
     -- ^ A dictionary of package names, and either a final task to perform when
     -- building the package or an exception.
-  , wInstall :: !(Map Text InstallLocation)
+  , wInstall :: !(Map StackUnqualCompName InstallLocation)
     -- ^ A dictionary of executables to be installed, and location where the
     -- executable's binary is placed.
   , wDirty :: !(Map PackageName Text)
@@ -110,13 +121,17 @@ instance Monoid W where
   mempty = memptydefault
   mappend = (<>)
 
--- | Type representing results of 'addDep'.
+-- | Type representing results of 'Stack.Build.ConstructPlan.addDep'.
 data AddDepRes
   = ADRToInstall Task
     -- ^ A task must be performed to provide the package name.
   | ADRFound InstallLocation Installed
     -- ^ An existing installation provides the package name.
   deriving Show
+
+isAdrToInstall :: AddDepRes -> Bool
+isAdrToInstall ADRToInstall{} = True
+isAdrToInstall _ = False
 
 toTask :: AddDepRes -> Maybe Task
 toTask (ADRToInstall task) = Just task
@@ -137,6 +152,23 @@ adrHasLibrary (ADRToInstall task) = case task.taskType of
     hasBuildableMainLibrary p || not (null p.subLibraries)
 adrHasLibrary (ADRFound _ Library{}) = True
 adrHasLibrary (ADRFound _ Executable{}) = False
+
+data MissingPresentDeps = MissingPresentDeps
+  { missingPackages :: !(Set PackageIdentifier)
+  , presentPackages :: !(Map PackageIdentifier GhcPkgId)
+  , isMutable :: !IsMutable
+  }
+  deriving (Show)
+
+instance Semigroup MissingPresentDeps where
+  (<>) a b = MissingPresentDeps
+    { missingPackages = missingPackages a <> missingPackages b
+    , presentPackages = presentPackages a <> presentPackages b
+    , isMutable = isMutable a <> isMutable b
+    }
+
+instance Monoid MissingPresentDeps where
+  mempty = MissingPresentDeps mempty mempty mempty
 
 -- | Type representing values used as the environment to be read from during the
 -- construction of a build plan (the \'context\').
@@ -212,8 +244,8 @@ instance HasCompiler Ctx where
 instance HasEnvConfig Ctx where
   envConfigL = lens (.ctxEnvConfig) (\x y -> x { ctxEnvConfig = y })
 
--- | State to be maintained during the calculation of local packages to
--- unregister.
+-- | State to be maintained during the calculation of project packages and local
+-- extra-deps to unregister.
 data UnregisterState = UnregisterState
   { toUnregister :: !(Map GhcPkgId (PackageIdentifier, Text))
   , toKeep :: ![DumpPackage]

@@ -3,8 +3,13 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings   #-}
 
--- | A module which exports all component-level file-gathering logic. It also
--- includes utility functions for handling paths and directories.
+{-|
+Module      : Stack.ComponentFile
+License     : BSD-3-Clause
+
+A module which exports all component-level file-gathering logic. It also
+includes utility functions for handling paths and directories.
+-}
 
 module Stack.ComponentFile
   ( resolveOrWarn
@@ -33,7 +38,6 @@ import           Distribution.PackageDescription
 import           Distribution.Text ( display )
 import           Distribution.Utils.Path
                    ( PackageDir, SourceDir, SymbolicPath, getSymbolicPath )
-import           Distribution.Version ( mkVersion )
 import           GHC.Records ( HasField )
 import qualified HiFileParser as Iface
 import           Path
@@ -56,6 +60,8 @@ import           Stack.Types.Component
                    , StackExecutable (..), StackLibrary (..)
                    , StackTestSuite (..), StackUnqualCompName (..)
                    )
+import           Stack.Types.ComponentUtils
+                   ( emptyCompName, unqualCompToString )
 import           Stack.Types.Config
                    ( Config (..), HasConfig (..), prettyStackDevL )
 import           Stack.Types.NamedComponent ( NamedComponent (..) )
@@ -78,14 +84,21 @@ stackBenchmarkFiles ::
      StackBenchmark
   -> RIO GetPackageFileContext (NamedComponent, ComponentFile)
 stackBenchmarkFiles bench =
-  resolveComponentFiles (CBench bench.name.unqualCompToText) build names
+  resolveComponentFiles (CBench bench.name) build names
  where
+  names :: [DotCabalDescriptor]
   names = bnames <> exposed
+
+  exposed :: [DotCabalDescriptor]
   exposed =
     case bench.interface of
       BenchmarkExeV10 _ fp -> [DotCabalMain fp]
       BenchmarkUnsupported _ -> []
+
+  bnames :: [DotCabalDescriptor]
   bnames = map DotCabalModule build.otherModules
+
+  build :: StackBuildInfo
   build = bench.buildInfo
 
 -- | Get all files referenced by the test.
@@ -93,15 +106,22 @@ stackTestSuiteFiles ::
      StackTestSuite
   -> RIO GetPackageFileContext (NamedComponent, ComponentFile)
 stackTestSuiteFiles test =
-  resolveComponentFiles (CTest test.name.unqualCompToText) build names
+  resolveComponentFiles (CTest test.name) build names
  where
+  names :: [DotCabalDescriptor]
   names = bnames <> exposed
+
+  exposed :: [DotCabalDescriptor]
   exposed =
     case test.interface of
       TestSuiteExeV10 _ fp -> [DotCabalMain fp]
       TestSuiteLibV09 _ mn -> [DotCabalModule mn]
       TestSuiteUnsupported _ -> []
+
+  bnames :: [DotCabalDescriptor]
   bnames = map DotCabalModule build.otherModules
+
+  build :: StackBuildInfo
   build = test.buildInfo
 
 -- | Get all files referenced by the executable.
@@ -109,9 +129,12 @@ stackExecutableFiles ::
      StackExecutable
   -> RIO GetPackageFileContext (NamedComponent, ComponentFile)
 stackExecutableFiles exe =
-  resolveComponentFiles (CExe exe.name.unqualCompToText) build names
+  resolveComponentFiles (CExe exe.name) build names
  where
+  build :: StackBuildInfo
   build = exe.buildInfo
+
+  names :: [DotCabalDescriptor]
   names =
     map DotCabalModule build.otherModules ++ [DotCabalMain exe.modulePath]
 
@@ -123,13 +146,24 @@ stackLibraryFiles ::
 stackLibraryFiles lib =
   resolveComponentFiles componentName build names
  where
-  componentRawName = lib.name.unqualCompToText
+  componentRawName :: StackUnqualCompName
+  componentRawName = lib.name
+
+  componentName :: NamedComponent
   componentName
-    | componentRawName == mempty = CLib
+    | componentRawName == emptyCompName = CLib
     | otherwise = CSubLib componentRawName
+
+  build :: StackBuildInfo
   build = lib.buildInfo
+
+  names :: [DotCabalDescriptor]
   names = bnames ++ exposed
+
+  exposed :: [DotCabalDescriptor]
   exposed = map DotCabalModule lib.exposedModules
+
+  bnames :: [DotCabalDescriptor]
   bnames = map DotCabalModule build.otherModules
 
 -- | Get all files referenced by the component.
@@ -153,11 +187,11 @@ resolveComponentFiles component build names = do
   cfiles <- buildOtherSources build
   pure (component, ComponentFile modules (files <> cfiles) warnings)
  where
+  autogenDirs :: RIO GetPackageFileContext [Path Abs Dir]
   autogenDirs = do
-    cabalVer <- asks (.cabalVer)
     distDir <- asks (.distDir)
-    let compDir = componentAutogenDir cabalVer component distDir
-        pkgDir = maybeToList $ packageAutogenDir cabalVer distDir
+    let compDir = componentAutogenDir component distDir
+        pkgDir = [packageAutogenDir distDir]
     filterM doesDirExist $ compDir : pkgDir
 
 -- | Try to resolve the list of base names in the given directory by looking for
@@ -343,7 +377,7 @@ componentOutputDir namedComponent distDir =
     CBench name -> makeTmp name
  where
   makeTmp name =
-    buildDir distDir </> componentNameToDir (name <> "/" <> name <> "-tmp")
+    buildDir distDir </> componentNameToDirNormOrTmp True name
 
 -- | Try to resolve the list of base names in the given directory by
 -- looking for unique instances of base names applied with the given
@@ -390,9 +424,10 @@ findCandidate dirs name = do
     fmap
       (nubOrd . concat)
       (mapM (makeDirCandidates haskellPreprocessorExts) dirs)
-  makeDirCandidates :: [Text]
-                    -> Path Abs Dir
-                    -> IO [Path Abs File]
+  makeDirCandidates ::
+       [Text]
+    -> Path Abs Dir
+    -> IO [Path Abs File]
   makeDirCandidates haskellPreprocessorExts dir =
     case name of
       DotCabalMain fp -> resolveCandidate dir fp
@@ -431,7 +466,10 @@ logPossibilities dirs mn = do
     , line <> bulletedList (map pretty possibilities)
     , flow "If you are using a custom preprocessor for this module"
     , flow "with its own file extension, consider adding the extension"
-    , flow "to the 'custom-preprocessor-extensions' field in stack.yaml."
+    , flow "to the value of the"
+    , style Shell "custom-preprocessor-extensions"
+    , flow "key in Stack's project-level configuration file"
+    , "(" <> style File "stack.yaml" <> ")."
     ]
  where
   makePossibilities name =
@@ -525,22 +563,21 @@ parsePackageNameFromFilePath fp = do
 
 -- | Resolve the directory, if it can't be resolved, warn for the user
 -- (purely to be helpful).
-resolveDirOrWarn :: FilePath.FilePath
-                 -> RIO GetPackageFileContext (Maybe (Path Abs Dir))
+resolveDirOrWarn ::
+     FilePath.FilePath
+  -> RIO GetPackageFileContext (Maybe (Path Abs Dir))
 resolveDirOrWarn = resolveOrWarn "Directory" f
  where
   f p x = forgivingResolveDir p x >>= rejectMissingDir
 
 -- | Make the global autogen dir if Cabal version is new enough.
-packageAutogenDir :: Version -> Path Abs Dir -> Maybe (Path Abs Dir)
-packageAutogenDir cabalVer distDir
-  | cabalVer < mkVersion [2, 0] = Nothing
-  | otherwise = Just $ buildDir distDir </> relDirGlobalAutogen
+packageAutogenDir :: Path Abs Dir -> Path Abs Dir
+packageAutogenDir distDir = buildDir distDir </> relDirGlobalAutogen
 
 -- | Make the autogen dir.
-componentAutogenDir :: Version -> NamedComponent -> Path Abs Dir -> Path Abs Dir
-componentAutogenDir cabalVer component distDir =
-  componentBuildDir cabalVer component distDir </> relDirAutogen
+componentAutogenDir :: NamedComponent -> Path Abs Dir -> Path Abs Dir
+componentAutogenDir component distDir =
+  componentBuildDir component distDir </> relDirAutogen
 
 -- | Make the build dir. Note that Cabal >= 2.0 uses the
 -- 'componentBuildDir' above for some things.
@@ -549,23 +586,25 @@ buildDir distDir = distDir </> relDirBuild
 
 -- NOTE: don't export this, only use it for valid paths based on
 -- component names.
-componentNameToDir :: Text -> Path Rel Dir
-componentNameToDir name =
-  fromMaybe (throw $ ComponentNotParsedBug sName) (parseRelDir sName)
-  where sName = T.unpack name
+componentNameToDir :: StackUnqualCompName -> Path Rel Dir
+componentNameToDir = componentNameToDirNormOrTmp False
+
+componentNameToDirNormOrTmp :: Bool -> StackUnqualCompName -> Path Rel Dir
+componentNameToDirNormOrTmp isTemp name =
+  fromMaybe (throw $ ComponentNotParsedBug sName) (parseRelDir fullName)
+ where
+  fullName = if isTemp then sName <> "/" <> sName <> "-tmp" else sName
+  sName = unqualCompToString name
 
 -- | See 'Distribution.Simple.LocalBuildInfo.componentBuildDir'
-componentBuildDir :: Version -> NamedComponent -> Path Abs Dir -> Path Abs Dir
-componentBuildDir cabalVer component distDir
-  | cabalVer < mkVersion [2, 0] = buildDir distDir
-  | otherwise =
-      case component of
-        CLib -> buildDir distDir
-        CSubLib name -> buildDir distDir </> componentNameToDir name
-        CFlib name -> buildDir distDir </> componentNameToDir name
-        CExe name -> buildDir distDir </> componentNameToDir name
-        CTest name -> buildDir distDir </> componentNameToDir name
-        CBench name -> buildDir distDir </> componentNameToDir name
+componentBuildDir :: NamedComponent -> Path Abs Dir -> Path Abs Dir
+componentBuildDir component distDir = case component of
+  CLib -> buildDir distDir
+  CSubLib name -> buildDir distDir </> componentNameToDir name
+  CFlib name -> buildDir distDir </> componentNameToDir name
+  CExe name -> buildDir distDir </> componentNameToDir name
+  CTest name -> buildDir distDir </> componentNameToDir name
+  CBench name -> buildDir distDir </> componentNameToDir name
 
 -- Internal helper to define resolveFileOrWarn and resolveDirOrWarn
 resolveOrWarn ::

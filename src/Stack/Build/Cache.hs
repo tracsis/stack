@@ -3,7 +3,14 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings   #-}
 
--- | Cache information about previous builds
+{-|
+Module      : Stack.Build.Cache
+Description : Cache information about previous builds.
+License     : BSD-3-Clause
+
+Cache information about previous builds.
+-}
+
 module Stack.Build.Cache
   ( tryGetBuildCache
   , tryGetConfigCache
@@ -35,7 +42,6 @@ import qualified Data.ByteArray as Mem ( convert )
 import           Data.ByteString.Builder ( byteString )
 import qualified Data.Map as M
 import qualified Data.Set as Set
-import qualified Data.Text as T
 import qualified Data.Yaml as Yaml
 import           Foreign.C.Types ( CTime )
 import           Path ( (</>), filename, parent, parseRelFile )
@@ -63,6 +69,8 @@ import           Stack.Types.Build
                    )
 import           Stack.Types.Cache ( ConfigCacheType (..) )
 import           Stack.Types.CompilerPaths ( cabalVersionL )
+import           Stack.Types.ComponentUtils
+                   ( StackUnqualCompName, unqualCompToString )
 import           Stack.Types.Config ( stackRootL )
 import           Stack.Types.ConfigureOpts
                    ( BaseConfigOpts (..), ConfigureOpts (..) )
@@ -74,20 +82,25 @@ import           Stack.Types.EnvConfig
 import           Stack.Types.GhcPkgId ( ghcPkgIdString )
 import           Stack.Types.Installed
                    (InstalledLibraryInfo (..), foldOnGhcPkgId' )
-import           Stack.Types.NamedComponent ( NamedComponent (..) )
+import           Stack.Types.NamedComponent
+                   ( NamedComponent (..), componentCachePath )
 import           Stack.Types.SourceMap ( smRelDir )
 import           System.PosixCompat.Files
-                   ( modificationTime, getFileStatus, setFileTimes )
+                   ( getFileStatus, modificationTime, setFileTimes )
 
 -- | Directory containing files to mark an executable as installed
-exeInstalledDir :: (HasEnvConfig env)
-                => InstallLocation -> RIO env (Path Abs Dir)
+exeInstalledDir ::
+     (HasEnvConfig env)
+  => InstallLocation
+  -> RIO env (Path Abs Dir)
 exeInstalledDir Snap = (</> relDirInstalledPackages) <$> installationRootDeps
 exeInstalledDir Local = (</> relDirInstalledPackages) <$> installationRootLocal
 
 -- | Get all of the installed executables
-getInstalledExes :: (HasEnvConfig env)
-                 => InstallLocation -> RIO env [PackageIdentifier]
+getInstalledExes ::
+     (HasEnvConfig env)
+  => InstallLocation
+  -> RIO env [PackageIdentifier]
 getInstalledExes loc = do
   dir <- exeInstalledDir loc
   (_, files) <- liftIO $ handleIO (const $ pure ([], [])) $ listDir dir
@@ -102,8 +115,11 @@ getInstalledExes loc = do
     mapMaybe (parsePackageIdentifier . toFilePath . filename) files
 
 -- | Mark the given executable as installed
-markExeInstalled :: (HasEnvConfig env)
-                 => InstallLocation -> PackageIdentifier -> RIO env ()
+markExeInstalled ::
+     (HasEnvConfig env)
+  => InstallLocation
+  -> PackageIdentifier
+  -> RIO env ()
 markExeInstalled loc ident = do
   dir <- exeInstalledDir loc
   ensureDir dir
@@ -119,36 +135,34 @@ markExeInstalled loc ident = do
   writeBinaryFileAtomic fp "Installed"
 
 -- | Mark the given executable as not installed
-markExeNotInstalled :: (HasEnvConfig env)
-                    => InstallLocation -> PackageIdentifier -> RIO env ()
+markExeNotInstalled ::
+     (HasEnvConfig env)
+  => InstallLocation
+  -> PackageIdentifier
+  -> RIO env ()
 markExeNotInstalled loc ident = do
   dir <- exeInstalledDir loc
   ident' <- parseRelFile $ packageIdentifierString ident
   liftIO $ ignoringAbsence (removeFile $ dir </> ident')
 
-buildCacheFile :: (HasEnvConfig env, MonadReader env m, MonadThrow m)
-               => Path Abs Dir
-               -> NamedComponent
-               -> m (Path Abs File)
+buildCacheFile ::
+     (HasEnvConfig env, MonadReader env m, MonadThrow m)
+  => Path Abs Dir
+  -> NamedComponent
+  -> m (Path Abs File)
 buildCacheFile dir component = do
   cachesDir <- buildCachesDir dir
   smh <- view $ envConfigL . to (.sourceMapHash)
   smDirName <- smRelDir smh
-  let nonLibComponent prefix name = prefix <> "-" <> T.unpack name
-  cacheFileName <- parseRelFile $ case component of
-    CLib -> "lib"
-    CSubLib name -> nonLibComponent "sub-lib" name
-    CFlib name -> nonLibComponent "flib" name
-    CExe name -> nonLibComponent "exe" name
-    CTest name -> nonLibComponent "test" name
-    CBench name -> nonLibComponent "bench" name
+  cacheFileName <- parseRelFile $ componentCachePath component
   pure $ cachesDir </> smDirName </> cacheFileName
 
 -- | Try to read the dirtiness cache for the given package directory.
-tryGetBuildCache :: HasEnvConfig env
-                 => Path Abs Dir
-                 -> NamedComponent
-                 -> RIO env (Maybe (Map FilePath FileCacheInfo))
+tryGetBuildCache ::
+     HasEnvConfig env
+  => Path Abs Dir
+  -> NamedComponent
+  -> RIO env (Maybe (Map FilePath FileCacheInfo))
 tryGetBuildCache dir component = do
   fp <- buildCacheFile dir component
   ensureDir $ parent fp
@@ -202,27 +216,30 @@ tryReadFileBinary fp =
     tryIO (readFileBinary fp)
 
 -- | Write the dirtiness cache for this package's files.
-writeBuildCache :: HasEnvConfig env
-                => Path Abs Dir
-                -> NamedComponent
-                -> Map FilePath FileCacheInfo -> RIO env ()
+writeBuildCache ::
+     HasEnvConfig env
+  => Path Abs Dir
+  -> NamedComponent
+  -> Map FilePath FileCacheInfo -> RIO env ()
 writeBuildCache dir component times = do
   fp <- toFilePath <$> buildCacheFile dir component
   liftIO $ Yaml.encodeFile fp BuildCache { times = times }
 
 -- | Write the dirtiness cache for this package's configuration.
-writeConfigCache :: HasEnvConfig env
-                => Path Abs Dir
-                -> ConfigCache
-                -> RIO env ()
+writeConfigCache ::
+     HasEnvConfig env
+  => Path Abs Dir
+  -> ConfigCache
+  -> RIO env ()
 writeConfigCache dir =
   saveConfigCache (configCacheKey dir ConfigCacheTypeConfig)
 
 -- | See 'tryGetCabalMod'
-writeCabalMod :: HasEnvConfig env
-              => Path Abs Dir
-              -> CTime
-              -> RIO env ()
+writeCabalMod ::
+     HasEnvConfig env
+  => Path Abs Dir
+  -> CTime
+  -> RIO env ()
 writeCabalMod dir x = do
   fp <- configCabalMod dir
   writeBinaryFileAtomic fp "Just used for its modification time"
@@ -242,7 +259,7 @@ writeSetupConfigMod dir (Just x) = do
   writeBinaryFileAtomic fp "Just used for its modification time"
   liftIO $ setFileTimes (toFilePath fp) x x
 
--- | See 'tryGetPackageProjectRoot'
+-- | See 'tryGetPackageProjectRoot'.
 writePackageProjectRoot ::
      HasEnvConfig env
   => Path Abs Dir
@@ -271,18 +288,21 @@ flagCacheKey installed = do
     Executable ident -> pure $
       configCacheKey installationRoot (ConfigCacheTypeFlagExecutable ident)
 
--- | Loads the flag cache for the given installed extra-deps
-tryGetFlagCache :: HasEnvConfig env
-                => Installed
-                -> RIO env (Maybe ConfigCache)
+-- | Loads the flag cache for the given installed extra-deps.
+tryGetFlagCache ::
+     HasEnvConfig env
+  => Installed
+  -> RIO env (Maybe ConfigCache)
 tryGetFlagCache gid = do
   key <- flagCacheKey gid
   loadConfigCache key
 
-writeFlagCache :: HasEnvConfig env
-               => Installed
-               -> ConfigCache
-               -> RIO env ()
+-- | Write the flag cache for the given installed extra-deps.
+writeFlagCache ::
+     HasEnvConfig env
+  => Installed
+  -> ConfigCache
+  -> RIO env ()
 writeFlagCache gid cache = do
   key <- flagCacheKey gid
   saveConfigCache key cache
@@ -299,10 +319,11 @@ data TestStatus
   | TSUnknown
 
 -- | Mark test suite status
-setTestStatus :: HasEnvConfig env
-              => Path Abs Dir
-              -> TestStatus
-              -> RIO env ()
+setTestStatus ::
+     HasEnvConfig env
+  => Path Abs Dir
+  -> TestStatus
+  -> RIO env ()
 setTestStatus dir status = do
   fp <- testSuccessFile dir
   writeBinaryFileAtomic fp $
@@ -312,9 +333,10 @@ setTestStatus dir status = do
       TSUnknown -> unknownBS
 
 -- | Check if the test suite already passed
-getTestStatus :: HasEnvConfig env
-              => Path Abs Dir
-              -> RIO env TestStatus
+getTestStatus ::
+     HasEnvConfig env
+  => Path Abs Dir
+  -> RIO env TestStatus
 getTestStatus dir = do
   fp <- testSuccessFile dir
   -- we could ensure the file is the right size first, but we're not expected an
@@ -376,7 +398,7 @@ writePrecompiledCache ::
   -> ConfigureOpts
   -> Bool -- ^ build haddocks
   -> Installed -- ^ library
-  -> Set Text -- ^ executables
+  -> Set StackUnqualCompName -- ^ executables
   -> RIO env ()
 writePrecompiledCache
     baseConfigOpts
@@ -390,7 +412,7 @@ writePrecompiledCache
       ec <- view envConfigL
       let stackRootRelative = makeRelative (view stackRootL ec)
       exes' <- forM (Set.toList exes) $ \exe -> do
-        name <- parseRelFile $ T.unpack exe
+        name <- parseRelFile $ unqualCompToString exe
         stackRootRelative $
            baseConfigOpts.snapInstallRoot </> bindirSuffix </> name
       let installedLibToPath libName ghcPkgId pcAction = do

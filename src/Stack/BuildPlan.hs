@@ -5,7 +5,12 @@
 {-# LANGUAGE OverloadedRecordDot   #-}
 {-# LANGUAGE OverloadedStrings     #-}
 
--- | Resolving a build plan for a set of packages in a given Stackage snapshot.
+{-|
+Module      : Stack.BuildPlan
+License     : BSD-3-Clause
+
+Resolving a build plan for a set of packages in a given Stackage snapshot.
+-}
 
 module Stack.BuildPlan
   ( BuildPlanException (..)
@@ -15,7 +20,6 @@ module Stack.BuildPlan
   , DepErrors
   , removeSrcPkgDefaultFlags
   , selectBestSnapshot
-  , showItems
   ) where
 
 import qualified Data.Foldable as F
@@ -65,7 +69,7 @@ data BuildPlanException
       (Map PackageName (Maybe Version, Set PackageName)) -- truly unknown
       (Map PackageName (Set PackageIdentifier)) -- shadowed
   | SnapshotNotFound SnapName
-  | NeitherCompilerOrResolverSpecified T.Text
+  | NeitherCompilerOrSnapshotSpecified T.Text
   | DuplicatePackagesBug
   deriving (Show, Typeable)
 
@@ -73,7 +77,7 @@ instance Exception BuildPlanException where
   displayException (SnapshotNotFound snapName) = unlines
     [ "Error: [S-2045]"
     , "SnapshotNotFound " ++ snapName'
-    , "Non existing resolver: " ++ snapName' ++ "."
+    , "Non existing snapshot: " ++ snapName' ++ "."
     , "For a complete list of available snapshots see https://www.stackage.org/snapshots"
     ]
    where
@@ -91,7 +95,7 @@ instance Exception BuildPlanException where
           , case mapMaybe goRecommend $ Map.toList unknown of
               [] -> []
               rec ->
-                  ("Recommended action: modify the extra-deps field of " ++
+                  ("Recommended action: modify the value of the extra-deps key of " ++
                   toFilePath stackYaml ++
                   " to include the following:")
                   : (rec
@@ -123,9 +127,9 @@ instance Exception BuildPlanException where
     shadowed'
       | Map.null shadowed = []
       | otherwise = concat
-          [ ["The following packages are shadowed by local packages:"]
+          [ ["The following packages are shadowed by project packages:"]
           , map go (Map.toList shadowed)
-          , ["Recommended action: modify the extra-deps field of " ++
+          , ["Recommended action: modify the value of the extra-deps key of " ++
              toFilePath stackYaml ++
              " to include the following:"]
           , extraDeps
@@ -146,11 +150,11 @@ instance Exception BuildPlanException where
                 $ Set.toList
                 $ Set.unions
                 $ Map.elems shadowed
-  displayException (NeitherCompilerOrResolverSpecified url) = concat
+  displayException (NeitherCompilerOrSnapshotSpecified url) = concat
     [ "Error: [S-8559]\n"
     , "Failed to load custom snapshot at "
     , T.unpack url
-    , ", because no 'compiler' or 'resolver' is specified."
+    , ", because no 'compiler' or 'snapshot' is specified."
     ]
   displayException DuplicatePackagesBug = bugReport "[S-5743]"
     "Duplicate packages are not expected here."
@@ -189,8 +193,8 @@ gpdPackageDeps gpd compilerVersion platform flags =
     , platform
     }
 
--- Remove any src package flags having default values
--- Remove any package entries with no flags set
+-- | For the given list of packages and dictionary of packages and Cabal flags,
+-- remove flags that have defaults and packages with no remaining flags.
 removeSrcPkgDefaultFlags ::
      [C.GenericPackageDescription]
   -> Map PackageName (Map FlagName Bool)
@@ -205,12 +209,8 @@ removeSrcPkgDefaultFlags gpds flags =
     in  Just $ Map.differenceWith diff f1 f2
 
   gpdDefaultFlags gpd =
-    let tuples = map getDefault (C.genPackageFlags gpd)
-    in  Map.singleton (gpdPackageName gpd) (Map.fromList tuples)
-
-  getDefault f
-    | C.flagDefault f = (C.flagName f, True)
-    | otherwise       = (C.flagName f, False)
+    let pairs = map (C.flagName &&& C.flagDefault) (C.genPackageFlags gpd)
+    in  Map.singleton (gpdPackageName gpd) (Map.fromList pairs)
 
 -- | Find the set of @FlagName@s necessary to get the given
 -- @GenericPackageDescription@ to compile against the given @BuildPlan@. Will
@@ -300,15 +300,21 @@ checkPackageDeps myName deps packages =
             , neededBy = Map.singleton myName range
             }
 
+-- | A type synoynm for a dictionary of packages and failures to satisfy
+-- packages' dependency constraints.
 type DepErrors = Map PackageName DepError
 
+-- | A type representing failures to satisfy packages' dependency constraints.
 data DepError = DepError
   { version :: !(Maybe Version)
+    -- ^ If available, the available version of the package.
   , neededBy :: !(Map PackageName VersionRange)
+    -- ^ A dictionary of the packages requiring the package and the permitted
+    -- range of versions.
   }
   deriving Show
 
--- | Combine two 'DepError's for the same 'Version'.
+-- | Combine two t'DepError's for the same 'Version'.
 combineDepError :: DepError -> DepError -> DepError
 combineDepError (DepError a x) (DepError b y) =
   assert (a == b) $ DepError a (Map.unionWith C.intersectVersionRanges x y)
@@ -339,6 +345,8 @@ checkBundleBuildPlan platform compiler pool flags gpds =
 
   dupError _ _ = impureThrow DuplicatePackagesBug
 
+-- | A type representing the results of evaluating how well a snapshot satisfies
+-- the dependencies of a set of packages and a set of Cabal flags.
 data BuildPlanCheck
   = BuildPlanCheckOk (Map PackageName (Map FlagName Bool))
   | BuildPlanCheckPartial (Map PackageName (Map FlagName Bool)) DepErrors

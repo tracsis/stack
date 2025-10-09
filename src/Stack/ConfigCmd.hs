@@ -4,30 +4,33 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings   #-}
 
--- | Make changes to project or global configuration.
+{-|
+Module      : Stack.ConfigCmd
+Description : Make changes to project or global configuration.
+License     : BSD-3-Clause
+
+Make changes to project or global configuration.
+-}
+
 module Stack.ConfigCmd
-  ( ConfigCmdSet (..)
-  , configCmdSetParser
-  , cfgCmdSet
+  ( cfgCmdSet
   , cfgCmdSetName
-  , configCmdEnvParser
   , cfgCmdEnv
   , cfgCmdEnvName
+  , cfgCmdBuildFiles
+  , cfgCmdBuildFilesName
   , cfgCmdName
   ) where
 
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
 import           Data.Attoparsec.Text as P
-                   ( Parser, parseOnly, skip, skipWhile, string, takeText
-                   , takeWhile
+                   ( Parser, parseOnly, skip, string, takeText, takeWhile
+                   , takeWhile1
                    )
 import qualified Data.Map.Merge.Strict as Map
 import qualified Data.Text as T
 import qualified Data.Yaml as Yaml
-import qualified Options.Applicative as OA
-import           Options.Applicative.Builder.Extra
-import qualified Options.Applicative.Types as OA
 import           Pantry ( loadSnapshot )
 import           Path ( (</>), parent )
 import qualified RIO.Map as Map
@@ -35,21 +38,28 @@ import           RIO.NonEmpty ( nonEmpty )
 import qualified RIO.NonEmpty as NE
 import           RIO.Process ( envVarsL )
 import           Stack.Config
-                   ( makeConcreteResolver, getProjectConfig
+                   ( makeConcreteSnapshot, getProjectConfig
                    , getImplicitGlobalProjectDir
                    )
 import           Stack.Constants ( stackDotYaml )
 import           Stack.Prelude
+import           Stack.Types.BuildConfig ( BuildConfig )
 import           Stack.Types.Config ( Config (..), HasConfig (..) )
 import           Stack.Types.ConfigMonoid
-                   ( configMonoidInstallGHCName, configMonoidSystemGHCName )
+                   ( configMonoidInstallGHCName
+                   , configMonoidInstallMsysName
+                   , configMonoidRecommendStackUpgradeName
+                   , configMonoidSystemGHCName
+                   )
+import           Stack.Types.ConfigSetOpts
+                   ( CommandScope (..), ConfigCmdSet (..) ,configCmdSetScope )
 import           Stack.Types.EnvConfig ( EnvConfig )
 import           Stack.Types.EnvSettings ( EnvSettings (..) )
 import           Stack.Types.GHCVariant ( HasGHCVariant )
 import           Stack.Types.GlobalOpts ( GlobalOpts (..) )
 import           Stack.Types.ProjectConfig ( ProjectConfig (..) )
-import           Stack.Types.Resolver ( AbstractResolver, readAbstractResolver )
 import           Stack.Types.Runner ( globalOptsL )
+import           Stack.Types.Snapshot ( AbstractSnapshot )
 import           System.Environment ( getEnvironment )
 
 -- | Type repesenting exceptions thrown by functions exported by the
@@ -63,27 +73,7 @@ instance Exception ConfigCmdException where
     "Error: [S-3136]\n"
     ++ "'config' command used when no project configuration available."
 
-data ConfigCmdSet
-  = ConfigCmdSetSnapshot !(Unresolved AbstractResolver)
-  | ConfigCmdSetResolver !(Unresolved AbstractResolver)
-  | ConfigCmdSetSystemGhc !CommandScope !Bool
-  | ConfigCmdSetInstallGhc !CommandScope !Bool
-  | ConfigCmdSetDownloadPrefix !CommandScope !Text
-
-data CommandScope
-  = CommandScopeGlobal
-    -- ^ Apply changes to the global configuration,
-    --   typically at @~/.stack/config.yaml@.
-  | CommandScopeProject
-    -- ^ Apply changes to the project @stack.yaml@.
-
-configCmdSetScope :: ConfigCmdSet -> CommandScope
-configCmdSetScope (ConfigCmdSetSnapshot _) = CommandScopeProject
-configCmdSetScope (ConfigCmdSetResolver _) = CommandScopeProject
-configCmdSetScope (ConfigCmdSetSystemGhc scope _) = scope
-configCmdSetScope (ConfigCmdSetInstallGhc scope _) = scope
-configCmdSetScope (ConfigCmdSetDownloadPrefix scope _) = scope
-
+-- | Function underlying Stack's @config set@ command.
 cfgCmdSet ::
      (HasConfig env, HasGHCVariant env)
   => ConfigCmdSet -> RIO env ()
@@ -96,11 +86,10 @@ cfgCmdSet cmd = do
         mstackYaml <- getProjectConfig mstackYamlOption
         case mstackYaml of
           PCProject stackYaml -> pure stackYaml
-          PCGlobalProject ->
-            fmap (</> stackDotYaml) (getImplicitGlobalProjectDir conf)
+          PCGlobalProject -> getImplicitGlobalProjectDir <&> (</> stackDotYaml)
           PCNoProject _extraDeps -> throwIO NoProjectConfigAvailable
           -- maybe modify the ~/.stack/config.yaml file instead?
-      CommandScopeGlobal -> pure conf.userConfigPath
+      CommandScopeGlobal -> pure conf.userGlobalConfigFile
   rawConfig <- liftIO (readFileUtf8 (toFilePath configFilePath))
   config <- either throwM pure (Yaml.decodeEither' $ encodeUtf8 rawConfig)
   newValue <- cfgCmdSetValue (parent configFilePath) cmd
@@ -109,14 +98,16 @@ cfgCmdSet cmd = do
       newValue' = T.stripEnd $
         decodeUtf8With lenientDecode $ Yaml.encode newValue  -- Text
       file = toFilePath configFilePath  -- String
-  newYamlLines <- case inConfig config cmdKeys of
-    Nothing -> do
+      hits = catMaybes $ NE.toList $ NE.map (inConfig config) cmdKeys
+      primaryCmdKey = NE.last $ NE.head cmdKeys
+  newYamlLines <- case hits of
+    [] -> do
       prettyInfoL
         [ pretty configFilePath
         , flow "has been extended."
         ]
-      pure $ writeLines yamlLines "" cmdKeys newValue'
-    Just oldValue -> if oldValue == newValue
+      pure $ writeLines yamlLines "" (NE.head cmdKeys) newValue'
+    [(cmdKey, oldValue)] -> if oldValue == newValue && cmdKey == primaryCmdKey
       then do
         prettyInfoL
           [ pretty configFilePath
@@ -124,7 +115,27 @@ cfgCmdSet cmd = do
                  \unchanged."
           ]
         pure yamlLines
-      else switchLine configFilePath (NE.last cmdKeys) newValue' [] yamlLines
+      else do
+        when (cmdKey /= primaryCmdKey) $
+          prettyWarn $
+               fillSep
+                 [ pretty configFilePath
+                 , flow "contained a synonym for"
+                 , style Target (fromString $ T.unpack primaryCmdKey)
+                 , parens (style Current (fromString $ T.unpack cmdKey))
+                 , flow "which has been replaced."
+                 ]
+            <> line
+        switchLine configFilePath cmdKey primaryCmdKey newValue' [] yamlLines
+    _ -> do
+      -- In practice, this warning should not be encountered because with
+      -- snapshot and resolver present, Stack will not parse the YAML file.
+      prettyWarnL
+        [ pretty configFilePath
+        , flow "contains more than one possible existing configuration and, \
+               \consequently, remains unchanged."
+        ]
+      pure yamlLines
   liftIO $ writeFileUtf8 file (T.unlines newYamlLines)
  where
   -- This assumes that if the key does not exist, the lines that can be
@@ -145,27 +156,32 @@ cfgCmdSet cmd = do
 
   inConfig v cmdKeys = case v of
     Yaml.Object obj ->
-      case KeyMap.lookup (Key.fromText (NE.head cmdKeys)) obj of
-        Nothing -> Nothing
-        Just v' -> case nonEmpty $ NE.tail cmdKeys of
-          Nothing -> Just v'
-          Just ks -> inConfig v' ks
+      let cmdKey = NE.head cmdKeys
+      in  case KeyMap.lookup (Key.fromText cmdKey) obj of
+            Nothing -> Nothing
+            Just v' -> case nonEmpty $ NE.tail cmdKeys of
+              Nothing -> Just (cmdKey, v')
+              Just ks -> inConfig v' ks
     _ -> Nothing
 
-  switchLine file cmdKey _ searched [] = do
+  switchLine file cmdKey _ _ searched [] = do
     prettyWarnL
       [ style Current (fromString $ T.unpack cmdKey)
-      , flow "not found in YAML file"
+      , flow "was not found in YAML file"
       , pretty file
-      , flow "as a single line. Multi-line key:value formats are not \
-             \supported."
+      , flow "in the form"
+      , style Shell "key: value"
+      , flow "on a single line. Multi-line formats for existing keys are not \
+             \supported by the"
+      , style Shell "config set"
+      , flow "commands. The file's contents have not been changed."
       ]
     pure $ reverse searched
-  switchLine file cmdKey newValue searched (oldLine:rest) =
+  switchLine file cmdKey cmdKey' newValue searched (oldLine:rest) =
     case parseOnly (parseLine cmdKey) oldLine of
-      Left _ -> switchLine file cmdKey newValue (oldLine:searched) rest
+      Left _ -> switchLine file cmdKey cmdKey' newValue (oldLine:searched) rest
       Right (kt, spaces1, spaces2, spaces3, comment) -> do
-        let newLine = spaces1 <> renderKey cmdKey kt <> spaces2 <>
+        let newLine = spaces1 <> renderKey cmdKey' kt <> spaces2 <>
                 ":" <> spaces3 <> newValue <> comment
         prettyInfoL
           [ pretty file
@@ -179,8 +195,12 @@ cfgCmdSet cmd = do
     kt <- parseKey key
     spaces2 <- P.takeWhile (== ' ')
     skip (== ':')
-    spaces3 <- P.takeWhile (== ' ')
-    skipWhile (/= ' ')
+    spaces3 <- P.takeWhile1 (== ' ')
+    -- This assumes that the existing value contains no space characters, which
+    -- is tolerable for current purposes.
+    void $ takeWhile1 (/= ' ')
+    -- This assumes that anything that follows the existing value is a comment,
+    -- which is tolerable for current purposes.
     comment <- takeText
     pure (kt, spaces1, spaces2, spaces3, comment)
 
@@ -232,139 +252,54 @@ cfgCmdSetValue root (ConfigCmdSetResolver newSnapshot) =
   snapshotValue root newSnapshot
 cfgCmdSetValue _ (ConfigCmdSetSystemGhc _ bool') = pure $ Yaml.Bool bool'
 cfgCmdSetValue _ (ConfigCmdSetInstallGhc _ bool') = pure $ Yaml.Bool bool'
+cfgCmdSetValue _ (ConfigCmdSetInstallMsys _ bool') = pure $ Yaml.Bool bool'
+cfgCmdSetValue _ (ConfigCmdSetRecommendStackUpgrade _ bool') =
+  pure $ Yaml.Bool bool'
 cfgCmdSetValue _ (ConfigCmdSetDownloadPrefix _ url) = pure $ Yaml.String url
 
 snapshotValue ::
      HasConfig env
   => Path Abs Dir -- ^ root directory of project
-  -> Unresolved AbstractResolver -> RIO env Yaml.Value
+  -> Unresolved AbstractSnapshot
+  -> RIO env Yaml.Value
 snapshotValue root snapshot = do
   snapshot' <- resolvePaths (Just root) snapshot
-  concreteSnapshot <- makeConcreteResolver snapshot'
+  concreteSnapshot <- makeConcreteSnapshot snapshot'
   -- Check that the snapshot actually exists
   void $ loadSnapshot =<< completeSnapshotLocation concreteSnapshot
   pure (Yaml.toJSON concreteSnapshot)
 
-cfgCmdSetKeys :: ConfigCmdSet -> NonEmpty Text
-cfgCmdSetKeys (ConfigCmdSetSnapshot _) = ["snapshot"]
-cfgCmdSetKeys (ConfigCmdSetResolver _) = ["resolver"]
-cfgCmdSetKeys (ConfigCmdSetSystemGhc _ _) = [configMonoidSystemGHCName]
-cfgCmdSetKeys (ConfigCmdSetInstallGhc _ _) = [configMonoidInstallGHCName]
+cfgCmdSetKeys :: ConfigCmdSet -> NonEmpty (NonEmpty Text)
+cfgCmdSetKeys (ConfigCmdSetSnapshot _) = [["snapshot"], ["resolver"]]
+cfgCmdSetKeys (ConfigCmdSetResolver _) = [["resolver"], ["snapshot"]]
+cfgCmdSetKeys (ConfigCmdSetSystemGhc _ _) = [[configMonoidSystemGHCName]]
+cfgCmdSetKeys (ConfigCmdSetInstallGhc _ _) = [[configMonoidInstallGHCName]]
+cfgCmdSetKeys (ConfigCmdSetInstallMsys _ _) = [[configMonoidInstallMsysName]]
+cfgCmdSetKeys (ConfigCmdSetRecommendStackUpgrade _ _) =
+  [[configMonoidRecommendStackUpgradeName]]
 cfgCmdSetKeys (ConfigCmdSetDownloadPrefix _ _) =
-  ["package-index", "download-prefix"]
+  [["package-index", "download-prefix"]]
 
+-- | The name of Stack's @config@ command.
 cfgCmdName :: String
 cfgCmdName = "config"
 
+-- | The name of Stack's @config@ command's @set@ subcommand.
 cfgCmdSetName :: String
 cfgCmdSetName = "set"
 
+-- | The name of Stack's @config@ command's @env@ subcommand.
 cfgCmdEnvName :: String
 cfgCmdEnvName = "env"
 
-configCmdSetParser :: OA.Parser ConfigCmdSet
-configCmdSetParser =
-  OA.hsubparser $
-    mconcat
-      [ OA.command "snapshot"
-          ( OA.info
-              (   ConfigCmdSetSnapshot
-              <$> OA.argument
-                    readAbstractResolver
-                    (  OA.metavar "SNAPSHOT"
-                    <> OA.help "E.g. \"nightly\" or \"lts-22.8\"" ))
-              ( OA.progDesc
-                  "Change the snapshot of the current project." ))
-      , OA.command "resolver"
-          ( OA.info
-              (   ConfigCmdSetResolver
-              <$> OA.argument
-                    readAbstractResolver
-                    (  OA.metavar "SNAPSHOT"
-                    <> OA.help "E.g. \"nightly\" or \"lts-22.8\"" ))
-              ( OA.progDesc
-                  "Change the resolver key of the current project." ))
-      , OA.command (T.unpack configMonoidSystemGHCName)
-          ( OA.info
-              (   ConfigCmdSetSystemGhc
-              <$> scopeFlag
-              <*> boolArgument )
-              ( OA.progDesc
-                  "Configure whether Stack should use a system GHC \
-                  \installation or not." ))
-      , OA.command (T.unpack configMonoidInstallGHCName)
-          ( OA.info
-              (   ConfigCmdSetInstallGhc
-              <$> scopeFlag
-              <*> boolArgument )
-              ( OA.progDesc
-                  "Configure whether Stack should automatically install \
-                  \GHC when necessary." ))
-      , OA.command "package-index"
-          ( OA.info
-              ( OA.hsubparser $
-                  OA.command "download-prefix"
-                    ( OA.info
-                        (   ConfigCmdSetDownloadPrefix
-                        <$> scopeFlag
-                        <*> urlArgument )
-                        ( OA.progDesc
-                            "Configure download prefix for Stack's package \
-                            \index." )))
-              ( OA.progDesc
-                  "Configure Stack's package index" ))
-      ]
-
-scopeFlag :: OA.Parser CommandScope
-scopeFlag = OA.flag
-  CommandScopeProject
-  CommandScopeGlobal
-  (  OA.long "global"
-  <> OA.help
-       "Modify the user-specific global configuration file ('config.yaml') \
-       \instead of the project-level configuration file ('stack.yaml')."
-  )
-
-readBool :: OA.ReadM Bool
-readBool = do
-  s <- OA.readerAsk
-  case s of
-    "true" -> pure True
-    "false" -> pure False
-    _ -> OA.readerError ("Invalid value " ++ show s ++
-           ": Expected \"true\" or \"false\"")
-
-boolArgument :: OA.Parser Bool
-boolArgument = OA.argument
-  readBool
-  (  OA.metavar "true|false"
-  <> OA.completeWith ["true", "false"]
-  )
-
-urlArgument :: OA.Parser Text
-urlArgument = OA.strArgument
-  (  OA.metavar "URL"
-  <> OA.value defaultDownloadPrefix
-  <> OA.showDefault
-  <> OA.help
-       "Location of package index. It is highly recommended to use only the \
-       \official Hackage server or a mirror."
-  )
-
-configCmdEnvParser :: OA.Parser EnvSettings
-configCmdEnvParser = EnvSettings
-  <$> boolFlags True "locals" "include local package information" mempty
-  <*> boolFlags True
-        "ghc-package-path" "set GHC_PACKAGE_PATH environment variable" mempty
-  <*> boolFlags True "stack-exe" "set STACK_EXE environment variable" mempty
-  <*> boolFlags False
-        "locale-utf8" "set the GHC_CHARENC environment variable to UTF-8" mempty
-  <*> boolFlags False
-        "keep-ghc-rts" "keep any GHCRTS environment variable" mempty
+-- | The name of Stack's @config@ command's @build-files@ subcommand.
+cfgCmdBuildFilesName :: String
+cfgCmdBuildFilesName = "build-files"
 
 data EnvVarAction = EVASet !Text | EVAUnset
   deriving Show
 
+-- | Function underlying Stack's @config env@ command.
 cfgCmdEnv :: EnvSettings -> RIO EnvConfig ()
 cfgCmdEnv es = do
   origEnv <- liftIO $ Map.fromList . map (first fromString) <$> getEnvironment
@@ -389,3 +324,8 @@ cfgCmdEnv es = do
       escape '\'' = "'\"'\"'"
       escape c = T.singleton c
   putBuilder $ Map.foldMapWithKey toLine actions
+
+-- | This function takes no settings and yields no action of interest. It is
+-- 'Stack.Config.withBuildConfig' that yields the desired actions.
+cfgCmdBuildFiles :: () -> RIO BuildConfig ()
+cfgCmdBuildFiles () = pure ()

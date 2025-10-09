@@ -1,7 +1,15 @@
 {-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE ApplicativeDo       #-}
 {-# LANGUAGE OverloadedStrings   #-}
 
--- | Function to parse command line arguments for Stack's @ls@ command.
+{-|
+Module      : Stack.Options.LsParser
+Description : Parse arguments for Stack's @ls@ command.
+License     : BSD-3-Clause
+
+Function to parse command line arguments for Stack's @ls@ command.
+-}
+
 module Stack.Options.LsParser
   ( lsOptsParser
   ) where
@@ -11,19 +19,26 @@ import qualified Options.Applicative as OA
 import           Options.Applicative ( idm )
 import           Options.Applicative.Builder.Extra ( boolFlags, textOption )
 import           Stack.Constants ( globalFooter )
-import           Stack.Ls
+import           Stack.Options.DotParser ( dotOptsParser )
+import           Stack.Prelude hiding ( sep )
+import           Stack.Types.LsOpts
                    ( ListDepsFormat (..), ListDepsFormatOpts (..)
                    , ListDepsOpts (..), ListDepsTextFilter (..)
-                   , ListStylesOpts (..), ListToolsOpts (..), LsCmdOpts (..)
-                   , LsCmds (..), LsView (..), SnapshotOpts (..)
+                   , ListGlobalsOpts (..), ListStylesOpts (..)
+                   , ListToolsOpts (..), LsCmdOpts (..), LsCmds (..)
+                   , LsView (..), SnapshotOpts (..), ListGlobalsOpts
                    )
-import           Stack.Options.DotParser ( dotOptsParser )
-import           Stack.Prelude
 
 -- | Parse command line arguments for Stack's @ls@ command.
 lsOptsParser :: OA.Parser LsCmdOpts
 lsOptsParser = LsCmdOpts
-  <$> OA.hsubparser (lsSnapCmd <> lsDepsCmd <> lsStylesCmd <> lsToolsCmd)
+  <$> OA.hsubparser
+        (  lsSnapCmd
+        <> lsGlobalsCmd
+        <> lsDepsCmd
+        <> lsStylesCmd
+        <> lsToolsCmd
+        )
 
 lsSnapCmd :: OA.Mod OA.CommandFields LsCmds
 lsSnapCmd = OA.command "snapshots" $
@@ -31,10 +46,19 @@ lsSnapCmd = OA.command "snapshots" $
        OA.progDesc "View snapshots. (default: local)"
     <> OA.footer localSnapshotMsg
 
+lsGlobalsCmd :: OA.Mod OA.CommandFields LsCmds
+lsGlobalsCmd = OA.command "globals" $
+  OA.info lsGlobalsOptsParser $
+       OA.progDesc "View global packages."
+    <> OA.footer globalFooter
+
 lsDepsCmd :: OA.Mod OA.CommandFields LsCmds
 lsDepsCmd = OA.command "dependencies" $
   OA.info lsDepOptsParser $
-       OA.progDesc "View the dependencies."
+       OA.progDesc
+         "View the packages versions used for a project. Use a command if the \
+         \first target specified has the name of a command. Targets other than \
+         \project packages are ignored."
     <> OA.footer globalFooter
 
 lsStylesCmd :: OA.Mod OA.CommandFields LsCmds
@@ -58,6 +82,9 @@ lsToolsCmd =
 
 lsCmdOptsParser :: OA.Parser LsCmds
 lsCmdOptsParser = LsSnapshot <$> lsViewSnapCmd
+
+lsGlobalsOptsParser :: OA.Parser LsCmds
+lsGlobalsOptsParser = LsGlobals <$> listGlobalsOptsParser
 
 lsDepOptsParser :: OA.Parser LsCmds
 lsDepOptsParser = LsDependencies <$> listDepsOptsParser
@@ -103,6 +130,15 @@ localSnapshotMsg :: String
 localSnapshotMsg =
   "A local snapshot is identified by a hash code. " <> pagerMsg
 
+-- | Parser for arguments to `stack ls globals`.
+listGlobalsOptsParser :: OA.Parser ListGlobalsOpts
+listGlobalsOptsParser = ListGlobalsOpts <$> globalHints
+ where
+  globalHints = boolFlags True
+    "global-hints"
+    "use of a hints file for global packages, rather than an installed GHC"
+    idm
+
 -- | Parser for arguments to `stack ls dependencies`.
 listDepsOptsParser :: OA.Parser ListDepsOpts
 listDepsOptsParser = OA.subparser
@@ -132,8 +168,7 @@ formatSubCommand ::
   -> OA.Mod OA.CommandFields ListDepsOpts
 formatSubCommand cmd desc formatParser =
   OA.command
-    cmd
-    (OA.info (toListDepsOptsParser formatParser) (OA.progDesc desc))
+    cmd (OA.info (toListDepsOptsParser formatParser) (OA.progDesc desc))
 
 listDepsTextParser :: OA.Parser ListDepsFormat
 listDepsTextParser =
@@ -144,7 +179,7 @@ textFilterParser = many (OA.option parseListDepsTextFilter
   (  OA.long "filter"
   <> OA.metavar "ITEM"
   <> OA.help "Item to be filtered out of the results, if present, being either \
-             \$locals (for all local packages) or a package name (can be \
+             \$locals (for all project packages) or a package name (can be \
              \specified multiple times)."
   ))
 
@@ -166,9 +201,13 @@ listDepsJsonParser :: OA.Parser ListDepsFormat
 listDepsJsonParser = pure ListDepsJSON
 
 listDepsFormatOptsParser :: OA.Parser ListDepsFormatOpts
-listDepsFormatOptsParser = ListDepsFormatOpts
-  <$> separatorParser
-  <*> licenseParser
+listDepsFormatOptsParser = do
+  license <- licenseParser
+  sep <- separatorParser
+  pure ListDepsFormatOpts
+    { sep
+    , license
+    }
 
 separatorParser :: OA.Parser Text
 separatorParser = fmap
@@ -176,7 +215,7 @@ separatorParser = fmap
   ( textOption
       (  OA.long "separator"
       <> OA.metavar "SEP"
-      <> OA.help "Separator between package name and package version."
+      <> OA.help "Separator between package name and what follows."
       <> OA.value " "
       <> OA.showDefault
       )

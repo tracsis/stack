@@ -5,6 +5,11 @@
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ViewPatterns        #-}
 
+{-|
+Module      : Stack.Setup.Installed
+License     : BSD-3-Clause
+-}
+
 module Stack.Setup.Installed
   ( getCompilerVersion
   , markInstalled
@@ -32,21 +37,23 @@ import           Path ( (</>), filename, parseRelDir, parseRelFile )
 import           Path.IO ( doesDirExist, ignoringAbsence, listDir, removeFile )
 import           RIO.Process ( HasProcessContext, proc, readProcess_ )
 import           Stack.Constants
-                   ( relDirBin, relDirInclude, relDirLib, relDirLocal, relDirMingw
-                   , relDirMingw32, relDirMingw64, relDirUsr
+                   ( relDirBin, relDirInclude, relDirLib, relDirLocal
+                   , relDirMingw, relDirUsr
                    )
 import           Stack.Prelude
 import           Stack.Types.Compiler
                    ( ActualCompiler (..), WhichCompiler (..) )
 import           Stack.Types.Config ( Config (..), HasConfig (..) )
+import           Stack.Types.Config.Exception ( ConfigPrettyException (..) )
 import           Stack.Types.ExtraDirs ( ExtraDirs (..) )
+import           Stack.Types.MsysEnvironment ( relDirMsysEnv )
 
 data Tool
   = Tool PackageIdentifier -- ^ e.g. ghc-7.8.4, msys2-20150512
   | ToolGhcGit !Text !Text   -- ^ e.g. ghc-git-COMMIT_ID-FLAVOUR
   deriving Eq
 
--- | 'Tool' values are ordered by name (being @ghc-git@, for @ToolGhcGit _ _@)
+-- | t'Tool' values are ordered by name (being @ghc-git@, for @ToolGhcGit _ _@)
 -- alphabetically and then by version (later versions are ordered before
 -- earlier versions, where applicable).
 instance Ord Tool where
@@ -76,25 +83,28 @@ parseToolText (parseWantedCompiler -> Right (WCGhcGit c f)) = Just (ToolGhcGit c
 parseToolText (parsePackageIdentifier . T.unpack -> Just pkgId) = Just (Tool pkgId)
 parseToolText _ = Nothing
 
-markInstalled :: (MonadIO m, MonadThrow m)
-              => Path Abs Dir
-              -> Tool
-              -> m ()
+markInstalled ::
+     (MonadIO m, MonadThrow m)
+  => Path Abs Dir
+  -> Tool
+  -> m ()
 markInstalled programsPath tool = do
   fpRel <- parseRelFile $ toolString tool ++ ".installed"
   writeBinaryFileAtomic (programsPath </> fpRel) "installed"
 
-unmarkInstalled :: MonadIO m
-                => Path Abs Dir
-                -> Tool
-                -> m ()
+unmarkInstalled ::
+     MonadIO m
+  => Path Abs Dir
+  -> Tool
+  -> m ()
 unmarkInstalled programsPath tool = liftIO $ do
   fpRel <- parseRelFile $ toolString tool ++ ".installed"
   ignoringAbsence (removeFile $ programsPath </> fpRel)
 
-listInstalled :: (MonadIO m, MonadThrow m)
-              => Path Abs Dir
-              -> m [Tool]
+listInstalled ::
+     (MonadIO m, MonadThrow m)
+  => Path Abs Dir
+  -> m [Tool]
 listInstalled programsPath =
   doesDirExist programsPath >>= \case
     False -> pure []
@@ -105,10 +115,11 @@ listInstalled programsPath =
     x <- T.stripSuffix ".installed" $ T.pack $ toFilePath $ filename fp
     parseToolText x
 
-filterTools :: PackageName       -- ^ package to find
-            -> (Version -> Bool) -- ^ which versions are acceptable
-            -> [Tool]            -- ^ tools to filter
-            -> [PackageIdentifier]
+filterTools ::
+     PackageName       -- ^ package to find
+  -> (Version -> Bool) -- ^ which versions are acceptable
+  -> [Tool]            -- ^ tools to filter
+  -> [PackageIdentifier]
 filterTools name goodVersion installed =
   [ pkgId | Tool pkgId <- installed
           , pkgName pkgId == name
@@ -144,34 +155,24 @@ toolExtraDirs tool = do
           , dir </> relDirMingw </> relDirBin
           ]
       }
-    (Platform Cabal.I386 Cabal.Windows, "msys2") -> pure mempty
-      { bins =
-          [ dir </> relDirMingw32 </> relDirBin
-          , dir </> relDirUsr </> relDirBin
-          , dir </> relDirUsr </> relDirLocal </> relDirBin
-          ]
-      , includes =
-          [ dir </> relDirMingw32 </> relDirInclude
-          ]
-      , libs =
-          [ dir </> relDirMingw32 </> relDirLib
-          , dir </> relDirMingw32 </> relDirBin
-          ]
-      }
-    (Platform Cabal.X86_64 Cabal.Windows, "msys2") -> pure mempty
-      { bins =
-          [ dir </> relDirMingw64 </> relDirBin
-          , dir </> relDirUsr </> relDirBin
-          , dir </> relDirUsr </> relDirLocal </> relDirBin
-          ]
-      , includes =
-          [ dir </> relDirMingw64 </> relDirInclude
-          ]
-      , libs =
-          [ dir </> relDirMingw64 </> relDirLib
-          , dir </> relDirMingw64 </> relDirBin
-          ]
-      }
+    (Platform _ Cabal.Windows, "msys2") -> do
+      relDirMsysEnvPrefix <- case config.msysEnvironment of
+        Just msysEnv -> pure $ relDirMsysEnv msysEnv
+        Nothing -> throwM NoMsysEnvironmentBug
+      pure mempty
+        { bins =
+            [ dir </> relDirMsysEnvPrefix </> relDirBin
+            , dir </> relDirUsr </> relDirBin
+            , dir </> relDirUsr </> relDirLocal </> relDirBin
+            ]
+        , includes =
+            [ dir </> relDirMsysEnvPrefix </> relDirInclude
+            ]
+        , libs =
+            [ dir </> relDirMsysEnvPrefix </> relDirLib
+            , dir </> relDirMsysEnvPrefix </> relDirBin
+            ]
+        }
     (_, isGHC -> True) -> pure mempty
       { bins =
           [ dir </> relDirBin
@@ -186,10 +187,11 @@ toolExtraDirs tool = do
  where
   isGHC n = "ghc" == n || "ghc-" `L.isPrefixOf` n
 
-installDir :: (MonadReader env m, MonadThrow m)
-           => Path Abs Dir
-           -> Tool
-           -> m (Path Abs Dir)
+installDir ::
+     (MonadReader env m, MonadThrow m)
+  => Path Abs Dir
+  -> Tool
+  -> m (Path Abs Dir)
 installDir programsDir tool = do
   relativeDir <- parseRelDir $ toolString tool
   pure $ programsDir </> relativeDir

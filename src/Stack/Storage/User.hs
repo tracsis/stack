@@ -11,10 +11,18 @@
 {-# LANGUAGE UndecidableInstances  #-}
 {-# OPTIONS_GHC -Wno-unused-top-binds -Wno-identities #-}
 
--- | Work with SQLite database used for caches across an entire user account.
+{-|
+Module      : Stack.Storage.User
+Description : Work with SQLite DB for caches across a user account.
+License     : BSD-3-Clause
+
+Work with SQLite database used for caches across an entire user account.
+-}
+
 module Stack.Storage.User
   ( initUserStorage
   , PrecompiledCacheKey
+  , PrecompiledCacheParent (..)
   , precompiledCacheKey
   , loadPrecompiledCache
   , savePrecompiledCache
@@ -45,7 +53,7 @@ import           Path ( (</>), mkRelFile, parseRelFile )
 import           Path.IO ( resolveFile', resolveDir' )
 import qualified RIO.FilePath as FP
 import           Stack.Prelude
-import           Stack.Storage.Util ( handleMigrationException, updateSet )
+import           Stack.Storage.Util ( handleMigrationException, updateCollection, setUpdateDiff )
 import           Stack.Types.Build ( PrecompiledCache (..) )
 import           Stack.Types.Cache ( Action (..) )
 import           Stack.Types.Compiler ( ActualCompiler, compilerVersionText )
@@ -89,7 +97,7 @@ share [ mkPersist sqlSettings
       ]
       [persistLowerCase|
 PrecompiledCacheParent sql="precompiled_cache"
-  platformGhcDir FilePath "default=(hex(randomblob(16)))"
+  platformGhcDir FilePath default="(hex(randomblob(16)))"
   compiler Text
   cabalVersion Text
   packageKey Text
@@ -189,7 +197,7 @@ precompiledCacheKey platformGhcDir compiler cabalVersion =
     (compilerVersionText compiler)
     (T.pack $ versionString cabalVersion)
 
--- | Internal helper to read the 'PrecompiledCache' from the database
+-- | Internal helper to read the t'PrecompiledCache' from the database
 readPrecompiledCache ::
      (HasConfig env, HasLogFunc env)
   => PrecompiledCacheKey
@@ -215,7 +223,7 @@ readPrecompiledCache key = do
           }
       )
 
--- | Load 'PrecompiledCache' from the database.
+-- | Load t'PrecompiledCache' from the database.
 loadPrecompiledCache ::
      (HasConfig env, HasLogFunc env)
   => PrecompiledCacheKey
@@ -223,7 +231,7 @@ loadPrecompiledCache ::
 loadPrecompiledCache key =
   withUserStorage $ fmap snd <$> readPrecompiledCache key
 
--- | Insert or update 'PrecompiledCache' to the database.
+-- | Insert or update t'PrecompiledCache' to the database.
 savePrecompiledCache ::
      (HasConfig env, HasLogFunc env)
   => PrecompiledCacheKey
@@ -260,18 +268,16 @@ savePrecompiledCache
                 precompiledCacheParentLibrary
               ]
             pure (parentId, Just old)
-      updateSet
-        PrecompiledCacheSubLib
-        PrecompiledCacheSubLibParent
-        parentId
-        PrecompiledCacheSubLibValue
+      updateCollection
+        (setUpdateDiff PrecompiledCacheSubLibValue)
+        (PrecompiledCacheSubLib parentId)
+        [PrecompiledCacheSubLibParent ==. parentId]
         (maybe Set.empty (toFilePathSet . (.subLibs)) mold)
         (toFilePathSet new.subLibs)
-      updateSet
-        PrecompiledCacheExe
-        PrecompiledCacheExeParent
-        parentId
-        PrecompiledCacheExeValue
+      updateCollection
+        (setUpdateDiff PrecompiledCacheExeValue)
+        (PrecompiledCacheExe parentId)
+        [PrecompiledCacheExeParent ==. parentId]
         (maybe Set.empty (toFilePathSet . (.exes)) mold)
         (toFilePathSet new.exes)
  where
