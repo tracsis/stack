@@ -4,22 +4,28 @@
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE TypeFamilies          #-}
 
+{-|
+Module      : Stack.Types.Config.Exception
+License     : BSD-3-Clause
+-}
+
 module Stack.Types.Config.Exception
   ( ConfigException (..)
   , ConfigPrettyException (..)
   , ParseAbsolutePathException (..)
-  , packageIndicesWarning
   ) where
 
 import qualified Data.Text as T
 import           Data.Yaml ( ParseException )
 import qualified Data.Yaml as Yaml
+import           Distribution.System ( Arch )
 import           Path( dirname, filename )
 import           Stack.Prelude
 import           Stack.Types.ConfigMonoid
                    ( configMonoidAllowDifferentUserName
                    , configMonoidGHCVariantName, configMonoidSystemGHCName
                    )
+import           Stack.Types.MsysEnvironment ( MsysEnvironment )
 import           Stack.Types.Version
                    ( VersionRange, stackVersion, versionRangeText )
 
@@ -32,6 +38,7 @@ data ConfigException
   | UnableToExtractArchive Text (Path Abs File)
   | BadStackVersionException VersionRange
   | NoSuchDirectory FilePath
+  | NoSuchFile FilePath
   | ParseGHCVariantException String
   | BadStackRoot (Path Abs Dir)
   | Won'tCreateStackRootInDirectoryOwnedByDifferentUser
@@ -41,7 +48,7 @@ data ConfigException
   | UserDoesn'tOwnDirectory (Path Abs Dir)
   | ManualGHCVariantSettingsAreIncompatibleWithSystemGHC
   | NixRequiresSystemGhc
-  | NoResolverWhenUsingNoProject
+  | NoSnapshotWhenUsingNoProject
   | NoLTSWithMajorVersion Int
   | NoLTSFound
   deriving (Show, Typeable)
@@ -53,7 +60,7 @@ instance Exception ConfigException where
     , T.unpack url
     , "':\n"
     , Yaml.prettyPrintParseException exception
-    , "\nSee https://docs.haskellstack.org/en/stable/custom_snapshot/"
+    , "\nSee https://docs.haskellstack.org/en/stable/topics/custom_snapshot/"
     ]
   displayException (NoProjectConfigFound dir mcmd) = concat
     [ "Error: [S-2206]\n"
@@ -95,6 +102,11 @@ instance Exception ConfigException where
     [ "Error: [S-8773]\n"
     , "No directory could be located matching the supplied path: "
     , dir
+    ]
+  displayException (NoSuchFile file) = concat
+    [ "Error: [S-4335]\n"
+    , "No file could be located matching the supplied path: "
+    , file
     ]
   displayException (ParseGHCVariantException v) = concat
     [ "Error: [S-3938]\n"
@@ -139,9 +151,9 @@ instance Exception ConfigException where
     , configMonoidSystemGHCName
     , "' or disable the Nix integration."
     ]
-  displayException NoResolverWhenUsingNoProject =
+  displayException NoSnapshotWhenUsingNoProject =
     "Error: [S-5027]\n"
-    ++ "When using the script command, you must provide a resolver argument"
+    ++ "When using the script command, you must provide a snapshot argument"
   displayException (NoLTSWithMajorVersion n) = concat
     [ "Error: [S-3803]\n"
     , "No LTS release found with major version "
@@ -157,8 +169,11 @@ instance Exception ConfigException where
 data ConfigPrettyException
   = ParseConfigFileException !(Path Abs File) !ParseException
   | StackWorkEnvNotRelativeDir !String
-  | MultiplePackageIndices [PackageIndexConfig]
   | DuplicateLocalPackageNames ![(PackageName, [PackageLocation])]
+  | BadMsysEnvironment !MsysEnvironment !Arch
+  | NoMsysEnvironmentBug
+  | ConfigFileNotProjectLevelBug
+  | NoExecutablePath !String
   deriving (Show, Typeable)
 
 instance Pretty ConfigPrettyException where
@@ -168,7 +183,7 @@ instance Pretty ConfigPrettyException where
     <> fillSep
          [ flow "Stack could not load and parse"
          , pretty configFile
-         , flow "as a YAML configuraton file."
+         , flow "as a configuraton file."
          ]
     <> blankLine
     <> flow "While loading and parsing, Stack encountered the following \
@@ -177,11 +192,11 @@ instance Pretty ConfigPrettyException where
     <> string (Yaml.prettyPrintParseException exception)
     <> blankLine
     <> fillSep
-         [ flow "For help about the content of Stack's YAML configuration \
-                \files, see (for the most recent release of Stack)"
+         [ flow "For help about the content of Stack's configuration files, \
+                \see (for the most recent release of Stack)"
          ,    style
                 Url
-                "http://docs.haskellstack.org/en/stable/yaml_configuration/"
+                "http://docs.haskellstack.org/en/stable/configure/yaml/"
            <> "."
          ]
   pretty (StackWorkEnvNotRelativeDir x) =
@@ -198,25 +213,14 @@ instance Pretty ConfigPrettyException where
                 \of the project or package. Stack encountered the value:"
          , style Error (fromString x) <> "."
          ]
-  pretty (MultiplePackageIndices pics) =
-    "[S-3251]"
-    <> line
-    <> fillSep
-         [ flow "When using the"
-         , style Shell "package-indices"
-         , flow "key to override the default package index, you must \
-                \provide exactly one value, received:"
-         , bulletedList (map (string . show) pics)
-         ]
-    <> blankLine
-    <> packageIndicesWarning
   pretty (DuplicateLocalPackageNames pairs) =
     "[S-5470]"
     <> line
     <> fillSep
-        [ flow "The same package name is used in more than one local package or"
-        , style Shell "extra-deps" <> "."
-        ]
+         [ flow "The same package name is used in more than one project \
+                \package or"
+         , style Shell "extra-deps" <> "."
+         ]
     <> mconcat (map go pairs)
    where
     go (name, dirs) =
@@ -227,9 +231,32 @@ instance Pretty ConfigPrettyException where
            ]
       <> line
       <> bulletedList (map (fromString . T.unpack . textDisplay) dirs)
+  pretty (BadMsysEnvironment msysEnv arch) =
+    "[S-6854]"
+    <> line
+    <> fillSep
+         [ flow "The specified MSYS2 environment"
+         , style Error (fromString $ show msysEnv)
+         , flow "is not consistent with the architecture"
+         , fromString (show arch) <> "."
+         ]
+  pretty NoMsysEnvironmentBug = bugPrettyReport "[S-5006]" $
+    flow "No default MSYS2 environment."
+  pretty ConfigFileNotProjectLevelBug = bugPrettyReport "[S-8398]" $
+    flow "The configuration file is not a project-level one."
+  pretty (NoExecutablePath progName) =
+    "[S-6890]"
+    <> line
+    <> fillSep
+         [ flow "The path for the executable file invoked as"
+         , style Shell (fromString progName)
+         , flow "can not be identified."
+         ]
 
 instance Exception ConfigPrettyException
 
+-- | Type representing an exception thrown by functions exported by the
+-- "Stack.Config" module.
 data ParseAbsolutePathException
   = ParseAbsolutePathException String String
   deriving (Show, Typeable)
@@ -241,13 +268,4 @@ instance Exception ParseAbsolutePathException where
     , envVar
     , " environment variable (expected absolute directory): "
     , dir
-    ]
-
-packageIndicesWarning :: StyleDoc
-packageIndicesWarning =
-  fillSep
-    [ "The"
-    , style Shell "package-indices"
-    , flow "key is deprecated in favour of"
-    , style Shell "package-index" <> "."
     ]

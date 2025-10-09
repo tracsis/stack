@@ -2,7 +2,14 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings   #-}
 
--- | Functions related to Stack's @dot@ command.
+{-|
+Module      : Stack.Dot
+Description : Functions related to Stack's @dot@ command.
+License     : BSD-3-Clause
+
+Functions related to Stack's @dot@ command.
+-}
+
 module Stack.Dot
   ( dotCmd
   , printGraph
@@ -27,11 +34,11 @@ dotCmd dotOpts = do
   printGraph dotOpts localNames prunedGraph
 
 -- | Print a graphviz graph of the edges in the Map and highlight the given
--- local packages
+-- project packages
 printGraph ::
      (Applicative m, MonadIO m)
   => DotOpts
-  -> Set PackageName -- ^ all locals
+  -> Set PackageName -- ^ All project packages.
   -> Map PackageName (Set PackageName, DotPayload)
   -> m ()
 printGraph dotOpts locals graph = do
@@ -44,7 +51,8 @@ printGraph dotOpts locals graph = do
   filteredLocals =
     Set.filter (\local' -> local' `Set.notMember` dotOpts.prune) locals
 
--- | Print the local nodes with a different style depending on options
+-- | Print the project packages nodes with a different style, depending on
+-- options
 printLocalNodes ::
      (F.Foldable t, MonadIO m)
   => DotOpts

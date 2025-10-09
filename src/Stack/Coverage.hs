@@ -5,27 +5,35 @@
 {-# LANGUAGE OverloadedRecordDot   #-}
 {-# LANGUAGE OverloadedStrings     #-}
 
--- | Generate HPC (Haskell Program Coverage) reports
+{-|
+Module      : Stack.Coverage
+Description : Generate HPC (Haskell Program Coverage) reports.
+License     : BSD-3-Clause
+
+Generate HPC (Haskell Program Coverage) reports.
+-}
+
 module Stack.Coverage
-  ( HpcReportOpts (..)
-  , hpcReportCmd
+  ( hpcReportCmd
   , deleteHpcReports
   , updateTixFile
   , generateHpcReport
-  , generateHpcReportForTargets
   , generateHpcUnifiedReport
   , generateHpcMarkupIndex
   ) where
 
 import qualified Data.ByteString.Lazy.Char8 as L8
+import           Data.Conduit ( await )
 import qualified Data.List as L
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as LT
-import           Distribution.Version ( mkVersion )
+import           Distribution.Types.MungedPackageId ( computeCompatPackageId )
+import           Distribution.Types.UnqualComponentName
+                   ( mkUnqualComponentName )
 import           Path
-                   ( (</>), dirname, filename, parent, parseAbsFile, parseRelDir
+                   ( (</>), dirname, parent, parseAbsFile, parseRelDir
                    , parseRelFile, stripProperPrefix
                    )
 import           Path.Extra ( toFilePathNoTrailingSep )
@@ -35,7 +43,8 @@ import           Path.IO
                    , resolveDir', resolveFile'
                    )
 import           RIO.ByteString.Lazy ( putStrLn )
-import           RIO.Process ( ProcessException, proc, readProcess_ )
+import           RIO.Process
+                   ( ExitCodeException, ProcessException, proc, readProcess_ )
 import           Stack.Build.Target ( NeedTargets (..) )
 import           Stack.Constants
                    ( relDirAll, relDirCombined, relDirCustom
@@ -44,18 +53,19 @@ import           Stack.Constants
                    )
 import           Stack.Constants.Config ( distDirFromDir, hpcRelativeDir )
 import           Stack.Package ( hasBuildableMainLibrary )
+import           Stack.PackageDump ( ghcPkgField )
 import           Stack.Prelude
 import           Stack.Runners ( ShouldReexec (..), withConfig, withEnvConfig )
 import           Stack.Types.BuildConfig
                    ( BuildConfig (..), HasBuildConfig (..) )
-import           Stack.Types.Compiler ( getGhcVersion )
+import           Stack.Types.CompilerPaths ( getGhcPkgExe )
 import           Stack.Types.CompCollection ( getBuildableSetText )
+import           Stack.Types.ComponentUtils ( unqualCompToString )
 import           Stack.Types.BuildOptsCLI
                    ( BuildOptsCLI (..), defaultBuildOptsCLI )
 import           Stack.Types.EnvConfig
-                   ( EnvConfig (..), HasEnvConfig (..), actualCompilerVersionL
-                   , hpcReportDir
-                   )
+                   ( EnvConfig (..), HasEnvConfig (..), hpcReportDir )
+import           Stack.Types.HpcReportOpts ( HpcReportOpts (..) )
 import           Stack.Types.NamedComponent ( NamedComponent (..) )
 import           Stack.Types.Package ( Package (..), packageIdentifier )
 import           Stack.Types.Runner ( Runner )
@@ -94,21 +104,12 @@ instance Pretty CoveragePrettyException where
     "[S-9975]"
     <> line
     <> fillSep
-         [ flow "Expected a local package, but"
+         [ flow "Expected a project package, but"
          , style Target . fromPackageName $ name
          , flow "is either an extra-dep or in the snapshot."
          ]
 
 instance Exception CoveragePrettyException
-
--- | Type representing command line options for the @stack hpc report@ command.
-data HpcReportOpts = HpcReportOpts
-  { inputs :: [Text]
-  , all :: Bool
-  , destDir :: Maybe String
-  , openBrowser :: Bool
-  }
-  deriving Show
 
 -- | Function underlying the @stack hpc report@ command.
 hpcReportCmd :: HpcReportOpts -> RIO Runner ()
@@ -176,40 +177,37 @@ tixFilePath pkgName' testName = do
   tixRel <- parseRelFile (testName ++ "/" ++ testName ++ ".tix")
   pure (pkgPath </> tixRel)
 
--- | Generates the HTML coverage report and shows a textual coverage summary for a package.
+-- | Generates the HTML coverage report and shows a textual coverage summary for
+-- a package.
 generateHpcReport :: HasEnvConfig env
                   => Path Abs Dir -> Package -> [Text] -> RIO env ()
 generateHpcReport pkgDir package tests = do
-  compilerVersion <- view actualCompilerVersionL
-  -- If we're using > GHC 7.10, the hpc 'include' parameter must specify a ghc package key. See
+  -- If we're using > GHC 7.10, the hpc 'include' parameter must specify a ghc
+  -- package key. See
   -- https://github.com/commercialhaskell/stack/issues/785
-  let pkgId = packageIdentifierString $ packageIdentifier package
-      pkgName' = packageNameString package.name
-      ghcVersion = getGhcVersion compilerVersion
+  let pkgName' = packageNameString package.name
       hasLibrary = hasBuildableMainLibrary package
       subLibs = package.subLibraries
   eincludeName <-
-    -- Pre-7.8 uses plain PKG-version in tix files.
-    if ghcVersion < mkVersion [7, 10] then pure $ Right $ Just [pkgId]
-    -- We don't expect to find a package key if there is no library.
-    else if not hasLibrary && null subLibs then pure $ Right Nothing
-    -- Look in the inplace DB for the package key.
-    -- See https://github.com/commercialhaskell/stack/issues/1181#issuecomment-148968986
-    else do
-      -- GHC 8.0 uses package id instead of package key.
-      -- See https://github.com/commercialhaskell/stack/issues/2424
-      let hpcNameField = if ghcVersion >= mkVersion [8, 0] then "id" else "key"
-      eincludeName <-
-        findPackageFieldForBuiltPackage
-          pkgDir
-          (packageIdentifier package)
-          (getBuildableSetText subLibs)
-          hpcNameField
-      case eincludeName of
-        Left err -> do
-          logError $ display err
-          pure $ Left err
-        Right includeNames -> pure $ Right $ Just $ map T.unpack includeNames
+    if not hasLibrary && null subLibs
+      -- We don't expect to find a package key if there is no library.
+      then pure $ Right Nothing
+      -- Look in the inplace DB for the package key.
+      -- See https://github.com/commercialhaskell/stack/issues/1181#issuecomment-148968986
+      else do
+        eincludeName <-
+          findPackageFieldForBuiltPackage
+            pkgDir
+            (packageIdentifier package)
+            (getBuildableSetText subLibs)
+            -- GHC 8.0 uses package id instead of package key.
+            -- See https://github.com/commercialhaskell/stack/issues/2424
+            "id"
+        case eincludeName of
+          Left err -> do
+            logError $ display err
+            pure $ Left err
+          Right includeNames -> pure $ Right $ Just $ map T.unpack includeNames
   forM_ tests $ \testName -> do
     tixSrc <- tixFilePath package.name (T.unpack testName)
     let report = fillSep
@@ -385,11 +383,13 @@ generateHpcReportForTargets opts tixFiles targetNames = do
               \case
                 CTest testName -> (pkgPath </>) <$>
                   parseRelFile
-                    (  T.unpack testName
+                    (  testName'
                     ++ "/"
-                    ++ T.unpack testName
+                    ++ testName'
                     ++ ".tix"
                     )
+                 where
+                  testName' = unqualCompToString testName
                 _ -> prettyThrowIO $ NonTestSuiteTarget name
           TargetAll PTProject -> do
             pkgPath <- hpcPkgPath name
@@ -421,6 +421,7 @@ generateHpcReportForTargets opts tixFiles targetNames = do
         void $ liftIO $ openBrowser (toFilePath reportPath)
       else displayReportPath "The" report (pretty reportPath)
 
+-- | Generates the HTML unified coverage report.
 generateHpcUnifiedReport :: HasEnvConfig env => RIO env ()
 generateHpcUnifiedReport = do
   outputDir <- hpcReportDir
@@ -518,6 +519,7 @@ unionTixes tixes = (Map.keys errs, Tix (Map.elems outputs))
         Right (TixModule k hash1 len1 (zipWith (+) tix1 tix2))
   merge _ _ = Left ()
 
+-- | Generates the HTML index report.
 generateHpcMarkupIndex :: HasEnvConfig env => RIO env ()
 generateHpcMarkupIndex = do
   outputDir <- hpcReportDir
@@ -609,61 +611,35 @@ findPackageFieldForBuiltPackage ::
   => Path Abs Dir -> PackageIdentifier -> Set.Set Text -> Text
   -> RIO env (Either Text [Text])
 findPackageFieldForBuiltPackage pkgDir pkgId subLibs field = do
+  let subLibNames =
+        Set.map (LSubLibName . mkUnqualComponentName . T.unpack) subLibs
+      libraryNames = Set.insert LMainLibName subLibNames
+      mungedPackageIds = Set.map (computeCompatPackageId pkgId) libraryNames
   distDir <- distDirFromDir pkgDir
+  ghcPkgExe <- getGhcPkgExe
   let inplaceDir = distDir </> relDirPackageConfInplace
       pkgIdStr = packageIdentifierString pkgId
       notFoundErr = pure $
         Left $ "Failed to find package key for " <> T.pack pkgIdStr
-      extractField path = do
-        contents <- readFileUtf8 (toFilePath path)
-        case asum (map (T.stripPrefix (field <> ": ")) (T.lines contents)) of
+      extractField mungedPkgId = do
+        mContents <- catch
+          (ghcPkgField ghcPkgExe inplaceDir mungedPkgId (T.unpack field) await)
+          -- A .conf file may not exist in the package database for a library or
+          -- sub-library, if that component has not been built yet.
+          (\(_ :: ExitCodeException) -> pure Nothing)
+        case mContents of
           Just result -> pure $ Right $ T.strip result
           Nothing -> notFoundErr
   logDebug $
        "Scanning "
     <> fromString (toFilePath inplaceDir)
-    <> " for files matching "
+    <> " for munged packages matching "
     <> fromString pkgIdStr
-  (_, files) <- handleIO (const $ pure ([], [])) $ listDir inplaceDir
-  logDebug $ displayShow files
-  -- From all the files obtained from the scanning process above, we need to
-  -- identify which are .conf files and then ensure that there is at most one
-  -- .conf file for each library and sub-library (some might be missing if that
-  -- component has not been built yet). We should error if there are more than
-  -- one .conf file for a component or if there are no .conf files at all in the
-  -- searched location.
-  let toFilename = T.pack . toFilePath . filename
-      -- strip known prefix and suffix from the found files to determine only
-      -- the .conf files
-      stripKnown =
-        T.stripSuffix ".conf" <=< T.stripPrefix (T.pack (pkgIdStr ++ "-"))
-      stripped =
-        mapMaybe (\file -> fmap (,file) . stripKnown . toFilename $ file) files
-      -- which component could have generated each of these conf files
-      stripHash n =
-        let z = T.dropWhile (/= '-') n
-        in  if T.null z then "" else T.tail z
-      matchedComponents = map (\(n, f) -> (stripHash n, [f])) stripped
-      byComponents =
-        Map.restrictKeys (Map.fromListWith (++) matchedComponents) $ Set.insert "" subLibs
-  logDebug $ displayShow byComponents
-  if Map.null $ Map.filter (\fs -> length fs > 1) byComponents
-    then case concat $ Map.elems byComponents of
-      [] -> notFoundErr
-      -- for each of these files, we need to extract the requested field
-      paths -> do
-        (errors, keys) <-  partitionEithers <$> traverse extractField paths
-        case errors of
-          (a:_) -> pure $ Left a -- the first error only, since they're repeated anyway
-          [] -> pure $ Right keys
-    else
-      pure
-        $ Left
-        $    "Multiple files matching "
-          <> T.pack (pkgIdStr ++ "-*.conf")
-          <> " found in "
-          <> T.pack (toFilePath inplaceDir)
-          <> ". Maybe try 'stack clean' on this package?"
+  (errors, keys) <-
+    partitionEithers <$> traverse extractField (Set.toList mungedPackageIds)
+  case errors of
+    (a:_) -> pure $ Left a -- the first error only, since they're repeated anyway
+    [] -> pure $ Right keys
 
 displayReportPath ::
      HasTerm env

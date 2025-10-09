@@ -1,10 +1,15 @@
 {-# LANGUAGE CApiFFI                  #-}
 
--- | The module of this name differs as between Windows and non-Windows builds.
--- This is the non-Windows version.
+{-|
+Module      : System.Terminal
+License     : BSD-3-Clause
+
+The module of this name differs as between Windows and non-Windows builds. This
+is the non-Windows version.
+-}
+
 module System.Terminal
-( fixCodePage
-, getTerminalWidth
+( getTerminalWidth
 , hIsTerminalDeviceOrMinTTY
 ) where
 
@@ -31,6 +36,7 @@ instance Storable WindowWidth where
 foreign import capi "sys/ioctl.h ioctl"
   ioctl :: CInt -> CInt -> Ptr WindowWidth -> IO CInt
 
+-- | If available, yields the width of the terminal.
 getTerminalWidth :: IO (Maybe Int)
 getTerminalWidth =
   alloca $ \p -> do
@@ -40,9 +46,6 @@ getTerminalWidth =
     else do
       WindowWidth w <- peek p
       return . Just . fromIntegral $ w
-
-fixCodePage :: x -> y -> a -> a
-fixCodePage _ _ = id
 
 -- | hIsTerminaDevice does not recognise handles to mintty terminals as terminal
 -- devices, but isMinTTYHandle does.

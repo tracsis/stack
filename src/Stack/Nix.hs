@@ -3,7 +3,14 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings   #-}
 
--- | Run commands in a nix-shell
+{-|
+Module      : Stack.Nix
+Description : Run commands in a nix-shell.
+License     : BSD-3-Clause
+
+Run commands in a nix-shell.
+-}
+
 module Stack.Nix
   ( nixCmdName
   , nixHelpOptName
@@ -24,9 +31,10 @@ import           Stack.Types.BuildConfig ( wantedCompilerVersionL )
 import           Stack.Types.Config
                    ( Config (..), HasConfig (..), configProjectRoot )
 import           Stack.Types.Docker ( reExecArgName )
+import           Stack.Types.Runner ( viewExecutablePath )
 import           Stack.Types.Nix ( NixOpts (..) )
 import           Stack.Types.Version ( showStackVersion )
-import           System.Environment ( getArgs, getExecutablePath, lookupEnv )
+import           System.Environment ( getArgs, lookupEnv )
 import qualified System.FilePath as F
 
 -- | Type representing exceptions thrown by functions exported by the
@@ -41,6 +49,7 @@ instance Exception NixException where
     "Error: [S-7384]\n"
     ++ "Cannot determine project root directory."
 
+-- | Execute @nix-shell@, replacing the current process.
 runShellAndExit :: RIO Config void
 runShellAndExit = do
   inContainer <- getInContainer -- TODO we can probably assert that this is False based on Stack.Runners now
@@ -49,7 +58,7 @@ runShellAndExit = do
              -- first stack when restarting in the container
            | otherwise =
                ("--" ++ reExecArgName ++ "=" ++ showStackVersion) : origArgs
-  exePath <- liftIO getExecutablePath
+  exePath <- toFilePath <$> viewExecutablePath
   config <- view configL
   envOverride <- view processContextL
   local (set processContextL envOverride) $ do
@@ -154,9 +163,10 @@ escape str =
   ++ foldr (\c -> if c == '\'' then ("'\"'\"'"++) else (c:)) "" str
   ++ "'"
 
--- | Command-line argument for "nix"
+-- | Command-line argument for "nix".
 nixCmdName :: String
 nixCmdName = "nix"
 
+-- | Command-line option to show only @--nix-*@ options.
 nixHelpOptName :: String
 nixHelpOptName = nixCmdName ++ "-help"

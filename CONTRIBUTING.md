@@ -87,11 +87,18 @@ topics, and that is reflected in the current issue tracker content. Assistance
 in responding to such matters is greatly appreciated.
 
 While support-related matters can be posted here as an 'issue', we encourage the
-use of other forums, in particular
-[Haskell's Discourse](https://discourse.haskell.org/). We also recommend
-Haskell's Discourse for general discussions about Stack's current or desired
-features. Stack is also discussed on Reddit's
-[Haskell community](https://www.reddit.com/r/haskell/).
+use of other forums, in particular the
+[Haskell Community](https://discourse.haskell.org/) forum. See its 'Learn'
+category. We also recommend that forum for general discussions about Stack's
+current or desired features.
+
+Stack is also discussed:
+
+* in the Haskell
+  [Stack and Stackage](https://matrix.to/#/#haskell-stack:matrix.org) room
+  (address `#haskell-stack:matrix.org`) on [Matrix](https://matrix.org/); and
+
+* on Reddit's [Haskell community](https://www.reddit.com/r/haskell/).
 
 We encourage use of those other forums because support-related discussions can
 clog up the issue tracker and make it more difficult to maintain the project.
@@ -209,6 +216,62 @@ repository on Windows, then the files will be checked out as small plain files
 that contain the link text  See the
 [Git documentation](https://git-scm.com/docs/git-config#Documentation/git-config.txt-coresymlinks).
 
+The online documentation can be previewed using the `mkdocs` tool, as described
+in [Getting Started with MkDocs](https://www.mkdocs.org/getting-started/). The
+prerequisites are:
+
+*   [Python](https://www.python.org/); and
+*   the required Python packages set out in `doc/requirements.txt`. They can be
+    installed using Python's package manager `pip` with:
+
+    ~~~text
+    pip install --requirement doc/requirements.txt
+    ~~~
+
+Once the required version of `mkdocs` is installed, command `mkdocs serve` in
+the same directory as the `mkdocs.yml` file to start a web server. The command
+will, eventually, output the URL at which the documentation is being served.
+
+Command `mkdocs build` to build the documentation.
+
+=== "Windows"
+
+    With the correct prerequisites (see further below), users of the `make` tool
+    in the Stack-supplied MSYS2 environment can automate some of these steps
+    from Stack's project directory with:
+
+    * preview: `stack exec -- make docs-serve`; and
+    * build: `stack exec -- make _site/index.html`.
+
+    However, Windows and the Stack-supplied MSYS2 environment do not come with
+    Python or `make` by default. Further, Python on Windows does not use the
+    `python3` command (used on Unix-like operating systems) to invoke Python.
+    Further still, in the MSYS2 environment, development versions of packages
+    `libxml2` and `libxslt` are necessary dependencies. Consequently, the
+    automation requires the following command to install requirements into the
+    the MSYS2 environment:
+
+    ~~~text
+    stack exec -- pacman --sync python make libxml2-devel libxslt-devel
+    ~~~
+
+    !!! note
+
+        If the automation fails before the `mkdocs` tool etc is installed, the
+        directory `.python-doc-virtualenv` created by the automation will need
+        to be deleted before the automation will work again.
+
+    For most users, the automation will be less convenient than simply using the
+    `mkdocs serve` command directly.
+
+=== "Unix-like"
+
+    With `python3` and `make` available on the PATH, users of the `make` tool
+    can automate some of these steps from Stack's project directory with:
+
+    * preview: `make docs-serve`; and
+    * build: `make _site/index.html`.
+
 ## Error messages
 
 Stack catches exceptions thrown by its dependencies or by Stack itself in
@@ -273,7 +336,7 @@ entry and
 [documentation](https://github.com/commercialhaskell/stack/tree/master/doc/)
 updates with your pull request.
 
-## Backwards Compatability
+## Backwards Compatibility
 
 The Stack package provides a library and an executable (`stack`) that depends on
 the library. The library is intended for use only by the executable.
@@ -285,20 +348,21 @@ compatibility with a range of versions of GHC that a library package (such as
 Stack aims to depend on well-known packages. The specific versions on which it
 depends at any time are specified by `package.yaml` and `stack.yaml`. It does
 not aim to be compatible with more than one version of the `Cabal` package at
-any time. At the time of writing (May 2024) the package versions are primarily
-ones in Stackage snapshot LTS Haskell 22.21 (for GHC 9.6.5).
+any time. At the time of writing (June 2025) the package versions are
+primarily ones in Stackage snapshot LTS Haskell 23.24 (for GHC 9.8.4) and
+`hpack-0.38.1`, `persistent-2.17.0.0` and `tls-2.1.8`.
 
 A Stack executable makes use of Cabal (the library) through a small 'Setup'
 executable that it compiles from Haskell source code. The executable compiles
 that code with a dependency on the version of Cabal that ships with the
 specified GHC compiler. Each release of Stack will normally aim to support all
-versions of GHC and the Cabal package in Stackage snapshots published within
-seven years of the release. For example, snapshot LTS Haskell 10.0, published on
-19 December 2017, was the first LTS Haskell snapshot to provide GHC 8.2.2 which
-comes with `base-4.10.1.0` and `Cabal-2.0.1.1`. Normally, until, at least,
-19 December 2024, Stack releases would aim to support the immediate
-predecessor, GHC 8.0.2 and `base-4.9.1.0`, `Cabal-1.24.2.0` and Haddock 2.17.4.
-However, the next version of Stack will drop support for versions of Cabal
+versions of GHC and the Cabal package in Stackage LTS Haskell snapshots
+published within seven years of the release. For example, snapshot LTS Haskell
+12.0, published on 9 July 2018, was the first LTS Haskell snapshot to
+provide GHC 8.4.3 which comes with `base-4.11.1.0` and `Cabal-2.2.0.1`.
+Normally, until, at least, 9 July 2025, Stack releases would aim to support the
+immediate predecessor, GHC 8.2.2 and `base-4.10.1.0`, `Cabal-2.0.1.1` and
+Haddock 2.18.1. However, Stack 3.1.1 dropped support for versions of Cabal
 before 2.2. `Cabal-2.2.0.0` was released with GHC 8.4.1 on 8 March 2018.
 
 When a version of the Stack executable actually ceases to support a version of
@@ -417,7 +481,7 @@ That said, the following may help:
 * Stack's imports are listed alphabetically, including `Stack.Prelude`, where
   applicable. The module names are left aligned, with space left for `qualified`
   where it is absent.
-* Stack's code is sufficiently stable that explict import lists can sensibly be
+* Stack's code is sufficiently stable that explicit import lists can sensibly be
   used. The exception is the import of `Stack.Prelude`. Not all modules have
   comprehensive explicit import lists.
 * Short explicit import lists follow the module name. Longer lists start on the
@@ -518,6 +582,10 @@ stack build --flag stack:integration-tests stack --exec "stack-integration-test 
 To disable folders named after `<PATTERN1>` and `<PATTERN2>`
 It's especially useful when some tests are taking a while to complete.
 
+On Linux, the `stack-integration-test` executable uses the `lld` linker and
+expects it to be on the PATH. The integration tests complete significantly
+quicker with `lld` than with the `ld.bfd` linker.
+
 ## Continuous integration (CI)
 
 We use [GitHub Actions](https://docs.github.com/en/actions) to do CI on Stack.
@@ -548,7 +616,7 @@ The `pedantic` job runs on `ubuntu` only and builds Stack with the
 `--pedantic` flag.
 
 The `unit-tests` job runs on a matrix of operating systems and Stack
-project-level YAML configuration files (`stack.yaml`, by default). It builds and
+project-level configuration files (`stack.yaml`, by default). It builds and
 tests Stack with the following flags: `--haddock --no-haddock-deps`.
 
 Its approach to creating a cache depends on the operating system. Its 'Cache
@@ -606,7 +674,7 @@ for each file.
 
 [Stan](https://hackage.haskell.org/package/stan) is a Haskell static analysis
 tool. As of `stan-0.1.0.1`, it supports GHC >= 9.6.3 and Stack is built with
-GHC 9.6.5. The tool is configured by the contents of the `.stan.toml` file.
+GHC 9.8.4. The tool is configured by the contents of the `.stan.toml` file.
 
 This workflow will run if:
 
@@ -735,7 +803,7 @@ Stack can be built with Stack (which is recommended) or with Cabal (the tool).
     ~~~
 
 A cradle is not committed to Stack's repository because it imposes a choice of
-build tool.
+tool used for building.
 
 ## Dev Containers
 

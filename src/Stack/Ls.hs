@@ -3,21 +3,19 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings   #-}
 
--- | Types and functions related to Stack's @ls@ command.
+{-|
+Module      : Stack.Ls
+Description : Types and functions related to Stack's @ls@ command.
+License     : BSD-3-Clause
+
+Types and functions related to Stack's @ls@ command.
+-}
+
 module Stack.Ls
-  ( LsCmdOpts (..)
-  , LsCmds (..)
-  , SnapshotOpts (..)
-  , LsView (..)
-  , ListDepsOpts (..)
-  , ListDepsFormat (..)
-  , ListDepsFormatOpts (..)
-  , ListDepsTextFilter (..)
-  , ListStylesOpts (..)
-  , ListToolsOpts (..)
-  , lsCmd
+  ( lsCmd
   ) where
 
+import           Control.Monad.Extra ( whenJust )
 import           Data.Aeson ( FromJSON, Value (..), (.:), encode )
 import           Data.Array.IArray ( (//), elems )
 import qualified Data.ByteString.Lazy.Char8 as LBC8
@@ -38,6 +36,8 @@ import           Network.HTTP.StackClient
                    )
 import           Path ( parent )
 import           RIO.List ( sort )
+import           Stack.Build.Installed ( getInstalled, toInstallMap )
+import           Stack.Config ( withBuildConfig )
 import           Stack.Constants ( osIsWindows )
 import           Stack.DependencyGraph ( createPrunedDependencyGraph )
 import           Stack.Prelude hiding ( Nightly, Snapshot )
@@ -45,14 +45,26 @@ import           Stack.Runners
                    ( ShouldReexec (..), withConfig, withDefaultEnvConfig )
 import           Stack.Setup.Installed
                    ( Tool (..), filterTools, listInstalled, toolString )
+import           Stack.SourceMap ( globalsFromHints )
+import           Stack.Types.BuildConfig
+                   ( BuildConfig (..), HasBuildConfig (..) )
 import           Stack.Types.Config ( Config (..), HasConfig (..) )
 import           Stack.Types.DependencyTree
                    ( DependencyTree (..), DotPayload (..), licenseText
                    , versionText
                    )
 import           Stack.Types.DotOpts ( DotOpts (..) )
-import           Stack.Types.EnvConfig ( installationRootDeps )
+import           Stack.Types.DumpPackage ( DumpPackage (..) )
+import           Stack.Types.EnvConfig ( EnvConfig (..), installationRootDeps )
+import           Stack.Types.LsOpts
+                   ( LsCmdOpts (..), LsCmds (..), ListDepsFormat (..)
+                   , ListDepsFormatOpts (..), ListDepsOpts (..)
+                   , ListDepsTextFilter (..), ListGlobalsOpts (..)
+                   , ListStylesOpts (..), ListToolsOpts (..), LsView (..)
+                   , SnapshotOpts (..)
+                   )
 import           Stack.Types.Runner ( HasRunner, Runner, terminalL )
+import           Stack.Types.SourceMap ( SMWanted (..) )
 import           System.Console.ANSI.Codes
                    ( SGR (Reset), setSGRCode, sgrToCode )
 import           System.Process.Pager ( pageText )
@@ -71,32 +83,6 @@ instance Exception LsException where
     ++ "Failure to parse values as a snapshot: "
     ++ show val
 
--- | Type representing command line options for the @stack ls@ command.
-newtype LsCmdOpts
-  = LsCmdOpts { lsCmds :: LsCmds }
-
--- | Type representing subcommands for the @stack ls@ command.
-data LsCmds
-  = LsSnapshot SnapshotOpts
-  | LsDependencies ListDepsOpts
-  | LsStyles ListStylesOpts
-  | LsTools ListToolsOpts
-
--- | Type representing command line options for the @stack ls snapshots@
--- command.
-data SnapshotOpts = SnapshotOpts
-  { viewType :: LsView
-  , ltsSnapView :: Bool
-  , nightlySnapView :: Bool
-  }
-  deriving (Eq, Ord, Show)
-
--- | Type representing subcommands for the @stack ls snapshots@ command.
-data LsView
-  = Local
-  | Remote
-  deriving (Eq, Ord, Show)
-
 -- | Type representing Stackage snapshot types.
 data SnapshotType
   = Lts
@@ -104,46 +90,6 @@ data SnapshotType
   | Nightly
     -- ^ Stackage Nightly
   deriving (Eq, Ord, Show)
-
-data ListDepsOpts = ListDepsOpts
-  { format :: !ListDepsFormat
-    -- ^ Format of printing dependencies
-  , dotOpts :: !DotOpts
-    -- ^ The normal dot options.
-  }
-
-data ListDepsFormat
-  = ListDepsText ListDepsFormatOpts [ListDepsTextFilter]
-  | ListDepsTree ListDepsFormatOpts
-  | ListDepsJSON
-  | ListDepsConstraints
-
-data ListDepsFormatOpts = ListDepsFormatOpts
-  { sep :: !Text
-    -- ^ Separator between the package name and details.
-  , license :: !Bool
-    -- ^ Print dependency licenses instead of versions.
-  }
-
--- | Type representing items to filter the results of @stack ls dependencies@.
-data ListDepsTextFilter
-  = FilterPackage PackageName
-    -- ^ Item is a package name.
-  | FilterLocals
-    -- ^ Item represents all local packages.
-
--- | Type representing command line options for the @stack ls stack-colors@ and
--- @stack ls stack-colours@ commands.
-data ListStylesOpts = ListStylesOpts
-  { basic   :: Bool
-  , sgr     :: Bool
-  , example :: Bool
-  }
-  deriving (Eq, Ord, Show)
-
--- | Type representing command line options for the @stack ls tools@ command.
-newtype ListToolsOpts
-  = ListToolsOpts { filter  :: String }
 
 data Snapshot = Snapshot
   { snapId :: Text
@@ -184,7 +130,7 @@ displayTime snap = [snap.time]
 
 displaySnap :: Snapshot -> [Text]
 displaySnap snap =
-  ["Resolver name: " <> snap.snapId, "\n" <> snap.title <> "\n\n"]
+  ["Snapshot name: " <> snap.snapId, "\n" <> snap.title <> "\n\n"]
 
 displaySingleSnap :: [Snapshot] -> Text
 displaySingleSnap snapshots =
@@ -248,6 +194,7 @@ handleLocal lsOpts = do
           displayLocalSnapshot isStdoutTerminal $
           L.filter (L.isPrefixOf "night") snapData
         _ -> liftIO $ displayLocalSnapshot isStdoutTerminal snapData
+    LsGlobals _ -> pure ()
     LsDependencies _ -> pure ()
     LsStyles _ -> pure ()
     LsTools _ -> pure ()
@@ -271,12 +218,14 @@ handleRemote lsOpts = do
           displaySnapshotData isStdoutTerminal $
           filterSnapshotData snapData Nightly
         _ -> liftIO $ displaySnapshotData isStdoutTerminal snapData
+    LsGlobals _ -> pure ()
     LsDependencies _ -> pure ()
     LsStyles _ -> pure ()
     LsTools _ -> pure ()
  where
   urlInfo = "https://www.stackage.org/snapshots"
 
+-- | Function underlying the @stack ls@ command.
 lsCmd :: LsCmdOpts -> RIO Runner ()
 lsCmd lsOpts =
   case lsOpts.lsCmds of
@@ -284,6 +233,7 @@ lsCmd lsOpts =
       case sopt.viewType of
         Local -> handleLocal lsOpts
         Remote -> handleRemote lsOpts
+    LsGlobals globalsOpts -> withConfig NoReexec $ listGlobalsCmd globalsOpts
     LsDependencies depOpts -> listDependencies depOpts
     LsStyles stylesOpts -> withConfig NoReexec $ listStylesCmd stylesOpts
     LsTools toolsOpts -> withConfig NoReexec $ listToolsCmd toolsOpts
@@ -315,7 +265,7 @@ listStylesCmd opts = do
     ansi = fromString $ setSGRCode sgrs
     reset = fromString $ setSGRCode [Reset]
 
--- | List Stack's installed tools, sorted (see instance of 'Ord' for 'Tool').
+-- | List Stack's installed tools, sorted (see instance of 'Ord' for t'Tool').
 listToolsCmd :: ListToolsOpts -> RIO Config ()
 listToolsCmd opts = do
   localPrograms <- view $ configL . to (.localPrograms)
@@ -328,6 +278,23 @@ listToolsCmd opts = do
  where
   filtered pkgName installed = Tool <$>
       filterTools (mkPackageName pkgName) (const True) installed
+
+listGlobalsCmd :: ListGlobalsOpts -> RIO Config ()
+listGlobalsCmd opts = do
+  idents <- if opts.globalHints
+    then
+      withBuildConfig $ do
+        buildConfig <- view buildConfigL
+        globals <- globalsFromHints buildConfig.smWanted.compiler
+        pure $ map (uncurry PackageIdentifier) (Map.toList globals)
+    else
+      withDefaultEnvConfig $ do
+        envConfig <- ask
+        installMap <- toInstallMap envConfig.sourceMap
+        (_, globalDump, _, _) <- getInstalled installMap
+        pure $ L.sort $ map (.packageIdent) globalDump
+  forM_ idents $ \ident ->
+    prettyInfo $ fromString $ packageIdentifierString ident
 
 listDependencies :: ListDepsOpts -> RIO Runner ()
 listDependencies opts = do
@@ -382,15 +349,17 @@ printTree opts dotOpts depth remainingDepsCounts packages dependencyMap =
   toSeq = Seq.fromList . Set.toList
   go index name =
     let newDepsCounts = remainingDepsCounts ++ [Set.size packages - index - 1]
-    in  case Map.lookup name dependencyMap of
-          Just (deps, payload) -> do
-            printTreeNode opts dotOpts depth newDepsCounts deps payload name
-            if Just depth == dotOpts.dependencyDepth
-              then pure ()
-              else printTree opts dotOpts (depth + 1) newDepsCounts deps
-                     dependencyMap
-          -- TODO: Define this behaviour, maybe pure an error?
-          Nothing -> pure ()
+        -- TODO: Define the 'Nothing' behaviour, maybe pure an error?
+    in  whenJust (Map.lookup name dependencyMap) $ \(deps, payload) -> do
+          printTreeNode opts dotOpts depth newDepsCounts deps payload name
+          unless (Just depth == dotOpts.dependencyDepth) $
+            printTree
+              opts
+              dotOpts
+              (depth + 1)
+              newDepsCounts
+              deps
+              dependencyMap
 
 printTreeNode ::
      ListDepsFormatOpts

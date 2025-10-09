@@ -5,6 +5,11 @@
 {-# LANGUAGE OverloadedRecordDot   #-}
 {-# LANGUAGE OverloadedStrings     #-}
 
+{-|
+Module      : Stack.Types.Package
+License     : BSD-3-Clause
+-}
+
 module Stack.Types.Package
   ( BioInput (..)
   , BuildInfoOpts (..)
@@ -29,6 +34,7 @@ module Stack.Types.Package
   , dotCabalModule
   , dotCabalModulePath
   , installedMapGhcPkgId
+  , installedPackageToGhcPkgId
   , lpFiles
   , lpFilesForComponents
   , memoizeRefWith
@@ -200,11 +206,11 @@ data Package = Package
   , testEnabled :: Bool
     -- ^ This is a requirement because when tests are not enabled, Stack's
     -- package dependencies should ignore test dependencies. Directly set from
-    -- 'packageConfigEnableTests'.
+    -- 'enableTests'.
   , benchmarkEnabled :: Bool
     -- ^ This is a requirement because when benchmark are not enabled, Stack's
     -- package dependencies should ignore benchmark dependencies. Directly set
-    -- from 'packageConfigEnableBenchmarks'.
+    -- from 'enableBenchmarks'.
   }
   deriving (Show, Typeable)
 
@@ -277,38 +283,39 @@ psVersion (PSRemote _ v _ _) = v
 
 -- | Information on a locally available package of source code.
 data LocalPackage = LocalPackage
-  { package       :: !Package
+  { package        :: !Package
      -- ^ The @Package@ info itself, after resolution with package flags, with
      -- tests and benchmarks disabled
-  , components    :: !(Set NamedComponent)
+  , components     :: !(Set NamedComponent)
     -- ^ Components to build, not including the library component.
-  , unbuildable   :: !(Set NamedComponent)
+  , unbuildable    :: !(Set NamedComponent)
     -- ^ Components explicitly requested for build, that are marked
     -- "buildable: false".
-  , wanted        :: !Bool -- FIXME Should completely drop this "wanted"
-                             -- terminology, it's unclear
+  , wanted         :: !Bool
     -- ^ Whether this package is wanted as a target.
-  , testBench     :: !(Maybe Package)
-    -- ^ This stores the 'Package' with tests and benchmarks enabled, if either
+
+    -- FIXME Should completely drop this "wanted" terminology, it's unclear.
+  , testBench      :: !(Maybe Package)
+    -- ^ This stores the t'Package' with tests and benchmarks enabled, if either
     -- is asked for by the user.
-  , cabalFP     :: !(Path Abs File)
+  , cabalFP        :: !(Path Abs File)
     -- ^ Absolute path to the Cabal file.
-  , buildHaddocks :: !Bool
+  , buildHaddocks  :: !Bool
     -- ^ Is Haddock documentation being built for this package?
-  , forceDirty    :: !Bool
-  , dirtyFiles    :: !(MemoizedWith EnvConfig (Maybe (Set FilePath)))
+  , forceDirty     :: !Bool
+  , dirtyFiles     :: !(MemoizedWith EnvConfig (Maybe (Set FilePath)))
     -- ^ Nothing == not dirty, Just == dirty. Note that the Set may be empty if
     -- we forced the build to treat packages as dirty. Also, the Set may not
     -- include all modified files.
   , newBuildCaches :: !( MemoizedWith
-                             EnvConfig
-                             (Map NamedComponent (Map FilePath FileCacheInfo))
-                         )
+                           EnvConfig
+                           (Map NamedComponent (Map FilePath FileCacheInfo))
+                       )
     -- ^ current state of the files
   , componentFiles :: !( MemoizedWith
-                             EnvConfig
-                             (Map NamedComponent (Set (Path Abs File)))
-                         )
+                           EnvConfig
+                           (Map NamedComponent (Set (Path Abs File)))
+                       )
     -- ^ all files used by this package
   }
   deriving Show
@@ -345,10 +352,11 @@ instance Show (MemoizedWith env a) where
 lpFiles :: HasEnvConfig env => LocalPackage -> RIO env (Set.Set (Path Abs File))
 lpFiles = runMemoizedWith . fmap (Set.unions . M.elems) . (.componentFiles)
 
-lpFilesForComponents :: HasEnvConfig env
-                     => Set NamedComponent
-                     -> LocalPackage
-                     -> RIO env (Set.Set (Path Abs File))
+lpFilesForComponents ::
+     HasEnvConfig env
+  => Set NamedComponent
+  -> LocalPackage
+  -> RIO env (Set.Set (Path Abs File))
 lpFilesForComponents components lp = runMemoizedWith $ do
   componentFiles <- lp.componentFiles
   pure $ mconcat (M.elems (M.restrictKeys componentFiles components))
@@ -418,7 +426,15 @@ installedMapGhcPkgId pkgId@(PackageIdentifier pkgName version) installedLib =
       (toCabalMungedPackageIdentifier pkgName version)
       installedLib.subLib
 
--- | Creates a 'MungedPackageName' identifier.
+installedPackageToGhcPkgId ::
+     PackageIdentifier
+  -> Installed
+  -> Map PackageIdentifier GhcPkgId
+installedPackageToGhcPkgId ident (Library ident' libInfo) =
+  assert (ident == ident') (installedMapGhcPkgId ident libInfo)
+installedPackageToGhcPkgId _ (Executable _) = mempty
+
+-- | Creates a t'MungedPackageName' identifier.
 toCabalMungedPackageIdentifier ::
      PackageName
   -> Version

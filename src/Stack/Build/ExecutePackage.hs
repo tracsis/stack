@@ -1,11 +1,19 @@
 {-# LANGUAGE NoImplicitPrelude     #-}
 {-# LANGUAGE DataKinds             #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase            #-}
 {-# LANGUAGE OverloadedRecordDot   #-}
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE TypeFamilies          #-}
 
--- | Perform a build
+{-|
+Module      : Stack.Build.ExecutePackage
+Description : Perform a build.
+License     : BSD-3-Clause
+
+Perform a build.
+-}
+
 module Stack.Build.ExecutePackage
   ( singleBuild
   , singleTest
@@ -32,9 +40,6 @@ import           Distribution.System ( OS (..), Platform (..) )
 import qualified Distribution.Text as C
 import           Distribution.Types.MungedPackageName
                    ( encodeCompatPackageName )
-import           Distribution.Types.UnqualComponentName
-                   ( mkUnqualComponentName )
-import           Distribution.Version ( mkVersion )
 import           Path
                    ( (</>), addExtension, filename, isProperPrefixOf, parent
                    , parseRelDir, parseRelFile, stripProperPrefix
@@ -46,10 +51,11 @@ import           Path.IO
                    )
 import           RIO.NonEmpty ( nonEmpty )
 import           RIO.Process
-                   ( byteStringInput, findExecutable, getStderr, getStdout
-                   , inherit, modifyEnvVars, proc, setStderr, setStdin
-                   , setStdout, showProcessArgDebug, useHandleOpen, waitExitCode
-                   , withProcessWait, withWorkingDir, HasProcessContext
+                   ( HasProcessContext, byteStringInput, findExecutable
+                   , getStderr, getStdout, inherit, modifyEnvVars, proc
+                   , setStderr, setStdin, setStdout, showProcessArgDebug
+                   , useHandleOpen, waitExitCode, withModifyEnvVars
+                   , withProcessWait, withWorkingDir
                    )
 import           Stack.Build.Cache
                    ( TestStatus (..), deleteCaches, getTestStatus
@@ -61,22 +67,19 @@ import           Stack.Build.Cache
                    , writePackageProjectRoot, writeSetupConfigMod
                    )
 import           Stack.Build.ExecuteEnv
-                   ( ExcludeTHLoading (..), ExecutableBuildStatus (..)
-                   , ExecuteEnv (..), KeepOutputOpen (..), OutputType (..)
-                   , withSingleContext
+                   ( ExcludeTHLoading (..), ExecuteEnv (..), KeepOutputOpen (..)
+                   , OutputType (..), withSingleContext
                    )
 import           Stack.Build.Source ( addUnlistedToBuildCache )
 import           Stack.Config.ConfigureScript ( ensureConfigureScript )
 import           Stack.Constants
-                   ( bindirSuffix, compilerOptionsCabalFlag, relDirBuild
-                   , testGhcEnvRelFile
-                   )
+                   ( bindirSuffix, compilerOptionsCabalFlag, testGhcEnvRelFile )
 import           Stack.Constants.Config
                    ( distDirFromDir, distRelativeDir, hpcDirFromDir
                    , hpcRelativeDir, setupConfigFromDir
                    )
 import           Stack.Coverage ( generateHpcReport, updateTixFile )
-import           Stack.GhcPkg ( ghcPkg, unregisterGhcPkgIds )
+import           Stack.GhcPkg ( ghcPkg, ghcPkgPathEnvVar, unregisterGhcPkgIds )
 import           Stack.Package
                    ( buildLogPath, buildableExes, buildableSubLibs
                    , hasBuildableMainLibrary, mainLibraryHasExposedModules
@@ -85,15 +88,15 @@ import           Stack.PackageDump ( conduitDumpPackage, ghcPkgDescribe )
 import           Stack.Prelude
 import           Stack.Types.Build
                    ( ConfigCache (..), PrecompiledCache (..), Task (..)
-                   , TaskConfigOpts (..), TaskType (..), taskAnyMissing
-                   , taskIsTarget, taskLocation, taskProvides
-                   , taskTargetIsMutable, taskTypePackageIdentifier
+                   , TaskConfigOpts (..), TaskType (..), taskIsTarget
+                   , taskLocation, taskProvides, taskTargetIsMutable
+                   , taskTypePackageIdentifier
                    )
 import qualified Stack.Types.Build as ConfigCache ( ConfigCache (..) )
 import           Stack.Types.Build.Exception
                    ( BuildException (..), BuildPrettyException (..) )
 import           Stack.Types.BuildConfig
-                   ( BuildConfig (..), HasBuildConfig (..), projectRootL )
+                   ( BuildConfig (..), HasBuildConfig (..), configFileRootL )
 import           Stack.Types.BuildOpts
                    ( BenchmarkOpts (..), BuildOpts (..), HaddockOpts (..)
                    , TestOpts (..)
@@ -104,17 +107,20 @@ import           Stack.Types.CompCollection
                    , foldComponentToAnotherCollection, getBuildableListText
                    )
 import           Stack.Types.Compiler
-                   ( ActualCompiler (..), WhichCompiler (..), getGhcVersion
-                   , whichCompilerL
-                   )
+                   ( WhichCompiler (..), whichCompiler, whichCompilerL )
 import           Stack.Types.CompilerPaths
                    ( CompilerPaths (..), GhcPkgExe (..), HasCompiler (..)
                    , cpWhich, getGhcPkgExe
                    )
 import qualified Stack.Types.Component as Component
+import           Stack.Types.ComponentUtils
+                   ( StackUnqualCompName, toCabalName, unqualCompToString
+                   , unqualCompToText
+                   )
 import           Stack.Types.Config ( Config (..), HasConfig (..) )
 import           Stack.Types.ConfigureOpts
                    ( BaseConfigOpts (..), ConfigureOpts (..) )
+import qualified Stack.Types.ConfigureOpts as ConfigureOpts
 import           Stack.Types.Curator ( Curator (..) )
 import           Stack.Types.DumpPackage ( DumpPackage (..) )
 import           Stack.Types.EnvConfig
@@ -122,7 +128,7 @@ import           Stack.Types.EnvConfig
                    , appropriateGhcColorFlag
                    )
 import           Stack.Types.EnvSettings ( EnvSettings (..) )
-import           Stack.Types.GhcPkgId ( GhcPkgId, unGhcPkgId )
+import           Stack.Types.GhcPkgId ( GhcPkgId, ghcPkgIdToText )
 import           Stack.Types.GlobalOpts ( GlobalOpts (..) )
 import           Stack.Types.Installed
                    ( InstallLocation (..), Installed (..), InstalledMap
@@ -134,13 +140,13 @@ import           Stack.Types.NamedComponent
                    , renderComponent
                    )
 import           Stack.Types.Package
-                   ( LocalPackage (..), Package (..), installedMapGhcPkgId
+                   ( LocalPackage (..), Package (..), installedPackageToGhcPkgId
                    , runMemoizedWith, simpleInstalledLib
                    , toCabalMungedPackageName
                    )
 import           Stack.Types.PackageFile ( PackageWarning (..) )
-import           Stack.Types.Platform ( HasPlatform (..) )
 import           Stack.Types.Runner ( HasRunner, globalOptsL )
+import           Stack.Types.SourceMap ( SourceMap (..) )
 import           System.IO.Error ( isDoesNotExistError )
 import           System.PosixCompat.Files
                    ( createLink, getFileStatus, modificationTime )
@@ -178,16 +184,25 @@ getConfigCache ee task installedMap enableTest enableBench = do
               -- an initialBuildSteps target.
               | ee.buildOptsCLI.initialBuildSteps && taskIsTarget task
               , Just (_, installed) <- Map.lookup (pkgName ident) installedMap
-                  -> pure $ installedToGhcPkgId ident installed
-          Just installed -> pure $ installedToGhcPkgId ident installed
+                  -> pure $ installedPackageToGhcPkgId ident installed
+          Just installed -> pure $ installedPackageToGhcPkgId ident installed
           _ -> throwM $ PackageIdMissingBug ident
-      installedToGhcPkgId ident (Library ident' libInfo) =
-        assert (ident == ident') (installedMapGhcPkgId ident libInfo)
-      installedToGhcPkgId _ (Executable _) = mempty
-      TaskConfigOpts missing mkOpts = task.configOpts
-  missingMapList <- traverse getMissing $ toList missing
-  let missing' = Map.unions missingMapList
-      configureOpts' = mkOpts missing'
+  let cOpts = task.configOpts
+  missingMapList <- traverse getMissing $ toList cOpts.missing
+  let pcOpts = cOpts.pkgConfigOpts
+      missing' = Map.unions missingMapList
+      -- Historically the leftermost was missing' for union preference in case of
+      -- collision for the return here. But unifying things with configureOpts
+      -- where it was the opposite resulted in this. It doesn't seem to make any
+      -- difference anyway.
+      allDepsMap = Map.union missing' task.present
+      configureOpts' = ConfigureOpts.configureOpts
+        cOpts.envConfig
+        cOpts.baseConfigOpts
+        allDepsMap
+        cOpts.isLocalNonExtraDep
+        cOpts.isMutable
+        pcOpts
       configureOpts = configureOpts'
         { nonPathRelated = configureOpts'.nonPathRelated ++ map T.unpack extra }
       deps = Set.fromList $ Map.elems missing' ++ Map.elems task.present
@@ -203,19 +218,24 @@ getConfigCache ee task installedMap enableTest enableBench = do
         , pkgSrc = task.cachePkgSrc
         , pathEnvVar = ee.pathEnvVar
         }
-      allDepsMap = Map.union missing' task.present
   pure (allDepsMap, cache)
 
 -- | Ensure that the configuration for the package matches what is given
-ensureConfig :: HasEnvConfig env
-             => ConfigCache -- ^ newConfigCache
-             -> Path Abs Dir -- ^ package directory
-             -> BuildOpts
-             -> RIO env () -- ^ announce
-             -> (ExcludeTHLoading -> [String] -> RIO env ()) -- ^ cabal
-             -> Path Abs File -- ^ Cabal file
-             -> Task
-             -> RIO env Bool
+ensureConfig ::
+     HasEnvConfig env
+  => ConfigCache
+     -- ^ newConfigCache
+  -> Path Abs Dir
+     -- ^ package directory
+  -> BuildOpts
+  -> RIO env ()
+     -- ^ announce
+  -> (ExcludeTHLoading -> [String] -> RIO env ())
+     -- ^ cabal
+  -> Path Abs File
+     -- ^ Cabal file
+  -> Task
+  -> RIO env Bool
 ensureConfig newConfigCache pkgDir buildOpts announce cabal cabalFP task = do
   newCabalMod <-
     liftIO $ modificationTime <$> getFileStatus (toFilePath cabalFP)
@@ -226,11 +246,7 @@ ensureConfig newConfigCache pkgDir buildOpts announce cabal cabalFP task = do
           (guard . isDoesNotExistError)
           (getFileStatus (toFilePath setupConfigfp))
   newSetupConfigMod <- getNewSetupConfigMod
-  newProjectRoot <- S8.pack . toFilePath <$> view projectRootL
-  -- See https://github.com/commercialhaskell/stack/issues/3554. This can be
-  -- dropped when Stack drops support for GHC < 8.4.
-  taskAnyMissingHackEnabled <-
-    view $ actualCompilerVersionL . to getGhcVersion . to (< mkVersion [8, 4])
+  newConfigFileRoot <- S8.pack . toFilePath <$> view configFileRootL
   needConfig <-
     if buildOpts.reconfigure
           -- The reason 'taskAnyMissing' is necessary is a bug in Cabal. See:
@@ -240,7 +256,6 @@ ensureConfig newConfigCache pkgDir buildOpts announce cabal cabalFP task = do
           -- check, Stack would think that a reconfigure is unnecessary, when in
           -- fact we _do_ need to reconfigure. The details here suck. We really
           -- need proper hashes for package identifiers.
-       || (taskAnyMissingHackEnabled && taskAnyMissing task)
       then pure True
       else do
         -- We can ignore the components portion of the config
@@ -266,7 +281,7 @@ ensureConfig newConfigCache pkgDir buildOpts announce cabal cabalFP task = do
              /= Just (ignoreComponents newConfigCache)
           || mOldCabalMod /= Just newCabalMod
           || mOldSetupConfigMod /= newSetupConfigMod
-          || mOldProjectRoot /= Just newProjectRoot
+          || mOldProjectRoot /= Just newConfigFileRoot
 
   when task.buildTypeConfig $
     -- When build-type is Configure, we need to have a configure script in the
@@ -288,15 +303,14 @@ ensureConfig newConfigCache pkgDir buildOpts announce cabal cabalFP task = do
     exes <- forM programNames $ \(name, file) -> do
       mpath <- findExecutable file
       pure $ case mpath of
-          Left _ -> []
-          Right x -> pure $ concat ["--with-", name, "=", x]
+        Left _ -> []
+        Right x -> pure $ concat ["--with-", name, "=", x]
+    let allOpts =
+             concat exes
+          <> ConfigureOpts.renderConfigureOpts newConfigCache.configureOpts
     -- Configure cabal with arguments determined by
-    -- Stack.Types.Build.ureOpts
-    cabal KeepTHLoading $ "configure" : concat
-      [ concat exes
-      , newConfigCache.configureOpts.pathRelated
-      , newConfigCache.configureOpts.nonPathRelated
-      ]
+    -- Stack.Types.Build.configureOpts
+    cabal KeepTHLoading $ "configure" : allOpts
     -- Only write the cache for local packages.  Remote packages are built in a
     -- temporary directory so the cache would never be used anyway.
     case task.taskType of
@@ -308,7 +322,7 @@ ensureConfig newConfigCache pkgDir buildOpts announce cabal cabalFP task = do
     -- our config mod file is newer than the file above, but this seems
     -- reasonable too.
     getNewSetupConfigMod >>= writeSetupConfigMod pkgDir
-    writePackageProjectRoot pkgDir newProjectRoot
+    writePackageProjectRoot pkgDir newConfigFileRoot
   pure needConfig
 
 -- | Make a padded prefix for log messages
@@ -333,29 +347,33 @@ announceTask ee taskType action = logInfo $
        (packageNamePrefix ee (pkgName (taskTypePackageIdentifier taskType)))
   <> action
 
--- Implements running a package's build, used to implement 'ATBuild' and
--- 'ATBuildFinal' tasks.  In particular this does the following:
+-- | Implements running a package's build, used to implement
+-- 'Control.Concurrent.Execute.ATBuild' and
+-- 'Control.Concurrent.Execute.ATBuildFinal' tasks. In particular this does the
+-- following:
 --
--- * Checks if the package exists in the precompiled cache, and if so,
---   add it to the database instead of performing the build.
+-- * Checks if the package exists in the precompiled cache, and if so, add it to
+--   the database instead of performing the build.
 --
--- * Runs the configure step if needed ('ensureConfig')
+-- * Runs the configure step if needed (@ensureConfig@)
 --
 -- * Runs the build step
 --
 -- * Generates haddocks
 --
--- * Registers the library and copies the built executables into the
---   local install directory. Note that this is literally invoking Cabal
---   with @copy@, and not the copying done by @stack install@ - that is
---   handled by 'copyExecutables'.
-singleBuild :: forall env. (HasEnvConfig env, HasRunner env)
-            => ActionContext
-            -> ExecuteEnv
-            -> Task
-            -> InstalledMap
-            -> Bool             -- ^ Is this a final build?
-            -> RIO env ()
+-- * Registers the library and copies the built executables into the local
+--   install directory. Note that this is literally invoking Cabal with @copy@,
+--   and not the copying done by @stack install@ - that is handled by
+--   'Stack.Build.copyExecutables'.
+singleBuild ::
+     forall env. (HasEnvConfig env, HasRunner env)
+  => ActionContext
+  -> ExecuteEnv
+  -> Task
+  -> InstalledMap
+  -> Bool
+     -- ^ Is this a final build?
+  -> RIO env ()
 singleBuild
     ac
     ee
@@ -363,10 +381,6 @@ singleBuild
     installedMap
     isFinalBuild
   = do
-    cabalVersion <- view $ envConfigL . to (.compilerPaths.cabalVersion)
-    -- The old version of Cabal (the library) copy did not allow the components
-    -- to be copied to be specified.
-    let isOldCabalCopy = cabalVersion < mkVersion [2, 0]
     (allDepsMap, cache) <-
       getConfigCache ee task installedMap enableTests enableBenchmarks
     let bcoSnapInstallRoot = ee.baseConfigOpts.snapInstallRoot
@@ -376,75 +390,58 @@ singleBuild
         Just precompiled -> copyPreCompiled ee task pkgId precompiled
         Nothing -> do
           curator <- view $ buildConfigL . to (.curator)
-          realConfigAndBuild isOldCabalCopy cache curator allDepsMap
-    case minstalled of
-      Nothing -> pure ()
-      Just installed -> do
-        writeFlagCache installed cache
-        liftIO $ atomically $
-          modifyTVar ee.ghcPkgIds $ Map.insert pkgId installed
+          realConfigAndBuild
+            ac
+            ee
+            task
+            installedMap
+            (enableTests, enableBenchmarks)
+            (isFinalBuild, buildingFinals)
+            cache
+            curator
+            allDepsMap
+    whenJust minstalled $ \installed -> do
+      writeFlagCache installed cache
+      liftIO $ atomically $ modifyTVar ee.ghcPkgIds $ Map.insert pkgId installed
  where
   pkgId = taskProvides task
-  PackageIdentifier pname _ = pkgId
-  doHaddock curator package =
-       task.buildHaddocks
-    && not isFinalBuild
-       -- Works around haddock failing on bytestring-builder since it has no
-       -- modules when bytestring is new enough.
-    && mainLibraryHasExposedModules package
-       -- Special help for the curator tool to avoid haddocks that are known
-       -- to fail
-    && maybe True (Set.notMember pname . (.skipHaddock)) curator
-
   buildingFinals = isFinalBuild || task.allInOne
   enableTests = buildingFinals && any isCTest (taskComponents task)
   enableBenchmarks = buildingFinals && any isCBench (taskComponents task)
 
-  annSuffix isOldCabalCopy executableBuildStatuses =
-    if result == "" then "" else " (" <> result <> ")"
-   where
-    result = T.intercalate " + " $ concat
-      [ ["lib" | task.allInOne && hasLib]
-      , ["sub-lib" | task.allInOne && hasSubLib]
-      , ["exe" | task.allInOne && hasExe]
-      , ["test" | enableTests]
-      , ["bench" | enableBenchmarks]
-      ]
-    (hasLib, hasSubLib, hasExe) = case task.taskType of
-      TTLocalMutable lp ->
-        let package = lp.package
-            hasLibrary = hasBuildableMainLibrary package
-            hasSubLibraries = not $ null package.subLibraries
-            hasExecutables = not . Set.null $
-              exesToBuild isOldCabalCopy executableBuildStatuses lp
-        in  (hasLibrary, hasSubLibraries, hasExecutables)
-      -- This isn't true, but we don't want to have this info for upstream deps.
-      _ -> (False, False, False)
-
-  realConfigAndBuild isOldCabalCopy cache mcurator allDepsMap =
-    withSingleContext ac ee task.taskType allDepsMap Nothing $
+realConfigAndBuild ::
+     forall env a. HasEnvConfig env
+  => ActionContext
+  -> ExecuteEnv
+  -> Task
+  -> Map PackageName (a, Installed)
+  -> (Bool, Bool)
+     -- ^ (enableTests, enableBenchmarks)
+  -> (Bool, Bool)
+     -- ^ (isFinalBuild, buildingFinals)
+  -> ConfigCache
+  -> Maybe Curator
+  -> Map PackageIdentifier GhcPkgId
+  -> RIO env (Maybe Installed)
+realConfigAndBuild
+    ac
+    ee
+    task
+    installedMap
+    (enableTests, enableBenchmarks)
+    (isFinalBuild, buildingFinals)
+    cache
+    mcurator0
+    allDepsMap
+  = withSingleContext ac ee task.taskType allDepsMap Nothing $
       \package cabalFP pkgDir cabal0 announce _outputType -> do
         let cabal = cabal0 CloseOnException
-        executableBuildStatuses <- getExecutableBuildStatuses package pkgDir
-        when (  not (cabalIsSatisfied isOldCabalCopy executableBuildStatuses)
-             && taskIsTarget task
-             ) $
-          prettyInfoL
-            [ flow "Building all executables for"
-            , style Current (fromPackageName package.name)
-            , flow "once. After a successful build of all of them, only \
-                   \specified executables will be rebuilt."
-            ]
         _neededConfig <-
           ensureConfig
             cache
             pkgDir
             ee.buildOpts
-            ( announce
-                (  "configure"
-                <> display (annSuffix isOldCabalCopy executableBuildStatuses)
-                )
-            )
+            (announce ("configure" <> display annSuffix))
             cabal
             cabalFP
             task
@@ -464,36 +461,58 @@ singleBuild
           -- https://github.com/commercialhaskell/stack/issues/2787
           (True, _) | null ac.downstream -> pure Nothing
           (_, True) | null ac.downstream || installedMapHasThisPkg -> do
-            initialBuildSteps isOldCabalCopy executableBuildStatuses cabal announce
+            initialBuildSteps cabal announce
             pure Nothing
           _ -> fulfillCuratorBuildExpectations
                  pname
-                 mcurator
+                 mcurator0
                  enableTests
                  enableBenchmarks
                  Nothing
-                 (Just <$>
-                    realBuild isOldCabalCopy cache package pkgDir cabal0 announce executableBuildStatuses)
+                 (Just <$> realBuild package pkgDir cabal0 announce)
+ where
+  pkgId = taskProvides task
+  PackageIdentifier pname _ = pkgId
+  doHaddock curator package =
+       task.buildHaddocks
+    && not isFinalBuild
+       -- Works around haddock failing on bytestring-builder since it has no
+       -- modules when bytestring is new enough.
+    && mainLibraryHasExposedModules package
+       -- Special help for the curator tool to avoid haddocks that are known
+       -- to fail
+    && maybe True (Set.notMember pname . (.skipHaddock)) curator
 
-  initialBuildSteps isOldCabalCopy executableBuildStatuses cabal announce = do
-    announce
-      (  "initial-build-steps"
-      <> display (annSuffix isOldCabalCopy executableBuildStatuses)
-      )
+  annSuffix = if result == "" then "" else " (" <> result <> ")"
+   where
+    result = T.intercalate " + " $ concat
+      [ ["lib" | task.allInOne && hasLib]
+      , ["sub-lib" | task.allInOne && hasSubLib]
+      , ["exe" | task.allInOne && hasExe]
+      , ["test" | enableTests]
+      , ["bench" | enableBenchmarks]
+      ]
+    (hasLib, hasSubLib, hasExe) = case task.taskType of
+      TTLocalMutable lp ->
+        let package = lp.package
+            hasLibrary = hasBuildableMainLibrary package
+            hasSubLibraries = not $ null package.subLibraries
+            hasExecutables = not . Set.null $ exesToBuild lp
+        in  (hasLibrary, hasSubLibraries, hasExecutables)
+      -- This isn't true, but we don't want to have this info for upstream deps.
+      _ -> (False, False, False)
+  initialBuildSteps cabal announce = do
+    announce ("initial-build-steps" <> display annSuffix)
     cabal KeepTHLoading ["repl", "stack-initial-build-steps"]
 
   realBuild ::
-       Bool
-       -- ^ Is Cabal copy limited to all libraries and executables?
-    -> ConfigCache
-    -> Package
+       Package
     -> Path Abs Dir
     -> (KeepOutputOpen -> ExcludeTHLoading -> [String] -> RIO env ())
     -> (Utf8Builder -> RIO env ())
        -- ^ A plain 'announce' function
-    -> Map Text ExecutableBuildStatus
     -> RIO env Installed
-  realBuild isOldCabalCopy cache package pkgDir cabal0 announce executableBuildStatuses = do
+  realBuild package pkgDir cabal0 announce = do
     let cabal = cabal0 CloseOnException
     wc <- view $ actualCompilerVersionL . whichCompilerL
 
@@ -508,7 +527,6 @@ singleBuild
       TTRemotePackage{} -> pure ()
 
     -- FIXME: only output these if they're in the build plan.
-
     let postBuildCheck _succeeded = do
           mlocalWarnings <- case task.taskType of
             TTLocalMutable lp -> do
@@ -549,7 +567,7 @@ singleBuild
     actualCompiler <- view actualCompilerVersionL
     () <- announce
       (  "build"
-      <> display (annSuffix isOldCabalCopy executableBuildStatuses)
+      <> display annSuffix
       <> " with "
       <> display actualCompiler
       )
@@ -562,13 +580,11 @@ singleBuild
       case (task.taskType, task.allInOne, isFinalBuild) of
         (_, True, True) -> throwM AllInOneBuildBug
         (TTLocalMutable lp, False, False) ->
-          let componentOpts =
-                primaryComponentOptions isOldCabalCopy executableBuildStatuses lp
+          let componentOpts = primaryComponentOptions lp
           in  pure (componentOpts, componentOpts)
         (TTLocalMutable lp, False, True) -> pure (finalComponentOptions lp, [])
         (TTLocalMutable lp, True, False) ->
-          let componentOpts =
-                primaryComponentOptions isOldCabalCopy executableBuildStatuses lp
+          let componentOpts = primaryComponentOptions lp
           in pure (componentOpts <> finalComponentOptions lp, componentOpts)
         (TTRemotePackage{}, _, _) -> pure ([], [])
     cabal stripTHLoading ("build" : buildOpts <> extraOpts)
@@ -588,11 +604,7 @@ singleBuild
         else "haddock"
 
       -- For GHC 8.4 and later, provide the --quickjump option.
-      let quickjump =
-            case actualCompiler of
-              ACGhc ghcVer
-                | ghcVer >= mkVersion [8, 4] -> ["--haddock-option=--quickjump"]
-              _ -> []
+      let quickjump = ["--haddock-option=--quickjump"]
 
       fulfillHaddockExpectations pname mcurator $ \keep -> do
         let args = concat
@@ -607,6 +619,9 @@ singleBuild
                       , [ "--haddock-option=--hyperlinked-source"
                         | ee.buildOpts.haddockHyperlinkSource
                         ]
+                      , [ "--executables" | ee.buildOpts.haddockExecutables ]
+                      , [ "--tests" | ee.buildOpts.haddockTests ]
+                      , [ "--benchmarks" | ee.buildOpts.haddockBenchmarks ]
                       , [ "--internal" | ee.buildOpts.haddockInternal  ]
                       , quickjump
                       ]
@@ -627,8 +642,7 @@ singleBuild
           && (hasLibrary || hasSubLibraries || hasExecutables)
     when shouldCopy $ withMVar ee.installLock $ \() -> do
       announce "copy/register"
-      let copyArgs = "copy" : if isOldCabalCopy then [] else copyOpts
-      eres <- try $ cabal KeepTHLoading copyArgs
+      eres <- try $ cabal KeepTHLoading $ "copy" : copyOpts
       case eres of
         Left err@CabalExitedUnsuccessfully{} ->
           throwM $ CabalCopyFailed
@@ -701,32 +715,20 @@ postProcessRemotePackage
 -- generating Haddocks.
 --
 fetchAndMarkInstalledPackage ::
-     (HasTerm env, HasEnvConfig env)
+     (HasEnvConfig env, HasTerm env)
   => ExecuteEnv
   -> InstallLocation
   -> Package
   -> PackageIdentifier
   -> RIO env Installed
 fetchAndMarkInstalledPackage ee taskInstallLocation package pkgId = do
-  let baseConfigOpts = ee.baseConfigOpts
-      (installedPkgDb, installedDumpPkgsTVar) =
-        case taskInstallLocation of
-          Snap ->
-            ( baseConfigOpts.snapDB
-            , ee.snapshotDumpPkgs )
-          Local ->
-            ( baseConfigOpts.localDB
-            , ee.localDumpPkgs )
+  let ghcPkgIdLoader = fetchGhcPkgIdForLib ee taskInstallLocation package.name
   -- Only pure the sub-libraries to cache them if we also cache the main
   -- library (that is, if it exists)
   if hasBuildableMainLibrary package
     then do
-      let getAndStoreGhcPkgId =
-            loadInstalledPkg [installedPkgDb] installedDumpPkgsTVar
-          foldSubLibToMap subLib mapInMonad = do
-            let mungedName = toCabalMungedPackageName package.name subLib.name
-            maybeGhcpkgId <-
-              getAndStoreGhcPkgId (encodeCompatPackageName mungedName)
+      let foldSubLibToMap subLib mapInMonad = do
+            maybeGhcpkgId <- ghcPkgIdLoader (Just subLib.name)
             mapInMonad <&> case maybeGhcpkgId of
               Just v -> Map.insert subLib.name v
               _ -> id
@@ -734,7 +736,7 @@ fetchAndMarkInstalledPackage ee taskInstallLocation package pkgId = do
         package.subLibraries
         foldSubLibToMap
         mempty
-      mGhcPkgId <- getAndStoreGhcPkgId package.name
+      mGhcPkgId <- ghcPkgIdLoader Nothing
       case mGhcPkgId of
         Nothing -> throwM $ Couldn'tFindPkgId package.name
         Just ghcPkgId -> pure $ simpleInstalledLib pkgId ghcPkgId subLibsPkgIds
@@ -742,6 +744,30 @@ fetchAndMarkInstalledPackage ee taskInstallLocation package pkgId = do
       markExeInstalled taskInstallLocation pkgId -- TODO unify somehow
                                                   -- with writeFlagCache?
       pure $ Executable pkgId
+
+fetchGhcPkgIdForLib ::
+     (HasTerm env, HasEnvConfig env)
+  => ExecuteEnv
+  -> InstallLocation
+  -> PackageName
+  -> Maybe Component.StackUnqualCompName
+  -> RIO env (Maybe GhcPkgId)
+fetchGhcPkgIdForLib ee installLocation pkgName libName = do
+  let baseConfigOpts = ee.baseConfigOpts
+      (installedPkgDb, installedDumpPkgsTVar) =
+        case installLocation of
+          Snap ->
+            ( baseConfigOpts.snapDB
+            , ee.snapshotDumpPkgs )
+          Local ->
+            ( baseConfigOpts.localDB
+            , ee.localDumpPkgs )
+  let commonLoader = loadInstalledPkg [installedPkgDb] installedDumpPkgsTVar
+  case libName of
+    Nothing -> commonLoader pkgName
+    Just v -> do
+      let mungedName = encodeCompatPackageName $ toCabalMungedPackageName pkgName v
+      commonLoader mungedName
 
 -- | Copy ddump-* files, if we are building finals and a non-empty ddump-dir
 -- has been specified.
@@ -771,53 +797,8 @@ copyDdumpFilesIfNeeded buildingFinals mDdumpPath = when buildingFinals $
             src' <- parseRelFile src
             copyFile src' (destBaseDir </> filename src'))
 
--- | Get the build status of all the package executables. Do so by
--- testing whether their expected output file exists, e.g.
---
--- .stack-work/dist/x86_64-osx/Cabal-1.22.4.0/build/alpha/alpha
--- .stack-work/dist/x86_64-osx/Cabal-1.22.4.0/build/alpha/alpha.exe
--- .stack-work/dist/x86_64-osx/Cabal-1.22.4.0/build/alpha/alpha.jsexe/ (NOTE: a dir)
-getExecutableBuildStatuses ::
-     HasEnvConfig env
-  => Package
-  -> Path Abs Dir
-  -> RIO env (Map Text ExecutableBuildStatus)
-getExecutableBuildStatuses package pkgDir = do
-  distDir <- distDirFromDir pkgDir
-  platform <- view platformL
-  fmap
-    Map.fromList
-    (mapM (checkExeStatus platform distDir) (Set.toList (buildableExes package)))
-
--- | Check whether the given executable is defined in the given dist directory.
-checkExeStatus ::
-     HasLogFunc env
-  => Platform
-  -> Path b Dir
-  -> Text
-  -> RIO env (Text, ExecutableBuildStatus)
-checkExeStatus platform distDir name = do
-  exename <- parseRelDir (T.unpack name)
-  exists <- checkPath (distDir </> relDirBuild </> exename)
-  pure
-    ( name
-    , if exists
-        then ExecutableBuilt
-        else ExecutableNotBuilt)
- where
-  checkPath base =
-    case platform of
-      Platform _ Windows -> do
-        fileandext <- parseRelFile (file ++ ".exe")
-        doesFileExist (base </> fileandext)
-      _ -> do
-        fileandext <- parseRelFile file
-        doesFileExist (base </> fileandext)
-   where
-    file = T.unpack name
-
 getPrecompiled ::
-  (HasEnvConfig env)
+     HasEnvConfig env
   => ConfigCache
   -> TaskType
   -> Path Abs Dir
@@ -853,8 +834,13 @@ getPrecompiled cache taskType bcoSnapInstallRoot =
     _ -> pure Nothing
 
 copyPreCompiled ::
-  (HasLogFunc env, HasCompiler env, HasTerm env, HasProcessContext env, HasEnvConfig env) =>
-  ExecuteEnv
+     ( HasLogFunc env
+     , HasCompiler env
+     , HasTerm env
+     , HasProcessContext env
+     , HasEnvConfig env
+     )
+  => ExecuteEnv
   -> Task
   -> PackageIdentifier
   -> PrecompiledCache b0
@@ -871,9 +857,9 @@ copyPreCompiled ee task pkgId (PrecompiledCache mlib subLibs exes) = do
     subLibNames = Set.toList $ buildableSubLibs $ case task.taskType of
       TTLocalMutable lp -> lp.package
       TTRemotePackage _ p _ -> p
-    toMungedPackageId :: Text -> MungedPackageId
+    toMungedPackageId :: StackUnqualCompName -> MungedPackageId
     toMungedPackageId subLib =
-      let subLibName = LSubLibName $ mkUnqualComponentName $ T.unpack subLib
+      let subLibName = LSubLibName $ toCabalName subLib
       in  MungedPackageId (MungedPackageName pname subLibName) pversion
     toPackageId :: MungedPackageId -> PackageIdentifier
     toPackageId (MungedPackageId n v) =
@@ -892,15 +878,36 @@ copyPreCompiled ee task pkgId (PrecompiledCache mlib subLibs exes) = do
       let pkgDb = ee.baseConfigOpts.snapDB
       ghcPkgExe <- getGhcPkgExe
       -- First unregister, silently, everything that needs to be unregistered.
-      case nonEmpty allToUnregister of
-        Nothing -> pure ()
-        Just allToUnregister' -> catchAny
-          (unregisterGhcPkgIds False ghcPkgExe pkgDb allToUnregister')
+      whenJust (nonEmpty allToUnregister) $ \allToUnregister' -> do
+        logLevel <- view $ globalOptsL . to (.logLevel)
+        let isDebug = logLevel == LevelDebug
+        catchAny
+          (unregisterGhcPkgIds isDebug ghcPkgExe pkgDb allToUnregister')
           (const (pure ()))
-      -- Now, register the cached conf files.
-      forM_ allToRegister $ \libpath ->
-        ghcPkg ghcPkgExe [pkgDb] ["register", "--force", toFilePath libpath]
-
+      -- There appears to be a bug in the ghc-pkg executable such that, on
+      -- Windows only, it cannot register a package into a package database that
+      -- is also listed in the GHC_PACKAGE_PATH environment variable. See:
+      -- https://gitlab.haskell.org/ghc/ghc/-/issues/25962. We work around that
+      -- by removing GHC_PACKAGE_PATH from the environment for the register
+      -- step.
+      wc <- view $ envConfigL . to (.sourceMap.compiler) . to whichCompiler
+      withModifyEnvVars (Map.delete $ ghcPkgPathEnvVar wc) $
+        forM_ allToRegister $ \libpath -> do
+          let args = ["register", "--force", toFilePath libpath]
+          ghcPkg ghcPkgExe [pkgDb] args >>= \case
+            Left e -> prettyWarn $
+              "[S-4541]"
+              <> line
+              <> fillSep
+                   [ flow "While registering"
+                   , pretty libpath
+                   , "in"
+                   , pretty pkgDb <> ","
+                   , flow "Stack encountered the following error:"
+                   ]
+              <> blankLine
+              <> string (displayException e)
+            Right _ -> pure ()
   liftIO $ forM_ exes $ \exe -> do
     ensureDir bindir
     let dst = bindir </> filename exe
@@ -925,7 +932,7 @@ copyPreCompiled ee task pkgId (PrecompiledCache mlib subLibs exes) = do
     bindir = ee.baseConfigOpts.snapInstallRoot </> bindirSuffix
 
 loadInstalledPkg ::
-  ( HasCompiler env, HasProcessContext env, HasTerm env )
+     (HasCompiler env, HasProcessContext env, HasTerm env)
   => [Path Abs Dir]
   -> TVar (Map GhcPkgId DumpPackage)
   -> PackageName
@@ -940,7 +947,8 @@ loadInstalledPkg pkgDbs tvar name = do
       pure $ Just dp.ghcPkgId
     _ -> throwM $ MultipleResultsBug name dps
 
-fulfillHaddockExpectations :: (MonadUnliftIO m, HasTerm env, MonadReader env m)
+fulfillHaddockExpectations ::
+     (MonadUnliftIO m, HasTerm env, MonadReader env m)
   => PackageName
   -> Maybe Curator
   -> (KeepOutputOpen -> m ())
@@ -981,14 +989,15 @@ checkForUnlistedFiles TTRemotePackage{} _ = pure []
 
 -- | Implements running a package's tests. Also handles producing
 -- coverage reports if coverage is enabled.
-singleTest :: HasEnvConfig env
-           => TestOpts
-           -> [Text]
-           -> ActionContext
-           -> ExecuteEnv
-           -> Task
-           -> InstalledMap
-           -> RIO env ()
+singleTest ::
+     HasEnvConfig env
+  => TestOpts
+  -> [StackUnqualCompName]
+  -> ActionContext
+  -> ExecuteEnv
+  -> Task
+  -> InstalledMap
+  -> RIO env ()
 singleTest topts testsToRun ac ee task installedMap = do
   -- FIXME: Since this doesn't use cabal, we should be able to avoid using a
   -- full blown 'withSingleContext'.
@@ -1001,11 +1010,8 @@ singleTest topts testsToRun ac ee task installedMap = do
       config <- view configL
       let needHpc = topts.coverage
       toRun <-
-        if topts.disableRun
-          then do
-            announce "Test running disabled by --no-run-tests flag."
-            pure False
-          else if topts.rerunTests
+        if topts.runTests
+          then if topts.rerunTests
             then pure True
             else do
               status <- getTestStatus pkgDir
@@ -1022,7 +1028,7 @@ singleTest topts testsToRun ac ee task installedMap = do
                       announce "rerunning previously failed test"
                       pure True
                 TSUnknown -> pure True
-
+          else prettyThrowM $ ActionNotFilteredBug "singleTest"
       when toRun $ do
         buildDir <- distDirFromDir pkgDir
         hpcDir <- hpcDirFromDir pkgDir
@@ -1038,7 +1044,7 @@ singleTest topts testsToRun ac ee task installedMap = do
                 ]
 
         errs <- fmap Map.unions $ forM suitesToRun $ \(testName, suiteInterface) -> do
-          let stestName = T.unpack testName
+          let stestName = unqualCompToString testName
           (testName', isTestTypeLib) <-
             case suiteInterface of
               C.TestSuiteLibV09{} -> pure (stestName ++ "Stub", True)
@@ -1102,7 +1108,7 @@ singleTest topts testsToRun ac ee task installedMap = do
                 <> foldMap
                      ( \ghcId ->
                             "package-id "
-                         <> display (unGhcPkgId ghcId)
+                         <> display (ghcPkgIdToText ghcId)
                          <> "\n"
                      )
                      (pkgGhcIdList ++ thGhcId:Map.elems allDepsMap)
@@ -1135,7 +1141,7 @@ singleTest topts testsToRun ac ee task installedMap = do
                            <> T.intercalate " " (map showProcessArgDebug args)
                 announce $
                      "test (suite: "
-                  <> display testName
+                  <> display (unqualCompToText testName)
                   <> display argsDisplay
                   <> ")"
 
@@ -1178,7 +1184,7 @@ singleTest topts testsToRun ac ee task installedMap = do
                             $ BL.fromStrict
                             $ encodeUtf8 $ fromString $
                             show ( logPath
-                                 , mkUnqualComponentName (T.unpack testName)
+                                 , toCabalName testName
                                  )
                         else do
                           isTerminal <- view $ globalOptsL . to (.terminal)
@@ -1211,7 +1217,7 @@ singleTest topts testsToRun ac ee task installedMap = do
                 let announceResult result =
                       announce $
                            "Test suite "
-                        <> display testName
+                        <> display (unqualCompToText testName)
                         <> " "
                         <> result
                 case mec of
@@ -1235,15 +1241,15 @@ singleTest topts testsToRun ac ee task installedMap = do
                       (package.buildType == C.Simple)
                       exeName
                       (packageNameString package.name)
-                      (T.unpack testName)
+                      (unqualCompToString testName)
                 pure emptyResult
 
         when needHpc $ do
           let testsToRun' = map f testsToRun
               f tName =
                 case (.interface) <$> mComponent of
-                  Just C.TestSuiteLibV09{} -> tName <> "Stub"
-                  _ -> tName
+                  Just C.TestSuiteLibV09{} -> unqualCompToText tName <> "Stub"
+                  _ -> unqualCompToText tName
                where
                 mComponent = collectionLookup tName package.testSuites
           generateHpcReport pkgDir package testsToRun'
@@ -1268,29 +1274,26 @@ singleTest topts testsToRun ac ee task installedMap = do
         setTestStatus pkgDir $ if succeeded then TSSuccess else TSFailure
 
 -- | Implements running a package's benchmarks.
-singleBench :: HasEnvConfig env
-            => BenchmarkOpts
-            -> [Text]
-            -> ActionContext
-            -> ExecuteEnv
-            -> Task
-            -> InstalledMap
-            -> RIO env ()
+singleBench ::
+     HasEnvConfig env
+  => BenchmarkOpts
+  -> [StackUnqualCompName]
+  -> ActionContext
+  -> ExecuteEnv
+  -> Task
+  -> InstalledMap
+  -> RIO env ()
 singleBench beopts benchesToRun ac ee task installedMap = do
   (allDepsMap, _cache) <- getConfigCache ee task installedMap False True
   withSingleContext ac ee task.taskType allDepsMap (Just "bench") $
     \_package _cabalfp _pkgDir cabal announce _outputType -> do
-      let args = map T.unpack benchesToRun <> maybe []
+      let args = map unqualCompToString benchesToRun <> maybe []
                        ((:[]) . ("--benchmark-options=" <>))
                        beopts.additionalArgs
-
       toRun <-
-        if beopts.disableRun
-          then do
-            announce "Benchmark running disabled by --no-run-benchmarks flag."
-            pure False
-          else pure True
-
+        if beopts.runBenchmarks
+          then pure True
+          else prettyThrowM $ ActionNotFilteredBug "singleBench"
       when toRun $ do
         announce "benchmarks"
         cabal CloseOnException KeepTHLoading ("bench" : args)
@@ -1298,8 +1301,11 @@ singleBench beopts benchesToRun ac ee task installedMap = do
 -- Do not pass `-hpcdir` as GHC option if the coverage is not enabled.
 -- This helps running stack-compiled programs with dynamic interpreters like
 -- `hint`. Cfr: https://github.com/commercialhaskell/stack/issues/997
-extraBuildOptions :: (HasEnvConfig env, HasRunner env)
-                  => WhichCompiler -> BuildOpts -> RIO env [String]
+extraBuildOptions ::
+     (HasEnvConfig env, HasRunner env)
+  => WhichCompiler
+  -> BuildOpts
+  -> RIO env [String]
 extraBuildOptions wc bopts = do
   colorOpt <- appropriateGhcColorFlag
   let optsFlag = compilerOptionsCabalFlag wc
@@ -1312,13 +1318,8 @@ extraBuildOptions wc bopts = do
       pure [optsFlag, baseOpts]
 
 -- Library, sub-library, foreign library and executable build components.
-primaryComponentOptions ::
-     Bool
-     -- ^ Is Cabal copy limited to all libraries and executables?
-  -> Map Text ExecutableBuildStatus
-  -> LocalPackage
-  -> [String]
-primaryComponentOptions isOldCabalCopy executableBuildStatuses lp =
+primaryComponentOptions :: LocalPackage -> [String]
+primaryComponentOptions lp =
   -- TODO: get this information from target parsing instead, which will allow
   -- users to turn off library building if desired
      ( if hasBuildableMainLibrary package
@@ -1332,47 +1333,20 @@ primaryComponentOptions isOldCabalCopy executableBuildStatuses lp =
   ++ map
        (T.unpack . T.append "lib:")
        (getBuildableListText package.subLibraries)
-  ++ map
-       (T.unpack . T.append "exe:")
-       (Set.toList $ exesToBuild isOldCabalCopy executableBuildStatuses lp)
+  ++ Set.toList
+       ( Set.mapMonotonic
+           (\s -> "exe:" ++ unqualCompToString s)
+           (exesToBuild lp)
+       )
  where
   package = lp.package
 
--- | History of this function:
---
--- * Normally it would do either all executables or if the user specified
---   requested components, just build them. Afterwards, due to this Cabal bug
---   <https://github.com/haskell/cabal/issues/2780>, we had to make Stack build
---   all executables every time.
---
--- * In <https://github.com/commercialhaskell/stack/issues/3229> this was
---   flagged up as very undesirable behavior on a large project, hence the
---   behavior below that we build all executables once (modulo success), and
---   thereafter pay attention to user-wanted components.
---
--- * The Cabal bug was fixed, in that the copy command of later Cabal versions
---   allowed components to be specified. Consequently, Cabal may be satisified,
---   even if all of a package's executables have not yet been built.
-exesToBuild ::
-     Bool
-     -- ^ Is Cabal copy limited to all libraries and executables?
-  -> Map Text ExecutableBuildStatus
-  -> LocalPackage
-  -> Set Text
-exesToBuild isOldCabalCopy executableBuildStatuses lp =
-  if cabalIsSatisfied isOldCabalCopy executableBuildStatuses && lp.wanted
-    then exeComponents lp.components
-    else buildableExes lp.package
-
--- | Do the current executables satisfy Cabal's requirements?
-cabalIsSatisfied ::
-     Bool
-     -- ^ Is Cabal copy limited to all libraries and executables?
-  -> Map k ExecutableBuildStatus
-  -> Bool
-cabalIsSatisfied False _ = True
-cabalIsSatisfied True executableBuildStatuses =
-  all (== ExecutableBuilt) $ Map.elems executableBuildStatuses
+-- | Either build all executables or, if the user specifies requested
+-- components, just build them.
+exesToBuild :: LocalPackage -> Set StackUnqualCompName
+exesToBuild lp = if lp.wanted
+  then exeComponents lp.components
+  else buildableExes lp.package
 
 -- Test-suite and benchmark build components.
 finalComponentOptions :: LocalPackage -> [String]

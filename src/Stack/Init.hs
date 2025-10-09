@@ -4,7 +4,14 @@
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE TypeFamilies          #-}
 
--- | Types and functions related to Stack's @init@ command.
+{-|
+Module      : Stack.Init
+Description : Types and functions related to Stack's @init@ command.
+License     : BSD-3-Clause
+
+Types and functions related to Stack's @init@ command.
+-}
+
 module Stack.Init
   ( InitOpts (..)
   , initCmd
@@ -43,19 +50,19 @@ import           Stack.BuildPlan
                    ( BuildPlanCheck (..), DepError (..), checkSnapBuildPlan
                    , removeSrcPkgDefaultFlags, selectBestSnapshot
                    )
-import           Stack.Config ( getSnapshots, makeConcreteResolver )
+import           Stack.Config ( getSnapshots, makeConcreteSnapshot )
 import           Stack.Constants ( stackDotYaml, stackProgName' )
 import           Stack.Prelude
 import           Stack.Runners
                    ( ShouldReexec (..), withConfig, withGlobalProject )
 import           Stack.SourceMap
                    ( SnapshotCandidate, loadProjectSnapshotCandidate )
-import           Stack.Types.Config ( HasConfig )
+import           Stack.Types.Config ( HasConfig, Config (..), configL )
 import           Stack.Types.GHCVariant ( HasGHCVariant )
 import           Stack.Types.GlobalOpts ( GlobalOpts (..) )
 import           Stack.Types.Project ( Project (..) )
 import           Stack.Types.Runner (Runner, globalOptsL )
-import           Stack.Types.Resolver ( AbstractResolver, Snapshots (..) )
+import           Stack.Types.Snapshot ( AbstractSnapshot, Snapshots (..) )
 import           Stack.Types.Version ( stackMajorVersion )
 
 -- | Type representing exceptions thrown by functions exported by the
@@ -75,15 +82,15 @@ data InitPrettyException
   | ConfigFileAlreadyExists FilePath
   | PackageNameInvalid [(Path Abs File, PackageName)]
   | NoMatchingSnapshot !(NonEmpty SnapName)
-  | ResolverMismatch !RawSnapshotLocation String
-  | ResolverPartial !RawSnapshotLocation !String
+  | SnapshotMismatch !RawSnapshotLocation String
+  | SnapshotPartial !RawSnapshotLocation !String
   deriving (Show, Typeable)
 
 instance Pretty InitPrettyException where
   pretty (ConfigFileAlreadyExists reldest) =
     "[S-8009]"
     <> line
-    <> flow "Stack declined to create a project-level YAML configuration file."
+    <> flow "Stack declined to create a project-level configuration file."
     <> blankLine
     <> fillSep
          [ flow "The file"
@@ -94,7 +101,7 @@ instance Pretty InitPrettyException where
   pretty (PackageNameInvalid rels) =
     "[S-5267]"
     <> line
-    <> flow "Stack did not create project-level YAML configuration, as (like \
+    <> flow "Stack did not create project-level configuration, as (like \
             \Hackage) it requires a Cabal file name to match the package it \
             \defines."
     <> blankLine
@@ -115,18 +122,18 @@ instance Pretty InitPrettyException where
   pretty (SnapshotDownloadFailure e) =
     "[S-8332]"
     <> line
-    <> flow "Stack failed to create project-level YAML configuration, as it \
+    <> flow "Stack failed to create project-level configuration file, as it \
             \was unable to download the index of available snapshots."
     <> blankLine
     <> fillSep
          [ flow "This sometimes happens because Certificate Authorities are \
                 \missing on your system. You can try the Stack command again \
                 \or manually create the configuration file. For help about the \
-                \content of Stack's YAML configuration files, see (for the \
-                \most recent release of Stack)"
+                \content of Stack's configuration files, see (for the most \
+                \recent release of Stack)"
          , style
              Url
-             "http://docs.haskellstack.org/en/stable/yaml_configuration/"
+             "http://docs.haskellstack.org/en/stable/configure/yaml/"
            <> "."
          ]
     <> blankLine
@@ -143,12 +150,12 @@ instance Pretty InitPrettyException where
     <> bulletedList (map (fromString . show) (NE.toList names))
     <> blankLine
     <> resolveOptions
-  pretty (ResolverMismatch resolver errDesc) =
+  pretty (SnapshotMismatch snapshot errDesc) =
     "[S-6395]"
     <> line
     <> fillSep
          [ "Snapshot"
-         , style Url (pretty $ PrettyRawSnapshotLocation resolver)
+         , style Url (pretty $ PrettyRawSnapshotLocation snapshot)
          , flow "does not have a matching compiler to build some or all of \
                 \your package(s)."
          ]
@@ -156,12 +163,12 @@ instance Pretty InitPrettyException where
     <> indent 4 (string errDesc)
     <> line
     <> resolveOptions
-  pretty (ResolverPartial resolver errDesc) =
+  pretty (SnapshotPartial snapshot errDesc) =
     "[S-2422]"
     <> line
     <> fillSep
          [ "Snapshot"
-         , style Url (pretty $ PrettyRawSnapshotLocation resolver)
+         , style Url (pretty $ PrettyRawSnapshotLocation snapshot)
          , flow "does not have all the packages to match your requirements."
          ]
     <> blankLine
@@ -206,16 +213,16 @@ initCmd initOpts = do
   pwd <- getCurrentDir
   go <- view globalOptsL
   withGlobalProject $
-    withConfig YesReexec (initProject pwd initOpts go.resolver)
+    withConfig YesReexec (initProject pwd initOpts go.snapshot)
 
 -- | Generate a @stack.yaml@ file.
 initProject ::
      (HasConfig env, HasGHCVariant env)
   => Path Abs Dir
   -> InitOpts
-  -> Maybe AbstractResolver
+  -> Maybe AbstractSnapshot
   -> RIO env ()
-initProject currDir initOpts mresolver = do
+initProject currDir initOpts mASnapshot = do
   let dest = currDir </> stackDotYaml
   reldest <- toFilePath <$> makeRelativeToCurrentDir dest
   exists <- doesFileExist dest
@@ -244,34 +251,41 @@ initProject currDir initOpts mresolver = do
         let absDir = parent fp
         in  ResolvedPath (RelFilePath $ T.pack $ makeRelDir absDir) absDir
       pkgDirs = Map.map (fpToPkgDir . fst) bundle
-  (snapshotLoc, flags, extraDeps, rbundle) <-
-    getDefaultResolver initOpts mresolver pkgDirs
+  defaultInitSnapshot <- view $ configL . to (.defaultInitSnapshot)
+  let mASnapshot' = getFirst $ First mASnapshot <> defaultInitSnapshot
+  (snapshot, flags, extraDeps, rbundle) <-
+    getDefaultSnapshot initOpts mASnapshot' pkgDirs
   let ignored = Map.difference bundle rbundle
       dupPkgMsg
-        | dupPkgs /= [] =
+        | dupPkgs /= [] = Just
             "Warning (added by new or init): Some packages were found to have \
-            \names conflicting with others and have been commented out in the \
-            \packages section.\n"
-        | otherwise = ""
+            \names\n\
+            \conflicting with others and have been commented out in the \
+            \packages section."
+        | otherwise = Nothing
       missingPkgMsg
-        | Map.size ignored > 0 =
+        | Map.size ignored > 0 = Just
             "Warning (added by new or init): Some packages were found to be \
-            \incompatible with the resolver and have been left commented out \
-            \in the packages section.\n"
-        | otherwise = ""
+            \incompatible\n\
+            \with the snapshot and have been left commented out in the \
+            \packages section."
+        | otherwise = Nothing
       extraDepMsg
-        | Map.size extraDeps > 0 =
-            "Warning (added by new or init): Specified resolver could not \
-            \satisfy all dependencies. Some external packages have been added \
-            \as dependencies.\n"
-        | otherwise = ""
-      makeUserMsg msgs =
-        let msg = concat msgs
-        in  if msg /= ""
-              then
-                   msg
-                <> "You can omit this message by removing it from stack.yaml\n"
-              else ""
+        | Map.size extraDeps > 0 = Just
+            "Warning (added by new or init): Specified snapshot could not \
+            \satisfy all\n\
+            \dependencies. Some external packages have been added as \
+            \dependencies."
+        | otherwise = Nothing
+      removalMsg =
+        "You can omit this message by removing it from the project-level \
+        \configuration\n\
+        \file."
+      makeUserMsg mMsgs =
+        let msgs = catMaybes mMsgs
+        in  if null msgs
+              then Nothing
+              else Just $ intercalate "\n\n" (msgs <> [removalMsg]) <> "\n"
       userMsg = makeUserMsg [dupPkgMsg, missingPkgMsg, extraDepMsg]
       gpdByDir =
         Map.fromList [ (parent fp, gpd) | (fp, gpd) <- Map.elems bundle]
@@ -282,11 +296,11 @@ initProject currDir initOpts mresolver = do
       completePackageLocation
         (RPLIHackage (PackageIdentifierRevision n v CFILatest) Nothing)
   let project = Project
-        { userMsg = if userMsg == "" then Nothing else Just userMsg
+        { userMsg
         , packages = resolvedRelative <$> Map.elems rbundle
         , extraDeps = map toRawPL deps
         , flagsByPkg = removeSrcPkgDefaultFlags gpds flags
-        , resolver = snapshotLoc
+        , snapshot
         , compiler = Nothing
         , extraPackageDBs = []
         , curator = Nothing
@@ -294,9 +308,9 @@ initProject currDir initOpts mresolver = do
         }
       makeRel = fmap toFilePath . makeRelativeToCurrentDir
   prettyInfoL
-    [ flow "Initialising Stack's project-level YAML configuration file \
-           \using snapshot"
-    , pretty (PrettyRawSnapshotLocation snapshotLoc) <> "."
+    [ flow "Initialising Stack's project-level configuration file using \
+           \snapshot"
+    , pretty (PrettyRawSnapshotLocation snapshot) <> "."
     ]
   prettyInfoL $
     let n = Map.size bundle + length dupPkgs
@@ -340,7 +354,7 @@ initProject currDir initOpts mresolver = do
     (Map.elems $ fmap (makeRelDir . parent . fst) ignored)
     (map (makeRelDir . parent) dupPkgs)
   prettyInfoS
-    "Stack's project-level YAML configuration file has been initialised."
+    "Stack's project-level configuration file has been initialised."
 
 -- | Render a stack.yaml file with comments, see:
 -- https://github.com/commercialhaskell/stack/issues/226
@@ -369,9 +383,8 @@ renderStackYaml p ignoredPackages dupPackages =
    where
     convert v = B.byteString (Yaml.encode $ Yaml.object [(name, v)])
 
-    -- Some fields in stack.yaml are optional and may not be
-    -- generated. For these, we provided commented out dummy
-    -- values to go along with the comments.
+    -- Some keys in stack.yaml are optional and may not be generated. For these,
+    -- we provided commented out dummy values to go along with the comments.
     nonPresentValue "extra-deps" = Just "# extra-deps: []\n"
     nonPresentValue "flags" = Just "# flags: {}\n"
     nonPresentValue "extra-package-dbs" = Just "# extra-package-dbs: []\n"
@@ -405,10 +418,10 @@ renderStackYaml p ignoredPackages dupPackages =
   -- Per Section Help
   comments =
     [ ("user-message"     , userMsgHelp)
-    , ("resolver"         , resolverHelp)
+    , ("snapshot"         , snapshotHelp)
     , ("packages"         , packageHelp)
     , ("extra-deps"       , extraDepsHelp)
-    , ("flags"            , "# Override default flag values for local packages and extra-deps")
+    , ("flags"            , "# Override default flag values for project packages and extra-deps")
     , ("extra-package-dbs", "# Extra package databases containing global packages")
     ]
   -- Help strings
@@ -417,22 +430,22 @@ renderStackYaml p ignoredPackages dupPackages =
     , ""
     , "Some commonly used options have been documented as comments in this file."
     , "For advanced use and comprehensive documentation of the format, please see:"
-    , "https://docs.haskellstack.org/en/stable/yaml_configuration/"
+    , "https://docs.haskellstack.org/en/stable/configure/yaml/"
     ]
-  resolverHelp = commentHelp
-    [ "Resolver to choose a 'specific' stackage snapshot or a compiler version."
+  snapshotHelp = commentHelp
+    [ "A 'specific' Stackage snapshot or a compiler version."
     , "A snapshot resolver dictates the compiler version and the set of packages"
     , "to be used for project dependencies. For example:"
     , ""
-    , "resolver: lts-22.21"
-    , "resolver: nightly-2024-05-06"
-    , "resolver: ghc-9.6.5"
+    , "snapshot: lts-23.24"
+    , "snapshot: nightly-2025-06-15"
+    , "snapshot: ghc-9.8.4"
     , ""
     , "The location of a snapshot can be provided as a file or url. Stack assumes"
     , "a snapshot provided as a file might change, whereas a url resource does not."
     , ""
-    , "resolver: ./custom-snapshot.yaml"
-    , "resolver: https://example.com/snapshots/2023-01-01.yaml"
+    , "snapshot: ./custom-snapshot.yaml"
+    , "snapshot: https://example.com/snapshots/2024-01-01.yaml"
     ]
   userMsgHelp = commentHelp
     [ "A warning or info to be displayed to the user on config load." ]
@@ -448,7 +461,7 @@ renderStackYaml p ignoredPackages dupPackages =
     , "  - wai"
     ]
   extraDepsHelp = commentHelp
-    [ "Dependency packages to be pulled from upstream that are not in the resolver."
+    [ "Dependency packages to be pulled from upstream that are not in the snapshot."
     , "These entries can reference officially published versions as well as"
     , "forks / in-progress versions pinned to a git hash. For example:"
     , ""
@@ -484,11 +497,11 @@ getSnapshots' = catchAny
   getSnapshots
   (prettyThrowIO . SnapshotDownloadFailure)
 
--- | Get the default resolver value
-getDefaultResolver ::
+-- | Get the default snapshot value
+getDefaultSnapshot ::
      (HasConfig env, HasGHCVariant env)
   => InitOpts
-  -> Maybe AbstractResolver
+  -> Maybe AbstractSnapshot
   -> Map PackageName (ResolvedPath Dir)
   -- ^ Src package name: cabal dir
   -> RIO env
@@ -496,21 +509,21 @@ getDefaultResolver ::
        , Map PackageName (Map FlagName Bool)
        , Map PackageName Version
        , Map PackageName (ResolvedPath Dir))
-     -- ^ ( Resolver
+     -- ^ ( Snapshot
      --   , Flags for src packages and extra deps
      --   , Extra dependencies
      --   , Src packages actually considered)
-getDefaultResolver initOpts mresolver pkgDirs = do
-  (candidate, loc) <- case mresolver of
-    Nothing -> selectSnapResolver
-    Just ar -> do
-      sl <- makeConcreteResolver ar
+getDefaultSnapshot initOpts mASnapshot pkgDirs = do
+  (candidate, loc) <- case mASnapshot of
+    Nothing -> selectSnapshot
+    Just as -> do
+      sl <- makeConcreteSnapshot as
       c <- loadProjectSnapshotCandidate sl NoPrintWarnings False
       pure (c, sl)
-  getWorkingResolverPlan initOpts pkgDirs candidate loc
+  getWorkingSnapshotPlan initOpts pkgDirs candidate loc
  where
   -- TODO support selecting best across regular and custom snapshots
-  selectSnapResolver = do
+  selectSnapshot = do
     snaps <- fmap getRecommendedSnapshots getSnapshots'
     (c, l, r) <- selectBestSnapshot (Map.elems pkgDirs) snaps
     case r of
@@ -518,7 +531,7 @@ getDefaultResolver initOpts mresolver pkgDirs = do
               -> prettyThrowM $ NoMatchingSnapshot snaps
       _ -> pure (c, l)
 
-getWorkingResolverPlan ::
+getWorkingSnapshotPlan ::
      (HasConfig env, HasGHCVariant env)
   => InitOpts
   -> Map PackageName (ResolvedPath Dir)
@@ -530,11 +543,11 @@ getWorkingResolverPlan ::
        , Map PackageName (Map FlagName Bool)
        , Map PackageName Version
        , Map PackageName (ResolvedPath Dir))
-     -- ^ ( SnapshotDef
+     -- ^ ( Raw snapshot location
      --   , Flags for src packages and extra deps
      --   , Extra dependencies
      --   , Src packages actually considered)
-getWorkingResolverPlan initOpts pkgDirs0 snapCandidate snapLoc = do
+getWorkingSnapshotPlan initOpts pkgDirs0 snapCandidate snapLoc = do
   prettyInfoL
     [ flow "Selected the snapshot"
     , pretty (PrettyRawSnapshotLocation snapLoc) <> "."
@@ -542,7 +555,7 @@ getWorkingResolverPlan initOpts pkgDirs0 snapCandidate snapLoc = do
   go pkgDirs0
  where
   go pkgDirs = do
-    eres <- checkBundleResolver initOpts snapLoc snapCandidate (Map.elems pkgDirs)
+    eres <- checkBundleSnapshot initOpts snapLoc snapCandidate (Map.elems pkgDirs)
     -- if some packages failed try again using the rest
     case eres of
       Right (f, edeps)-> pure (snapLoc, f, edeps, pkgDirs)
@@ -550,7 +563,7 @@ getWorkingResolverPlan initOpts pkgDirs0 snapCandidate snapLoc = do
         | Map.null available -> do
             prettyWarnS
               "Could not find a working plan for any of the user packages. \
-              \Proceeding to create a YAML configuration file anyway."
+              \Proceeding to create a project-level configuration file anyway."
             pure (snapLoc, Map.empty, Map.empty, Map.empty)
         | otherwise -> do
             when (Map.size available == Map.size pkgDirs) $
@@ -576,7 +589,7 @@ getWorkingResolverPlan initOpts pkgDirs0 snapCandidate snapLoc = do
         isAvailable k _ = k `notElem` ignored
         available       = Map.filterWithKey isAvailable pkgDirs
 
-checkBundleResolver ::
+checkBundleSnapshot ::
      (HasConfig env, HasGHCVariant env)
   => InitOpts
   -> RawSnapshotLocation
@@ -586,7 +599,7 @@ checkBundleResolver ::
   -> RIO env
        (Either [PackageName] ( Map PackageName (Map FlagName Bool)
                              , Map PackageName Version))
-checkBundleResolver initOpts snapshotLoc snapCandidate pkgDirs = do
+checkBundleSnapshot initOpts snapshotLoc snapCandidate pkgDirs = do
   result <- checkSnapBuildPlan pkgDirs Nothing snapCandidate
   case result of
     BuildPlanCheckOk f -> pure $ Right (f, Map.empty)
@@ -597,23 +610,23 @@ checkBundleResolver initOpts snapshotLoc snapCandidate pkgDirs = do
           prettyWarnS "Omitting packages with unsatisfied dependencies"
           pure $ Left $ failedUserPkgs e
         else
-          prettyThrowM $ ResolverPartial snapshotLoc (show result)
+          prettyThrowM $ SnapshotPartial snapshotLoc (show result)
     BuildPlanCheckFail _ e _
       | initOpts.omitPackages -> do
           prettyWarn $
                fillSep
-                 [ "Resolver compiler mismatch:"
+                 [ "Snapshot compiler mismatch:"
                  , style Current (fromString . T.unpack $ textDisplay snapshotLoc)
                  ]
             <> line
             <> indent 4 (string $ show result)
           pure $ Left $ failedUserPkgs e
-      | otherwise -> prettyThrowM $ ResolverMismatch snapshotLoc (show result)
+      | otherwise -> prettyThrowM $ SnapshotMismatch snapshotLoc (show result)
  where
   warnPartial res = do
     prettyWarn $
          fillSep
-           [ "Resolver"
+           [ "Snapshot"
            , style Current (fromString . T.unpack $ textDisplay snapshotLoc)
            , flow "will need external packages:"
            ]
@@ -636,8 +649,8 @@ getRecommendedSnapshots snapshots =
 -- |Yields the minimum LTS supported by Stack.
 minSupportedLts :: SnapName
 -- See https://github.com/commercialhaskell/stack/blob/master/ChangeLog.md
--- under Stack version 2.1.1.
-minSupportedLts = LTS 3 0
+-- under Stack version 3.1.1.
+minSupportedLts = LTS 12 0
 
 findCabalDirs ::
      HasConfig env
@@ -669,8 +682,8 @@ cabalPackagesCheck cabaldirs = do
   when (null cabaldirs) $
     prettyWarn $
          fillSep
-           [ flow "Stack did not find any local package directories. You may \
-                  \want to create a package with"
+           [ flow "Stack did not find any local directories containing a \
+                  \package description. You may want to create a package with"
            , style Shell (flow "stack new")
            , flow "instead."
            ]

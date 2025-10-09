@@ -2,10 +2,16 @@
 {-# LANGUAGE NoFieldSelectors    #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 
+{-|
+Module      : Stack.Types.EnvConfig
+License     : BSD-3-Clause
+-}
+
 module Stack.Types.EnvConfig
   ( EnvConfig (..)
   , HasEnvConfig (..)
   , HasSourceMap (..)
+  , IsPath (..)
   , actualCompilerVersionL
   , appropriateGhcColorFlag
   , bindirCompilerTools
@@ -33,23 +39,22 @@ import qualified Data.ByteArray.Encoding as Mem ( Base(Base16), convertToBase )
 import qualified Data.ByteString.Char8 as S8
 import qualified Data.Text as T
 import qualified Distribution.Text ( display )
-import           Distribution.Version ( mkVersion )
 import           Path
                    ( (</>), parseAbsDir, parseAbsFile, parseRelDir
                    , parseRelFile
                    )
 import           RIO.Process ( HasProcessContext (..) )
 import           Stack.Constants
-                   ( bindirSuffix, ghcColorForceFlag, osIsWindows, relDirCompilerTools
-                   , relDirHoogle, relDirHpc, relDirInstall, relDirPkgdb
-                   , relDirSnapshots, relFileDatabaseHoo
+                   ( bindirSuffix, ghcColorForceFlag, osIsWindows
+                   , relDirCompilerTools, relDirHoogle, relDirHpc, relDirInstall
+                   , relDirPkgdb, relDirSnapshots, relFileDatabaseHoo
                    )
 import           Stack.Prelude
 import           Stack.Types.BuildConfig
-                    ( BuildConfig (..), HasBuildConfig (..), getProjectWorkDir )
+                    ( BuildConfig (..), HasBuildConfig (..), getWorkDir )
 import           Stack.Types.BuildOptsCLI ( BuildOptsCLI )
 import           Stack.Types.Compiler
-                   ( ActualCompiler (..), compilerVersionString, getGhcVersion )
+                   ( ActualCompiler (..), compilerVersionString )
 import           Stack.Types.CompilerBuild ( compilerBuildSuffix )
 import           Stack.Types.CompilerPaths
                    ( CompilerPaths (..), HasCompiler (..) )
@@ -129,11 +134,7 @@ instance HasSourceMap EnvConfig where
 shouldForceGhcColorFlag ::
      (HasEnvConfig env, HasRunner env)
   => RIO env Bool
-shouldForceGhcColorFlag = do
-  canDoColor <- (>= mkVersion [8, 2, 1]) . getGhcVersion
-            <$> view actualCompilerVersionL
-  shouldDoColor <- view useColorL
-  pure $ canDoColor && shouldDoColor
+shouldForceGhcColorFlag = view useColorL
 
 appropriateGhcColorFlag ::
      (HasEnvConfig env, HasRunner env)
@@ -163,7 +164,7 @@ installationRootDeps = do
 -- | Installation root for locals
 installationRootLocal :: HasEnvConfig env => RIO env (Path Abs Dir)
 installationRootLocal = do
-  workDir <- getProjectWorkDir
+  workDir <- getWorkDir
   psc <- useShaPathOnWindows =<< platformSnapAndCompilerRel
   pure $ workDir </> relDirInstall </> psc
 
@@ -212,7 +213,7 @@ bindirCompilerTools = do
 -- | Hoogle directory.
 hoogleRoot :: HasEnvConfig env => RIO env (Path Abs Dir)
 hoogleRoot = do
-  workDir <- getProjectWorkDir
+  workDir <- getWorkDir
   psc <- useShaPathOnWindows =<< platformSnapAndCompilerRel
   pure $ workDir </> relDirHoogle </> psc
 
@@ -231,7 +232,7 @@ packageDatabaseDeps = do
   root <- installationRootDeps
   pure $ root </> relDirPkgdb
 
--- | Package database for installing local packages into
+-- | Package database for installing project packages and local extra-deps into.
 packageDatabaseLocal :: HasEnvConfig env => RIO env (Path Abs Dir)
 packageDatabaseLocal = do
   root <- installationRootLocal
@@ -262,8 +263,8 @@ extraBinDirs = do
     else [deps </> bindirSuffix, tools]
 
 -- | The version of the compiler which will actually be used. May be different
--- than that specified in the 'SnapshotDef' and returned by
--- 'wantedCompilerVersionL'.
+-- than that specified in the snapshot and returned by
+-- 'Stack.Types.BuildConfig.wantedCompilerVersionL'.
 actualCompilerVersionL :: HasSourceMap env => SimpleGetter env ActualCompiler
 actualCompilerVersionL = sourceMapL . to (.compiler)
 

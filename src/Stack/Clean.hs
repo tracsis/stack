@@ -2,7 +2,14 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings   #-}
 
--- | Types and functions related to Stack's @clean@ and @purge@ commands.
+{-|
+Module      : Stack.Clean
+Description : Types and functions related to Stack's @clean@ and @purge@ commands.
+License     : BSD-3-Clause
+
+Types and functions related to Stack's @clean@ and @purge@ commands.
+-}
+
 module Stack.Clean
   ( CleanOpts (..)
   , CleanCommand (..)
@@ -18,7 +25,7 @@ import           Stack.Constants.Config ( rootDistDirFromDir, workDirFromDir )
 import           Stack.Prelude
 import           Stack.Runners ( ShouldReexec (..), withConfig )
 import           Stack.Types.BuildConfig
-                   ( BuildConfig (..), HasBuildConfig (..), getProjectWorkDir )
+                   ( BuildConfig (..), HasBuildConfig (..), getWorkDir )
 import           Stack.Types.Config ( Config )
 import           Stack.Types.Runner ( Runner )
 import           Stack.Types.SourceMap ( SMWanted (..), ppRoot )
@@ -49,8 +56,8 @@ instance Exception CleanException where
 data CleanOpts
   = CleanShallow [PackageName]
     -- ^ Delete the "dist directories" as defined in
-    -- 'Stack.Constants.Config.distRelativeDir' for the given local packages. If
-    -- no packages are given, all project packages should be cleaned.
+    -- 'Stack.Constants.Config.distRelativeDir' for the given project packages.
+    -- If no project packages are given, all project packages should be cleaned.
   | CleanFull
     -- ^ Delete all work directories in the project.
 
@@ -94,5 +101,5 @@ dirsToDelete cleanOpts = do
         xs -> throwM (NonLocalPackages xs)
     CleanFull -> do
       pkgWorkDirs <- mapM (workDirFromDir . ppRoot) $ Map.elems packages
-      projectWorkDir <- getProjectWorkDir
+      projectWorkDir <- getWorkDir
       pure (projectWorkDir : pkgWorkDirs)

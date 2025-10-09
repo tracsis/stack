@@ -1,8 +1,14 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Function to parse command line arguments for Stack's @dot@ command and
--- certain command line arguments for Stack's @ls dependencies@ command.
+{-|
+Module      : Stack.Options.DotParser
+License     : BSD-3-Clause
+
+Function to parse command line arguments for Stack's @dot@ command and certain
+command line arguments for Stack's @ls dependencies@ command.
+-}
+
 module Stack.Options.DotParser
   ( dotOptsParser
   ) where
@@ -12,11 +18,12 @@ import           Data.List.Split ( splitOn )
 import qualified Data.Set as Set
 import           Distribution.Types.PackageName ( mkPackageName )
 import           Options.Applicative
-                   ( Parser, auto, help, idm, long, metavar, option, strOption
-                   , switch
+                   ( Parser, auto, completer, help, idm, long, metavar, option
+                   , strOption, switch
                    )
-import           Options.Applicative.Builder.Extra ( boolFlags )
-import           Stack.Options.BuildParser ( flagsParser, targetsParser )
+import           Options.Applicative.Builder.Extra ( boolFlags, textArgument )
+import           Stack.Options.Completion ( targetCompleter )
+import           Stack.Options.FlagsParser ( flagsParser )
 import           Stack.Prelude
 import           Stack.Types.DotOpts ( DotOpts (..) )
 
@@ -52,6 +59,17 @@ dotOptsParser externalDefault = DotOpts
     <> help "Prune specified package(s). PACKAGES is a comma-separated list of \
             \package names."
     ))
+
+  targetsParser :: Parser [Text]
+  targetsParser =
+    many (textArgument
+      (  metavar "TARGET"
+      <> completer targetCompleter
+      <> help "Can be specified multiple times. If none specified, use all \
+              \project packages. Ignores project package components and \
+              \non-project packages."
+      ))
+
   testTargets = switch
     (  long "test"
     <> help "Consider dependencies of test components."
@@ -71,6 +89,6 @@ dotOptsParser externalDefault = DotOpts
 
   globalHints = switch
     (  long "global-hints"
-    <> help "Do not require an install GHC; instead, use a hints file for \
+    <> help "Do not require an installed GHC; instead, use a hints file for \
             \global packages."
     )

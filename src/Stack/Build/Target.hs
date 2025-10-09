@@ -8,57 +8,62 @@
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE ViewPatterns          #-}
 
--- | Parsing command line targets
---
--- There are two relevant data sources for performing this parsing: the project
--- configuration, and command line arguments. Project configurations includes
--- the resolver (defining a LoadedSnapshot of global and snapshot packages),
--- local dependencies, and project packages. It also defines local flag
--- overrides.
---
--- The command line arguments specify both additional local flag overrides and
--- targets in their raw form.
---
--- Flags are simple: we just combine CLI flags with config flags and make one
--- big map of flags, preferring CLI flags when present.
---
--- Raw targets can be a package name, a package name with component, just a
--- component, or a package name and version number. We first must resolve these
--- raw targets into both simple targets and additional dependencies. This works
--- as follows:
---
--- * If a component is specified, find a unique project package which defines
---   that component, and convert it into a name+component target.
---
--- * Ensure that all name+component values refer to valid components in the
---   given project package.
---
--- * For names, check if the name is present in the snapshot, local deps, or
---   project packages. If it is not, then look up the most recent version in the
---   package index and convert to a name+version.
---
--- * For name+version, first ensure that the name is not used by a project
---   package. Next, if that name+version is present in the snapshot or local
---   deps _and_ its location is PLIndex, we have the package. Otherwise, add to
---   local deps with the appropriate PLIndex.
---
--- If in either of the last two bullets we added a package to local deps, print
--- a warning to the user recommending modifying the extra-deps.
---
--- Combine the various 'ResolveResults's together into 'Target' values, by
--- combining various components for a single package and ensuring that no
--- conflicting statements were made about targets.
---
--- At this point, we now have a Map from package name to SimpleTarget, and an
--- updated Map of local dependencies. We still have the aggregated flags, and
--- the snapshot and project packages.
---
--- Finally, we upgrade the snapshot by using calculatePackagePromotion.
+{-|
+Module      : Stack.Build.Target
+Description : Parsing command line targets.
+License     : BSD-3-Clause
+
+Parsing command line targets
+
+There are two relevant data sources for performing this parsing: the project
+configuration, and command line arguments. Project configurations includes the
+snapshot (defining a LoadedSnapshot of global and snapshot packages), local
+dependencies, and project packages. It also defines local flag overrides.
+
+The command line arguments specify both additional local flag overrides and
+targets in their raw form.
+
+Flags are simple: we just combine CLI flags with config flags and make one big
+map of flags, preferring CLI flags when present.
+
+Raw targets can be a package name, a package name with component, just a
+component, or a package name and version number. We first must resolve these raw
+targets into both simple targets and additional dependencies. This works as
+follows:
+
+* If a component is specified, find a unique project package which defines that
+  component, and convert it into a name+component target.
+
+* Ensure that all name+component values refer to valid components in the given
+  project package.
+
+* For names, check if the name is present in the snapshot, local deps, or
+  project packages. If it is not, then look up the most recent version in the
+  package index and convert to a name+version.
+
+* For name+version, first ensure that the name is not used by a project
+  package. Next, if that name+version is present in the snapshot or local deps
+  _and_ its location is PLIndex, we have the package. Otherwise, add to local
+  deps with the appropriate PLIndex.
+
+If in either of the last two bullets we added a package to local deps, print a
+warning to the user recommending modifying the extra-deps.
+
+Combine the various t'ResolveResult's together into t'Target' values, by
+combining various components for a single package and ensuring that no
+conflicting statements were made about targets.
+
+At this point, we now have a Map from package name to SimpleTarget, and an
+updated Map of local dependencies. We still have the aggregated flags, and the
+snapshot and project packages.
+
+Finally, we upgrade the snapshot by using calculatePackagePromotion.
+-}
+
 module Stack.Build.Target
   ( -- * Types
     Target (..)
   , NeedTargets (..)
-  , PackageType (..)
   , parseTargets
     -- * Convenience helpers
   , gpdVersion
@@ -66,6 +71,8 @@ module Stack.Build.Target
   , parseRawTarget
   , RawTarget (..)
   , UnresolvedComponent (..)
+  , ComponentName
+  , ResolveResult
   ) where
 
 import qualified Data.Map as Map
@@ -80,6 +87,7 @@ import           Stack.Prelude
 import           Stack.Types.BuildConfig
                    ( BuildConfig (..), HasBuildConfig (..) )
 import           Stack.Types.BuildOptsCLI ( BuildOptsCLI (..) )
+import           Stack.Types.ComponentUtils ( unqualCompFromText )
 import           Stack.Types.Config ( Config (..) )
 import           Stack.Types.NamedComponent
                    ( NamedComponent (..), renderComponent )
@@ -147,11 +155,12 @@ data RawTarget
   deriving (Eq, Show)
 
 -- | Same as @parseRawTarget@, but also takes directories into account.
-parseRawTargetDirs :: MonadIO m
-                   => Path Abs Dir -- ^ current directory
-                   -> Map PackageName ProjectPackage
-                   -> RawInput -- ^ raw target information from the commandline
-                   -> m (Either StyleDoc [(RawInput, RawTarget)])
+parseRawTargetDirs ::
+     MonadIO m
+  => Path Abs Dir -- ^ current directory
+  -> Map PackageName ProjectPackage
+  -> RawInput -- ^ raw target information from the commandline
+  -> m (Either StyleDoc [(RawInput, RawTarget)])
 parseRawTargetDirs root locals ri =
   case parseRawTarget t of
     Just rt -> pure $ Right [(ri, rt)]
@@ -171,8 +180,8 @@ parseRawTargetDirs root locals ri =
             [] -> pure $ Left $
               fillSep
                 [ style Dir (fromString $ T.unpack t)
-                , flow "is not a local package directory and it is not a \
-                       \parent directory of any local package directory."
+                , flow "is not a local directory for a package and it is not a \
+                       \parent directory of any such directory."
                 ]
             names -> pure $ Right $ map ((ri, ) . RTPackage) names
  where
@@ -226,15 +235,16 @@ parseRawTarget t =
 
   parseCompType t' =
     case t' of
-      "exe" -> Just CExe
-      "test" -> Just CTest
-      "bench" -> Just CBench
+      "exe" -> Just (CExe . unqualCompFromText)
+      "test" -> Just (CTest . unqualCompFromText)
+      "bench" -> Just (CBench . unqualCompFromText)
       _ -> Nothing
 
 --------------------------------------------------------------------------------
 -- Resolve the raw targets
 --------------------------------------------------------------------------------
 
+-- | A type representing results of resolving a raw target.
 data ResolveResult = ResolveResult
   { name :: !PackageName
   , rawInput :: !RawInput
@@ -245,7 +255,7 @@ data ResolveResult = ResolveResult
   , packageType :: !PackageType
   }
 
--- | Convert a 'RawTarget' into a 'ResolveResult' (see description on the
+-- | Convert a 'RawTarget' into a t'ResolveResult' (see description on the
 -- module).
 resolveRawTarget ::
      (HasLogFunc env, HasPantryConfig env, HasProcessContext env)
@@ -263,11 +273,14 @@ resolveRawTarget sma allLocs (rawInput, rt) =
   -- 'ComponentName'
   isCompNamed :: ComponentName -> NamedComponent -> Bool
   isCompNamed _ CLib = False
-  isCompNamed t1 (CSubLib t2) = t1 == t2
-  isCompNamed t1 (CExe t2) = t1 == t2
-  isCompNamed t1 (CFlib t2) = t1 == t2
-  isCompNamed t1 (CTest t2) = t1 == t2
-  isCompNamed t1 (CBench t2) = t1 == t2
+  isCompNamed t1 t2 = case t2 of
+    (CSubLib t2') -> t1' == t2'
+    (CExe t2') -> t1' == t2'
+    (CFlib t2') -> t1' == t2'
+    (CTest t2') -> t1' == t2'
+    (CBench t2') -> t1' == t2'
+   where
+    t1' = unqualCompFromText t1
 
   go (RTComponent cname) = do
     -- Associated list from component name to package that defines it. We use an
@@ -316,7 +329,7 @@ resolveRawTarget sma allLocs (rawInput, rt) =
     case Map.lookup name locals of
       Nothing -> pure $ Left $
         fillSep
-          [ flow "Unknown local package:"
+          [ flow "Unknown project package:"
           , style Target (fromPackageName name) <> "."
           ]
       Just pp -> do
@@ -393,12 +406,13 @@ resolveRawTarget sma allLocs (rawInput, rt) =
   go (RTPackageIdentifier ident@(PackageIdentifier name version))
     | Map.member name locals = pure $ Left $
         fillSep
-          [ style Target (fromPackageName name)
-          , flow "target has a specific version number, but it is a local \
-                 \package. To avoid confusion, we will not install the \
-                 \specified version or build the local one. To build the \
-                 \local package, specify the target without an explicit \
-                 \version."
+          [ style Target (fromPackageId ident)
+          , flow "is a specific package version, but"
+          , style Target (fromPackageName name)
+          , flow "is the name of a project package. To avoid confusion, Stack \
+                 \will not try to build the specified version or the project \
+                 \package. To build the project package, specify only"
+          , style Current (fromPackageName name) <> "."
           ]
     | otherwise =
         case Map.lookup name allLocs of
@@ -412,15 +426,13 @@ resolveRawTarget sma allLocs (rawInput, rt) =
             ) ->
               if version == versionLoc
                 then pure $ deferToConstructPlan name
-                else hackageLatestRevision name version
+                else hackageLatestRevision name version versionLoc
           -- The package was coming from something besides the index, so refuse
           -- to do the override
           Just loc' -> pure $ Left $
             fillSep
-              [ flow "Package with identifier was targeted on the command \
-                     \line:"
-              , style Target (fromPackageId ident) <> ","
-              , flow "but it was specified from a non-index location:"
+              [ style Target (fromPackageId ident)
+              , flow "was specified from a non-index location, namely:"
               , flow $ T.unpack $ textDisplay loc' <> "."
               , flow "Recommendation: add the correctly desired version to \
                      \extra-deps."
@@ -429,7 +441,14 @@ resolveRawTarget sma allLocs (rawInput, rt) =
           Nothing -> do
             mrev <- getLatestHackageRevision YesRequireHackageIndex name version
             pure $ case mrev of
-              Nothing -> deferToConstructPlan name
+              Nothing -> Left $
+                fillSep
+                  [ flow "Stack did not know the location of a package named"
+                  , style Target (fromPackageName name)
+                  , "and could not find"
+                  , style Target (fromPackageId ident)
+                  , flow "in the package index."
+                  ]
               Just (_rev, cfKey, treeKey) -> Right ResolveResult
                 { name
                 , rawInput
@@ -453,10 +472,20 @@ resolveRawTarget sma allLocs (rawInput, rt) =
           , packageType = PTDependency
           }
 
-  hackageLatestRevision name version = do
+  hackageLatestRevision name version versionLoc = do
     mrev <- getLatestHackageRevision YesRequireHackageIndex name version
     pure $ case mrev of
-      Nothing -> deferToConstructPlan name
+      Nothing ->  Left $
+        fillSep
+          [ flow "Stack knows the location of"
+          , style Current (fromPackageId pkgId')
+          , flow "but did not know the location of"
+          , style Target (fromPackageId pkgId) <>","
+          , flow "and did not find it in the package index."
+          ]
+       where
+        pkgId = PackageIdentifier name version
+        pkgId' = PackageIdentifier name versionLoc
       Just (_rev, cfKey, treeKey) -> Right ResolveResult
         { name
         , rawInput
@@ -530,10 +559,13 @@ combineResolveResults results = do
 -- OK, let's do it!
 --------------------------------------------------------------------------------
 
+-- | Parse targets and dependencies from the given command line arguments and
+-- source map.
 parseTargets ::
      HasBuildConfig env
   => NeedTargets
   -> Bool
+     -- ^ Should Haddock documentation be built for the package?
   -> BuildOptsCLI
   -> SMActual GlobalPackage
   -> RIO env SMTargets
@@ -572,8 +604,8 @@ parseTargets needTargets haddockDeps boptscli smActual = do
             ]
       | null textTargets' && Map.null locals ->
           prettyThrowIO $ TargetParseException
-            [ flow "The project contains no local packages (packages not \
-                   \marked with 'extra-dep')."
+            [ flow "The project contains no project packages (packages other \
+                   \than extra-deps)."
             ]
       | otherwise -> prettyThrowIO $ TargetParseException
           [ flow "The specified targets matched no packages." ]

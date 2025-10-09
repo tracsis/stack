@@ -3,7 +3,14 @@
 {-# LANGUAGE OverloadedRecordDot   #-}
 {-# LANGUAGE OverloadedStrings     #-}
 
--- | Configuration options for building from the command line only.
+{-|
+Module      : Stack.Types.BuildOptsCLI
+Description : Configuration options for building from the command line only.
+License     : BSD-3-Clause
+
+Configuration options for building from the command line only.
+-}
+
 module Stack.Types.BuildOptsCLI
   ( BuildOptsCLI (..)
   , defaultBuildOptsCLI
@@ -19,13 +26,15 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import           Stack.Prelude
 
--- | Build options that may only be specified from the CLI
+-- | Build options that are specified from the CLI and not specified as
+-- non-project specific configuration options under the build key.
 data BuildOptsCLI = BuildOptsCLI
   { targetsCLI :: ![Text]
   , dryrun :: !Bool
   , ghcOptions :: ![Text]
   , progsOptions :: ![(Text, [Text])]
   , flags :: !(Map ApplyCLIFlag (Map FlagName Bool))
+  , allowNewer :: !(First Bool)
   , buildSubset :: !BuildSubset
   , fileWatch :: !FileWatchOpts
   , watchAll :: !Bool
@@ -41,6 +50,7 @@ defaultBuildOptsCLI = BuildOptsCLI
   { targetsCLI = []
   , dryrun = False
   , flags = Map.empty
+  , allowNewer = mempty
   , ghcOptions = []
   , progsOptions = []
   , buildSubset = BSAll

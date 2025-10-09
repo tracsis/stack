@@ -1,6 +1,11 @@
 {-# LANGUAGE NoImplicitPrelude   #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 
+{-|
+Module      : Stack.CLI
+License     : BSD-3-Clause
+-}
+
 module Stack.CLI
   ( commandLineHandler
   ) where
@@ -10,14 +15,16 @@ import           Data.Char ( toLower )
 import qualified Data.List as L
 import           Data.List.NonEmpty ( prependList )
 import           Options.Applicative
-                   ( Parser, ParserFailure, ParserHelp, ParserResult (..), flag, switch
+                   ( Parser, ParserFailure, ParserHelp, ParserResult (..)
                    , handleParseResult, help, helpError, idm, long, metavar
-                   , overFailure, renderFailure, strArgument, switch )
+                   , overFailure, renderFailure, strArgument, switch
+                   )
 import           Options.Applicative.Help ( errorHelp, stringChunk, vcatChunks )
 import           Options.Applicative.Builder.Extra
                    ( boolFlags, extraHelpOption )
 import           Options.Applicative.Complicated
                    ( addCommand, addSubCommands, complicatedOptions )
+import           Path ( filename )
 import           RIO.NonEmpty ( (<|) )
 import qualified RIO.NonEmpty as NE
 import qualified RIO.Process ( exec )
@@ -25,8 +32,14 @@ import           RIO.Process ( withProcessContextNoLogging )
 import           Stack.Build ( buildCmd )
 import           Stack.BuildInfo ( hpackVersion, versionString' )
 import           Stack.Clean ( CleanCommand (..), cleanCmd )
-import           Stack.ConfigCmd as ConfigCmd
-import           Stack.Constants ( globalFooter, osIsWindows, stackProgName )
+import           Stack.ConfigCmd
+                   ( cfgCmdBuildFiles, cfgCmdBuildFilesName, cfgCmdEnv
+                   , cfgCmdEnvName, cfgCmdName, cfgCmdSet, cfgCmdSetName
+                   )
+import           Stack.Constants
+                   ( globalFooter, osIsWindows, relFileStack, relFileStackDotExe
+                   , stackProgName
+                   )
 import           Stack.Coverage ( hpcReportCmd )
 import           Stack.Docker
                    ( dockerCmdName, dockerHelpOptName, dockerPullCmdName )
@@ -36,10 +49,7 @@ import           Stack.Exec ( SpecialExecCmd (..), execCmd )
 import           Stack.Eval ( evalCmd )
 import           Stack.Ghci ( ghciCmd )
 import           Stack.Hoogle ( hoogleCmd )
-import           Stack.IDE
-                   ( ListPackagesCmd (..), OutputStream (..), idePackagesCmd
-                   , ideTargetsCmd
-                   )
+import           Stack.IDE ( idePackagesCmd, ideTargetsCmd )
 import           Stack.Init ( initCmd )
 import           Stack.List ( listCmd )
 import           Stack.Ls ( lsCmd )
@@ -47,12 +57,15 @@ import           Stack.New ( newCmd )
 import qualified Stack.Nix as Nix
 import           Stack.Options.BuildParser ( buildOptsParser )
 import           Stack.Options.CleanParser ( cleanOptsParser )
+import           Stack.Options.ConfigEnvParser ( configCmdEnvParser )
+import           Stack.Options.ConfigSetParser ( configCmdSetParser )
 import           Stack.Options.DotParser ( dotOptsParser )
 import           Stack.Options.EvalParser ( evalOptsParser )
 import           Stack.Options.ExecParser ( execOptsParser )
 import           Stack.Options.GhciParser ( ghciOptsParser )
 import           Stack.Options.GlobalParser ( globalOptsParser )
 import           Stack.Options.HpcReportParser ( hpcReportOptsParser )
+import           Stack.Options.IdeParser ( idePackagesParser, ideTargetsParser )
 import           Stack.Options.InitParser ( initOptsParser )
 import           Stack.Options.LsParser ( lsOptsParser )
 import           Stack.Options.NewParser ( newOptsParser )
@@ -68,7 +81,9 @@ import qualified Stack.Path ( path )
 import           Stack.Prelude
 import           Stack.Query ( queryCmd )
 import           Stack.Runners
-                   ( ShouldReexec (..), withConfig, withDefaultEnvConfig )
+                   ( ShouldReexec (..), withBuildConfig, withConfig
+                   , withDefaultEnvConfig
+                   )
 import           Stack.SDist ( sdistCmd )
 import           Stack.Script ( ScriptOpts (..), scriptCmd )
 import           Stack.SetupCmd ( setupCmd )
@@ -84,7 +99,7 @@ import           Stack.Update ( updateCmd )
 import           Stack.Upgrade ( upgradeCmd )
 import           Stack.Upload ( uploadCmd )
 import qualified System.Directory as D
-import           System.Environment ( getProgName, withArgs )
+import           System.Environment ( withArgs )
 import           System.FilePath ( pathSeparator, takeDirectory )
 
 -- | Type representing \'pretty\' exceptions thrown by functions in the
@@ -103,9 +118,14 @@ instance Exception CliPrettyException
 commandLineHandler ::
      FilePath
   -> String
+     -- ^ The name of the current Stack executable, as it was invoked.
+  -> Maybe (Path Abs File)
+     -- ^ The path to the current Stack executable, if the operating system
+     -- provides a reliable way to determine it and where a result was
+     -- available.
   -> Bool
   -> IO (GlobalOptsMonoid, RIO Runner ())
-commandLineHandler currentDir progName isInterpreter =
+commandLineHandler currentDir progName mExecutablePath isInterpreter =
   -- Append the relevant default (potentially affecting the LogLevel) *after*
   -- appending the global options of the `stack` command to the global options
   -- of the subcommand - see #5326.
@@ -136,7 +156,7 @@ commandLineHandler currentDir progName isInterpreter =
               parseResultHandler (NE.toList args') f
             else
               secondaryCommandHandler args' f
-                >>= interpreterHandler currentDir args'
+                >>= interpreterHandler progName mExecutablePath currentDir args'
         )
         (NE.nonEmpty args)
       Nothing -> parseResultHandler args f
@@ -215,19 +235,28 @@ commandLineHandler currentDir progName isInterpreter =
     (cleanOptsParser Clean)
 
   config = addSubCommands'
-      ConfigCmd.cfgCmdName
+      cfgCmdName
         "Subcommands for accessing and modifying configuration values."
         ( do
             addCommand'
-              ConfigCmd.cfgCmdSetName
-              "Sets a key in YAML configuration file to value."
+              cfgCmdSetName
+              "Set a key in a configuration file to value."
               (withConfig NoReexec . cfgCmdSet)
               configCmdSetParser
-            addCommand'
-              ConfigCmd.cfgCmdEnvName
+            addCommandWithLocalInstallRootFooter
+              cfgCmdEnvName
               "Print environment variables for use in a shell."
               (withConfig YesReexec . withDefaultEnvConfig . cfgCmdEnv)
               configCmdEnvParser
+            addCommand'
+              cfgCmdBuildFilesName
+              "Generate (when applicable) a Cabal file from a package \
+              \ description in the Hpack format and/or a lock file for Stack's \
+              \project-level configuration."
+              -- It is withBuildConfig that yields the desired actions;
+              -- cfgCmdBuildFiles itself yields nothing of interest.
+              (withConfig YesReexec . withBuildConfig . cfgCmdBuildFiles)
+              (pure ())
         )
 
   docker = addSubCommands'
@@ -263,7 +292,7 @@ commandLineHandler currentDir progName isInterpreter =
     evalCmd
     (evalOptsParser "CODE")
 
-  exec = addCommand'
+  exec = addCommandWithLocalInstallRootFooter
     "exec"
     "Execute a command. If the command is absent, the first of any arguments \
     \is taken as the command."
@@ -328,52 +357,24 @@ commandLineHandler currentDir progName isInterpreter =
   ide = addSubCommands'
     "ide"
     "IDE-specific commands."
-    ( let outputFlag = flag
-            OutputLogInfo
-            OutputStdout
-            (  long "stdout"
-            <> help "Send output to the standard output stream instead of the \
-                    \default, the standard error stream."
-            )
-          cabalFileFlag = flag
-            ListPackageNames
-            ListPackageCabalFiles
-            (  long "cabal-files"
-            <> help "Print paths to package Cabal files instead of package \
-                    \names."
-            )
-          exeFlag = switch
-            (  long "exes"
-            <> help "Include executables."
-            )
-          testFlag = switch
-            (  long "tests"
-            <> help "Include test suites."
-            )
-          benchFlag = switch
-            (  long "benchmarks"
-            <> help "Include benchmarks."
-            )
-       in  do
-             addCommand'
-               "packages"
-               "List all available local loadable packages."
-               idePackagesCmd
-               ((,) <$> outputFlag <*> cabalFileFlag)
-             addCommand'
-               "targets"
-               "List all targets or pick component types to list."
-               ideTargetsCmd
-                 (   (,)
-                 <$> ((,,) <$> exeFlag <*> testFlag <*> benchFlag)
-                 <*> outputFlag
-                 )
+    ( do
+        addCommand'
+          "packages"
+          "List all available local loadable packages."
+          idePackagesCmd
+          idePackagesParser
+        addCommand'
+          "targets"
+          "List all targets or pick component types to list."
+          ideTargetsCmd
+          ideTargetsParser
     )
 
   init = addCommand'
     "init"
     "Create Stack project configuration from Cabal or Hpack package \
-    \specifications."
+    \specifications. If a snapshot is specified at the command line, the \
+    \command will try to use it."
     initCmd
     initOptsParser
 
@@ -385,27 +386,29 @@ commandLineHandler currentDir progName isInterpreter =
 
   list = addCommand'
     "list"
-    "List package id's in snapshot (experimental)."
+    "List package versions included in the package index, or in a specified \
+    \snapshot (directly or indirectly)."
     listCmd
     (many $ strArgument $ metavar "PACKAGE")
 
   ls = addCommand'
     "ls"
-    "List command. (Supports snapshots, dependencies, Stack's styles and \
-    \installed tools.)"
+    "List command. (Supports snapshots, global packages, dependencies, Stack's \
+    \styles and installed tools.)"
     lsCmd
     lsOptsParser
 
   new = addCommand'
     "new"
     "Create a new project from a template. Run 'stack templates' to see \
-    \available templates. Will also initialise if there is no stack.yaml \
-    \file. Note: you can also specify a local file or a remote URL as a \
-    \template; or force an initialisation."
+    \available templates. A local file or a remote URL can be specified as a \
+    \template. Will initialise if there is no stack.yaml file. Initialisation \
+    \may be forced. If a snapshot is specified at the command line, \
+    \initialisation will try to use it."
     newCmd
     newOptsParser
 
-  path = addCommand'
+  path = addCommandWithLocalInstallRootFooter
     "path"
     "Print out handy path information."
     Stack.Path.path
@@ -454,7 +457,7 @@ commandLineHandler currentDir progName isInterpreter =
     "Run a Stack script."
     globalFooter
     scriptCmd
-    (\so gom -> gom { resolverRoot = First $ Just $ takeDirectory so.file })
+    (\so gom -> gom { snapshotRoot = First $ Just $ takeDirectory so.file })
     (globalOpts OtherCmdGlobalOpts)
     scriptOptsParser
 
@@ -513,11 +516,18 @@ commandLineHandler currentDir progName isInterpreter =
     \upgrade Stack."
     (upgradeOptsParser onlyLocalBins)
    where
-    onlyLocalBins =
-         (lowercase progName /= lowercase stackProgName)
-      && not ( osIsWindows
-             && lowercase progName == lowercase (stackProgName <> ".EXE")
-             )
+    isProgNameStack =
+         (lowercase progName == lowercase stackProgName)
+      || (  osIsWindows
+         && lowercase progName == lowercase (stackProgName <> ".EXE")
+         )
+    isRelFileNameStack relFile =
+         (relFile == relFileStack)
+      || (osIsWindows && relFile == relFileStackDotExe )
+    isExecutableNameStack =
+      let mExecutableName = filename <$> mExecutablePath
+      in  maybe False isRelFileNameStack mExecutableName
+    onlyLocalBins = not (isProgNameStack && isExecutableNameStack)
     lowercase = map toLower
 
   upload = addCommand'
@@ -559,6 +569,22 @@ commandLineHandler currentDir progName isInterpreter =
       constr
       (\_ gom -> gom)
       (globalOpts OtherCmdGlobalOpts)
+
+  -- addCommand with custom footer about options affecting the local install
+  --root and hiding global options
+  addCommandWithLocalInstallRootFooter ::
+       String
+    -> String
+    -> (a -> RIO Runner ())
+    -> Parser a
+    -> AddCommand
+  addCommandWithLocalInstallRootFooter cmd title constr =
+    addCommand''
+      cmd
+      title
+      constr
+      "This command also accepts 'stack build' flags and options that affect \
+      \the location of the local project installation root directory."
 
   addSubCommands' ::
        String
@@ -620,9 +646,9 @@ commandLineHandler currentDir progName isInterpreter =
    where
     hide = kind /= OuterGlobalOpts
 
--- | fall-through to external executables in `git` style if they exist
--- (i.e. `stack something` looks for `stack-something` before
--- failing with "Invalid argument `something'")
+-- | fall-through to external executables in \'git\' style if they exist
+-- (i.e. @stack something@ looks for @stack-something@ before failing with
+-- "Invalid argument \'something\'".)
 secondaryCommandHandler ::
      NonEmpty String
   -> ParserFailure ParserHelp
@@ -650,11 +676,17 @@ secondaryCommandHandler args f =
 
 interpreterHandler ::
      Monoid t
-  => FilePath
+  => String
+     -- ^ The name of the current Stack executable, as it was invoked.
+  -> Maybe (Path Abs File)
+     -- ^ The path to the current Stack executable, if the operating system
+     -- provides a reliable way to determine it and where a result was
+     -- available.
+  -> FilePath
   -> NonEmpty String
   -> ParserFailure ParserHelp
   -> IO (GlobalOptsMonoid, (RIO Runner (), t))
-interpreterHandler currentDir args f = do
+interpreterHandler progName mExecutablePath currentDir args f = do
   -- args can include top-level config such as --extra-lib-dirs=... (set by
   -- nix-shell) - we need to find the first argument which is a file, everything
   -- afterwards is an argument to the script, everything before is an argument
@@ -692,9 +724,9 @@ interpreterHandler currentDir args f = do
     ("File does not exist or is not a regular file '" ++ name ++ "'.")
 
   runInterpreterCommand path stackArgs fileArgs = do
-    progName <- getProgName
     iargs <- getInterpreterArgs path
-    let parseCmdLine = commandLineHandler currentDir progName True
+    let parseCmdLine =
+          commandLineHandler currentDir progName mExecutablePath True
         -- Implicit file arguments are put before other arguments that
         -- occur after "--". See #3658
         cmdArgs = prependList stackArgs $ case NE.break (== "--") iargs of

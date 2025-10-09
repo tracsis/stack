@@ -4,7 +4,14 @@
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
 
--- Determine which packages are already installed
+{-|
+Module      : Stack.Build.Installed
+Description : Determine which packages are already installed.
+License     : BSD-3-Clause
+
+Determine which packages are already installed.
+-}
+
 module Stack.Build.Installed
   ( getInstalled
   , toInstallMap
@@ -22,7 +29,7 @@ import           Stack.Prelude
 import           Stack.SourceMap ( getPLIVersion, loadVersion )
 import           Stack.Types.CompilerPaths ( getGhcPkgExe )
 import           Stack.Types.DumpPackage
-                   ( DumpPackage (..), SublibDump (..), dpParentLibIdent )
+                   ( DumpPackage (..), SublibDump (..), sublibParentPkgId )
 import           Stack.Types.EnvConfig
                     ( HasEnvConfig, packageDatabaseDeps, packageDatabaseExtra
                     , packageDatabaseLocal
@@ -37,6 +44,9 @@ import           Stack.Types.Installed
 import           Stack.Types.SourceMap
                    ( DepPackage (..), ProjectPackage (..), SourceMap (..) )
 
+-- | For the given t'SourceMap', yield a dictionary of package names for a
+-- project's packages and dependencies, and pairs of their relevant database
+-- (write-only or mutable) and package versions.
 toInstallMap :: MonadIO m => SourceMap -> m InstallMap
 toInstallMap sourceMap = do
   projectInstalls <-
@@ -53,14 +63,15 @@ toInstallMap sourceMap = do
   pure $ projectInstalls <> depInstalls
 
 -- | Returns the new InstalledMap and all of the locally registered packages.
-getInstalled :: HasEnvConfig env
-             => InstallMap -- ^ does not contain any installed information
-             -> RIO env
-                  ( InstalledMap
-                  , [DumpPackage] -- globally installed
-                  , [DumpPackage] -- snapshot installed
-                  , [DumpPackage] -- locally installed
-                  )
+getInstalled ::
+     HasEnvConfig env
+  => InstallMap -- ^ does not contain any installed information
+  -> RIO env
+       ( InstalledMap
+       , [DumpPackage] -- globally installed
+       , [DumpPackage] -- snapshot installed
+       , [DumpPackage] -- locally installed
+       )
 getInstalled {-opts-} installMap = do
   logDebug "Finding out which packages are already installed"
   snapDBPath <- packageDatabaseDeps
@@ -158,7 +169,7 @@ loadDatabase installMap db lhs0 = do
            UserPkgDb loc fp -> ", from " <> displayShow (loc, fp) <> ","
       <> " due to"
       <> case reason of
-           UnknownPkg -> " it being unknown to the resolver / extra-deps."
+           UnknownPkg -> " it being unknown to the snapshot or extra-deps."
            WrongLocation db' loc ->
              " wrong location: " <> displayShow (db', loc)
            WrongVersion actual wanted ->
@@ -199,7 +210,7 @@ isAllowed installMap pkgDb dp = case Map.lookup name installMap of
     -- If the sourceMap has nothing to say about this package,
     -- check if it represents a sub-library first
     -- See: https://github.com/commercialhaskell/stack/issues/3899
-    case dpParentLibIdent dp of
+    case sublibParentPkgId dp of
       Just (PackageIdentifier parentLibName version') ->
         case Map.lookup parentLibName installMap of
           Nothing -> checkNotFound

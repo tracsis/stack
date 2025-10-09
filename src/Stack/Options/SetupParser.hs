@@ -2,7 +2,14 @@
 {-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Functions to parse command line arguments for Stack's @setup@ command.
+{-|
+Module      : Stack.Options.SetupParser
+Description : Parse arguments for Stack's @setup@ command.
+License     : BSD-3-Clause
+
+Functions to parse command line arguments for Stack's @setup@ command.
+-}
+
 module Stack.Options.SetupParser
   ( setupOptsParser
   ) where
@@ -12,15 +19,15 @@ import qualified Options.Applicative as OA
 import qualified Options.Applicative.Builder.Extra as OA
 import qualified Options.Applicative.Types as OA
 import           Stack.Prelude
-import           Stack.SetupCmd ( SetupCmdOpts (..) )
+import           Stack.Types.SetupOpts ( SetupCmdOpts (..) )
 
 -- | Parse command line arguments for Stack's @setup@ command.
 setupOptsParser :: OA.Parser SetupCmdOpts
 setupOptsParser = SetupCmdOpts
   <$> OA.optional (OA.argument readVersion
         (  OA.metavar "GHC_VERSION"
-        <> OA.help "Version of GHC to install, e.g. 9.6.5. (default: install \
-                   \the version implied by the resolver)"
+        <> OA.help "Version of GHC to install, e.g. 9.8.4. (default: install \
+                   \the version implied by the snapshot)"
         ))
   <*> OA.boolFlags False
         "reinstall"

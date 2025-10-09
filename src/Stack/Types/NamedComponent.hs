@@ -1,9 +1,17 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Module exporting the 'NamedComponent' type and related functions.
+{-|
+Module      : Stack.Types.NamedComponent
+Description : Module exporting the 'NamedComponent' type and related functions.
+License     : BSD-3-Clause
+
+Module exporting the 'NamedComponent' type and related functions.
+-}
+
 module Stack.Types.NamedComponent
   ( NamedComponent (..)
+  , componentCachePath
   , renderComponent
   , renderComponentTo
   , renderPkgComponents
@@ -24,20 +32,23 @@ module Stack.Types.NamedComponent
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import           Stack.Prelude
+import           Stack.Types.ComponentUtils
+                   ( StackUnqualCompName, unqualCompToString, unqualCompToText
+                   )
 
 -- | Type representing components of a fully-resolved Cabal package.
 data NamedComponent
   = CLib
     -- The \'main\' unnamed library component.
-  | CSubLib !Text
+  | CSubLib !StackUnqualCompName
     -- A named \'subsidiary\' or \'ancillary\` library component (sub-library).
-  | CFlib !Text
+  | CFlib !StackUnqualCompName
     -- A foreign library.
-  | CExe !Text
+  | CExe !StackUnqualCompName
     -- A named executable component.
-  | CTest !Text
+  | CTest !StackUnqualCompName
     -- A named test-suite component.
-  | CBench !Text
+  | CBench !StackUnqualCompName
     -- A named benchmark component.
   deriving (Eq, Ord, Show)
 
@@ -48,11 +59,19 @@ renderComponentTo = fromString . T.unpack . renderComponent
 
 renderComponent :: NamedComponent -> Text
 renderComponent CLib = "lib"
-renderComponent (CSubLib x) = "sub-lib:" <> x
-renderComponent (CFlib x) = "flib:" <> x
-renderComponent (CExe x) = "exe:" <> x
-renderComponent (CTest x) = "test:" <> x
-renderComponent (CBench x) = "bench:" <> x
+renderComponent (CSubLib x) = "sub-lib:" <> unqualCompToText x
+renderComponent (CFlib x) = "flib:" <> unqualCompToText x
+renderComponent (CExe x) = "exe:" <> unqualCompToText x
+renderComponent (CTest x) = "test:" <> unqualCompToText x
+renderComponent (CBench x) = "bench:" <> unqualCompToText x
+
+componentCachePath :: NamedComponent -> String
+componentCachePath CLib = "lib"
+componentCachePath (CSubLib x) = "sub-lib-" <> unqualCompToString x
+componentCachePath (CFlib x) = "flib-" <> unqualCompToString x
+componentCachePath (CExe x) = "exe-" <> unqualCompToString x
+componentCachePath (CTest x) = "test-" <> unqualCompToString x
+componentCachePath (CBench x) = "bench-" <> unqualCompToString x
 
 renderPkgComponents :: [(PackageName, NamedComponent)] -> Text
 renderPkgComponents = T.intercalate " " . map renderPkgComponent
@@ -61,25 +80,25 @@ renderPkgComponent :: (PackageName, NamedComponent) -> Text
 renderPkgComponent (pkg, comp) =
   fromPackageName pkg <> ":" <> renderComponent comp
 
-exeComponents :: Set NamedComponent -> Set Text
+exeComponents :: Set NamedComponent -> Set StackUnqualCompName
 exeComponents = Set.fromList . mapMaybe mExeName . Set.toList
  where
   mExeName (CExe name) = Just name
   mExeName _ = Nothing
 
-testComponents :: Set NamedComponent -> Set Text
+testComponents :: Set NamedComponent -> Set StackUnqualCompName
 testComponents = Set.fromList . mapMaybe mTestName . Set.toList
  where
   mTestName (CTest name) = Just name
   mTestName _ = Nothing
 
-benchComponents :: Set NamedComponent -> Set Text
+benchComponents :: Set NamedComponent -> Set StackUnqualCompName
 benchComponents = Set.fromList . mapMaybe mBenchName . Set.toList
  where
   mBenchName (CBench name) = Just name
   mBenchName _ = Nothing
 
-subLibComponents :: Set NamedComponent -> Set Text
+subLibComponents :: Set NamedComponent -> Set StackUnqualCompName
 subLibComponents = Set.fromList . mapMaybe mSubLibName . Set.toList
  where
   mSubLibName (CSubLib name) = Just name
@@ -110,18 +129,18 @@ isPotentialDependency v = isCLib v || isCSubLib v || isCExe v
 
 -- | A function to split the given list of components into sets of the names of
 -- the named components by the type of component (sub-libraries, executables,
--- test-suites, benchmarks), ignoring any 'main' unnamed library component or
+-- test-suites, benchmarks), ignoring any \'main\' unnamed library component or
 -- foreign library component. This function should be used very sparingly; more
 -- often than not, you can keep/parse the components split from the start.
 splitComponents ::
      [NamedComponent]
-  -> ( Set Text
+  -> ( Set StackUnqualCompName
        -- ^ Sub-libraries.
-     , Set Text
+     , Set StackUnqualCompName
        -- ^ Executables.
-     , Set Text
+     , Set StackUnqualCompName
        -- ^ Test-suites.
-     , Set Text
+     , Set StackUnqualCompName
        -- ^ Benchmarks.
      )
 splitComponents =

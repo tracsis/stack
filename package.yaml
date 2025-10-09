@@ -2,7 +2,7 @@
 spec-version: 0.35.0
 
 name: stack
-version: '2.15.7'
+version: '3.7.1'
 synopsis: The Haskell Tool Stack
 description: |
   Please see the documentation at <https://docs.haskellstack.org>
@@ -20,7 +20,7 @@ description: |
 category: Development
 author: Commercial Haskell SIG
 maintainer: manny@fpcomplete.com
-license: BSD3
+license: BSD-3-Clause
 github: commercialhaskell/stack
 homepage: http://haskellstack.org
 custom-setup:
@@ -34,7 +34,7 @@ extra-source-files:
 - ChangeLog.md
 - README.md
 - stack.yaml
-- doc/*.md
+- doc/**/*.md
 - src/setup-shim/StackSetupShim.hs
 - tests/unit/package-dump/ghc-7.10.txt
 - tests/unit/package-dump/ghc-7.8.4-osx.txt
@@ -58,7 +58,7 @@ ghc-options:
 - -optP-Wno-nonportable-include-path
 dependencies:
 - base >= 4.16.0.0 && < 5
-- Cabal >= 3.8.1.0
+- Cabal >= 3.8.1.0 && < 3.12
 - aeson >= 2.0.3.0
 - aeson-warning-parser >= 0.1.1
 - ansi-terminal >= 1.0.2
@@ -83,7 +83,8 @@ dependencies:
 - fsnotify >= 0.4.1
 - generic-deriving
 - ghc-boot
-- hi-file-parser >= 0.1.6.0
+- hashable
+- hi-file-parser >= 0.1.7.0
 - hpack >= 0.36.0
 - hpc
 - http-client
@@ -98,13 +99,13 @@ dependencies:
 - neat-interpolation
 - open-browser
 - optparse-applicative >= 0.18.1.0
-- pantry >= 0.9.3.2 && < 0.10.0
+- pantry >= 0.10.1
 - path >= 0.9.5
 - path-io
 # In order for Cabal (the tool) to build Stack, it needs to be told of the
 # upper bound on persistent. See
 # https://github.com/commercialhaskell/stack/pull/5677#issuecomment-1193318542
-- persistent >= 2.14.0.0 && < 2.15
+- persistent >= 2.14.0.0 && < 2.18
 - persistent-sqlite
 - pretty
 - process >= 1.6.13.2
@@ -114,7 +115,7 @@ dependencies:
 - rio-prettyprint >= 0.1.8.0
 - split
 - stm
-- tar
+- tar >= 0.6.2.0
 - template-haskell
 - text
 - time
@@ -157,7 +158,6 @@ library:
   - Build_stack
   - Paths_stack
   exposed-modules:
-  - Codec.Archive.Tar.Utf8
   - Control.Concurrent.Execute
   - Data.Attoparsec.Args
   - Data.Attoparsec.Combinators
@@ -169,7 +169,6 @@ library:
   - Options.Applicative.Builder.Extra
   - Options.Applicative.Complicated
   - Path.CheckInstall
-  - Path.Extended
   - Path.Extra
   - Path.Find
   - Stack
@@ -224,28 +223,34 @@ library:
   - Stack.Options.BuildParser
   - Stack.Options.CleanParser
   - Stack.Options.ConfigParser
+  - Stack.Options.ConfigEnvParser
+  - Stack.Options.ConfigSetParser
   - Stack.Options.Completion
   - Stack.Options.DockerParser
   - Stack.Options.DotParser
   - Stack.Options.EvalParser
   - Stack.Options.ExecParser
+  - Stack.Options.FlagsParser
   - Stack.Options.GhcBuildParser
   - Stack.Options.GhciParser
   - Stack.Options.GhcVariantParser
   - Stack.Options.GlobalParser
   - Stack.Options.HaddockParser
   - Stack.Options.HpcReportParser
+  - Stack.Options.IdeParser
   - Stack.Options.InitParser
   - Stack.Options.LogLevelParser
   - Stack.Options.LsParser
   - Stack.Options.NewParser
   - Stack.Options.NixParser
   - Stack.Options.PackageParser
+  - Stack.Options.PackagesParser
   - Stack.Options.PathParser
-  - Stack.Options.ResolverParser
+  - Stack.Options.PvpBoundsParser
   - Stack.Options.SDistParser
   - Stack.Options.ScriptParser
   - Stack.Options.SetupParser
+  - Stack.Options.SnapshotParser
   - Stack.Options.TestParser
   - Stack.Options.UnpackParser
   - Stack.Options.UpgradeParser
@@ -292,6 +297,7 @@ library:
   - Stack.Types.Config
   - Stack.Types.Config.Exception
   - Stack.Types.ConfigMonoid
+  - Stack.Types.ConfigSetOpts
   - Stack.Types.ConfigureOpts
   - Stack.Types.Curator
   - Stack.Types.Dependency
@@ -311,12 +317,19 @@ library:
   - Stack.Types.GHCVariant
   - Stack.Types.GhcOptionKey
   - Stack.Types.GhcOptions
+  - Stack.Types.GhcPkgExe
   - Stack.Types.GhcPkgId
+  - Stack.Types.GhciOpts
   - Stack.Types.GlobalOpts
   - Stack.Types.GlobalOptsMonoid
+  - Stack.Types.HpcReportOpts
+  - Stack.Types.IdeOpts
   - Stack.Types.Installed
+  - Stack.Types.InterfaceOpt
   - Stack.Types.IsMutable
   - Stack.Types.LockFileBehavior
+  - Stack.Types.LsOpts
+  - Stack.Types.MsysEnvironment
   - Stack.Types.NamedComponent
   - Stack.Types.Nix
   - Stack.Types.Package
@@ -328,17 +341,22 @@ library:
   - Stack.Types.ProjectAndConfigMonoid
   - Stack.Types.ProjectConfig
   - Stack.Types.PvpBounds
-  - Stack.Types.Resolver
   - Stack.Types.Runner
   - Stack.Types.SCM
+  - Stack.Types.SDistOpts
   - Stack.Types.SetupInfo
+  - Stack.Types.SetupOpts
+  - Stack.Types.Snapshot
   - Stack.Types.SourceMap
   - Stack.Types.StackYamlLoc
   - Stack.Types.Storage
   - Stack.Types.TemplateName
   - Stack.Types.UnusedFlags
+  - Stack.Types.UpgradeOpts
+  - Stack.Types.UploadOpts
   - Stack.Types.Version
   - Stack.Types.VersionedDownloadInfo
+  - Stack.Types.WantedCompilerSetter
   - Stack.Uninstall
   - Stack.Unpack
   - Stack.Update

@@ -2,8 +2,16 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings   #-}
 
--- | Types and function related to Stack's @exec@, @ghc@, @run@, @runghc@ and
--- @runhaskell@ commands.
+{-|
+Module      : Stack.Exec
+Description : Types and function related to Stack's @exec@, @ghc@, @run@,
+              @runghc@ and @runhaskell@ commands.
+License     : BSD-3-Clause
+
+Types and function related to Stack's @exec@, @ghc@, @run@, @runghc@ and
+@runhaskell@ commands.
+-}
+
 module Stack.Exec
   ( ExecOpts (..)
   , SpecialExecCmd (..)
@@ -31,6 +39,8 @@ import           Stack.Types.BuildOptsCLI
                    ( BuildOptsCLI (..), defaultBuildOptsCLI )
 import           Stack.Types.CompilerPaths
                    ( CompilerPaths (..), HasCompiler (..), getGhcPkgExe )
+import           Stack.Types.ComponentUtils
+                   ( unqualCompFromString, unqualCompToText )
 import           Stack.Types.Config ( Config (..), HasConfig (..) )
 import           Stack.Types.EnvConfig ( EnvConfig )
 import           Stack.Types.EnvSettings ( EnvSettings (..) )
@@ -92,14 +102,19 @@ instance Pretty ExecPrettyException where
 
 instance Exception ExecPrettyException
 
--- Type representing Stack's execution commands.
+-- | Type representing Stack's execution commands.
 data SpecialExecCmd
   = ExecCmd String
+    -- ^ @stack exec@ command.
   | ExecRun
+    -- ^ @stack run@ command.
   | ExecGhc
+    -- ^ @stack ghc@ command.
   | ExecRunGhc
+    -- ^ @stack runghc@ or @stack runhaskell@ command.
   deriving (Eq, Show)
 
+-- | Type representing extra Stack options for Stack's execution commands.
 data ExecOptsExtra = ExecOptsExtra
   { envSettings :: !EnvSettings
   , packages :: ![String]
@@ -108,7 +123,7 @@ data ExecOptsExtra = ExecOptsExtra
   }
   deriving Show
 
--- Type representing options for Stack's execution commands.
+-- | Type representing options for Stack's execution commands.
 data ExecOpts = ExecOpts
   { cmd :: !SpecialExecCmd
   , args :: ![String]
@@ -116,7 +131,7 @@ data ExecOpts = ExecOpts
   }
   deriving Show
 
--- Type representing valid targets for --package option.
+-- | Type representing valid targets for @--package@ option.
 data ExecTarget = ExecTarget PackageName (Maybe Version)
 
 -- | The function underlying Stack's @exec@, @ghc@, @run@, @runghc@ and
@@ -181,17 +196,19 @@ execCmd opts =
     packages <- view $ buildConfigL . to (.smWanted.project)
     pkgComponents <- for (Map.elems packages) ppComponents
     let executables = concatMap (filter isCExe . Set.toList) pkgComponents
-    let (exe, args') = case args of
+        (exe, args') = case args of
           [] -> (firstExe, args)
-          x:xs -> case L.find (\y -> y == CExe (T.pack x)) executables of
-            Nothing -> (firstExe, args)
-            argExe -> (argExe, xs)
+          x:xs -> let matchesExecutable y = y == CExe (unqualCompFromString x)
+                  in  case L.find matchesExecutable executables of
+                        Nothing -> (firstExe, args)
+                        argExe -> (argExe, xs)
          where
           firstExe = listToMaybe executables
     case exe of
       Just (CExe exe') -> do
-        withNewLocalBuildTargets [T.cons ':' exe'] $ build Nothing
-        pure (T.unpack exe', args')
+        let textExeName = unqualCompToText exe'
+        withNewLocalBuildTargets [T.cons ':' textExeName] $ build Nothing
+        pure (T.unpack textExeName, args')
       _ -> prettyThrowIO ExecutableToRunNotFound
 
   getGhcCmd pkgs args = do

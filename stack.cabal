@@ -1,11 +1,11 @@
-cabal-version: 2.0
+cabal-version: 2.2
 
--- This file has been generated from package.yaml by hpack version 0.36.0.
+-- This file has been generated from package.yaml by hpack version 0.38.1.
 --
 -- see: https://github.com/sol/hpack
 
 name:           stack
-version:        2.15.7
+version:        3.7.1
 synopsis:       The Haskell Tool Stack
 description:    Please see the documentation at <https://docs.haskellstack.org>
                 for usage information.
@@ -24,7 +24,7 @@ homepage:       http://haskellstack.org
 bug-reports:    https://github.com/commercialhaskell/stack/issues
 author:         Commercial Haskell SIG
 maintainer:     manny@fpcomplete.com
-license:        BSD3
+license:        BSD-3-Clause
 license-file:   LICENSE
 build-type:     Custom
 extra-source-files:
@@ -32,69 +32,111 @@ extra-source-files:
     ChangeLog.md
     README.md
     stack.yaml
-    doc/azure_ci.md
-    doc/build_command.md
     doc/build_overview.md
     doc/ChangeLog.md
-    doc/CI.md
-    doc/clean_command.md
-    doc/config_command.md
+    doc/commands/bench_command.md
+    doc/commands/build_command.md
+    doc/commands/clean_command.md
+    doc/commands/config_command.md
+    doc/commands/docker_command.md
+    doc/commands/dot_command.md
+    doc/commands/eval_command.md
+    doc/commands/exec_command.md
+    doc/commands/ghc_command.md
+    doc/commands/ghci_command.md
+    doc/commands/haddock_command.md
+    doc/commands/hoogle_command.md
+    doc/commands/hpc_command.md
+    doc/commands/ide_command.md
+    doc/commands/index.md
+    doc/commands/init_command.md
+    doc/commands/install_command.md
+    doc/commands/list_command.md
+    doc/commands/ls_command.md
+    doc/commands/new_command.md
+    doc/commands/path_command.md
+    doc/commands/purge_command.md
+    doc/commands/query_command.md
+    doc/commands/repl_command.md
+    doc/commands/run_command.md
+    doc/commands/runghc_command.md
+    doc/commands/runhaskell_command.md
+    doc/commands/script_command.md
+    doc/commands/sdist_command.md
+    doc/commands/setup_command.md
+    doc/commands/templates_command.md
+    doc/commands/test_command.md
+    doc/commands/uninstall_command.md
+    doc/commands/unpack_command.md
+    doc/commands/update_command.md
+    doc/commands/upgrade_command.md
+    doc/commands/upload_command.md
+    doc/community/index.md
+    doc/configure/customisation_scripts.md
+    doc/configure/environment_variables.md
+    doc/configure/global_flags.md
+    doc/configure/index.md
+    doc/configure/yaml/index.md
+    doc/configure/yaml/non-project.md
+    doc/configure/yaml/project.md
     doc/CONTRIBUTING.md
-    doc/custom_snapshot.md
-    doc/debugging.md
     doc/dev_containers.md
-    doc/developing_on_windows.md
-    doc/docker_command.md
-    doc/docker_integration.md
-    doc/dot_command.md
-    doc/editor_integration.md
-    doc/environment_variables.md
-    doc/eval_command.md
-    doc/exec_command.md
     doc/faq.md
-    doc/ghc_command.md
-    doc/ghci.md
-    doc/global_flags.md
     doc/glossary.md
-    doc/GUIDE.md
-    doc/GUIDE_advanced.md
-    doc/hoogle_command.md
-    doc/hpc_command.md
-    doc/ide_command.md
-    doc/init_command.md
     doc/install_and_upgrade.md
-    doc/list_command.md
-    doc/lock_files.md
-    doc/ls_command.md
-    doc/new_command.md
-    doc/nix_integration.md
-    doc/nonstandard_project_init.md
+    doc/maintainers/7zip.md
+    doc/maintainers/archive/docker.md
+    doc/maintainers/archive/docker_images.md
+    doc/maintainers/archive/README.md
+    doc/maintainers/archive/releases.md
+    doc/maintainers/ghc.md
+    doc/maintainers/haskellstack.org.md
+    doc/maintainers/msys.md
+    doc/maintainers/releases.md
+    doc/maintainers/self-hosted_runners.md
+    doc/maintainers/stack_errors.md
+    doc/maintainers/team_process.md
+    doc/maintainers/version_scheme.md
     doc/other_resources.md
-    doc/pantry.md
-    doc/path_command.md
-    doc/purge_command.md
-    doc/query_command.md
     doc/README.md
-    doc/run_command.md
-    doc/runghc_command.md
-    doc/script_command.md
-    doc/scripts.md
-    doc/sdist_command.md
-    doc/setup_command.md
-    doc/shell_autocompletion.md
     doc/SIGNING_KEY.md
-    doc/Stack_and_VS_Code.md
-    doc/stack_root.md
-    doc/stack_work.md
-    doc/stack_yaml_vs_cabal_package_file.md
-    doc/templates_command.md
-    doc/travis_ci.md
-    doc/uninstall_command.md
-    doc/unpack_command.md
-    doc/update_command.md
-    doc/upgrade_command.md
-    doc/upload_command.md
-    doc/yaml_configuration.md
+    doc/topics/azure_ci.md
+    doc/topics/CI.md
+    doc/topics/custom_snapshot.md
+    doc/topics/debugging.md
+    doc/topics/developing_on_windows.md
+    doc/topics/docker_integration.md
+    doc/topics/editor_integration.md
+    doc/topics/haskell_and_c_code.md
+    doc/topics/index.md
+    doc/topics/lock_files.md
+    doc/topics/nix_integration.md
+    doc/topics/nonstandard_project_init.md
+    doc/topics/package_location.md
+    doc/topics/scripts.md
+    doc/topics/shell_autocompletion.md
+    doc/topics/snapshot_location.md
+    doc/topics/Stack_and_VS_Code.md
+    doc/topics/stack_root.md
+    doc/topics/stack_work.md
+    doc/topics/stack_yaml_vs_cabal_package_file.md
+    doc/topics/travis_ci.md
+    doc/tutorial/building_existing_projects.md
+    doc/tutorial/building_your_project.md
+    doc/tutorial/cabal_flags_and_ghc_options.md
+    doc/tutorial/executing_commands.md
+    doc/tutorial/hello_world_example.md
+    doc/tutorial/index.md
+    doc/tutorial/installed_package_databases.md
+    doc/tutorial/locations_used_by_stack.md
+    doc/tutorial/multi-package_projects.md
+    doc/tutorial/package_description.md
+    doc/tutorial/project_configuration.md
+    doc/tutorial/stack_build_synonyms.md
+    doc/tutorial/stack_build_targets.md
+    doc/tutorial/stack_configuration.md
+    doc/tutorial/tutorial_conclusion.md
+    doc/tutorial/using_ghc_interactively.md
     src/setup-shim/StackSetupShim.hs
     tests/unit/package-dump/ghc-7.10.txt
     tests/unit/package-dump/ghc-7.8.4-osx.txt
@@ -152,7 +194,6 @@ flag supported-build
 
 library
   exposed-modules:
-      Codec.Archive.Tar.Utf8
       Control.Concurrent.Execute
       Data.Attoparsec.Args
       Data.Attoparsec.Combinators
@@ -164,7 +205,6 @@ library
       Options.Applicative.Builder.Extra
       Options.Applicative.Complicated
       Path.CheckInstall
-      Path.Extended
       Path.Extra
       Path.Find
       Stack
@@ -219,28 +259,34 @@ library
       Stack.Options.BuildParser
       Stack.Options.CleanParser
       Stack.Options.ConfigParser
+      Stack.Options.ConfigEnvParser
+      Stack.Options.ConfigSetParser
       Stack.Options.Completion
       Stack.Options.DockerParser
       Stack.Options.DotParser
       Stack.Options.EvalParser
       Stack.Options.ExecParser
+      Stack.Options.FlagsParser
       Stack.Options.GhcBuildParser
       Stack.Options.GhciParser
       Stack.Options.GhcVariantParser
       Stack.Options.GlobalParser
       Stack.Options.HaddockParser
       Stack.Options.HpcReportParser
+      Stack.Options.IdeParser
       Stack.Options.InitParser
       Stack.Options.LogLevelParser
       Stack.Options.LsParser
       Stack.Options.NewParser
       Stack.Options.NixParser
       Stack.Options.PackageParser
+      Stack.Options.PackagesParser
       Stack.Options.PathParser
-      Stack.Options.ResolverParser
+      Stack.Options.PvpBoundsParser
       Stack.Options.SDistParser
       Stack.Options.ScriptParser
       Stack.Options.SetupParser
+      Stack.Options.SnapshotParser
       Stack.Options.TestParser
       Stack.Options.UnpackParser
       Stack.Options.UpgradeParser
@@ -287,6 +333,7 @@ library
       Stack.Types.Config
       Stack.Types.Config.Exception
       Stack.Types.ConfigMonoid
+      Stack.Types.ConfigSetOpts
       Stack.Types.ConfigureOpts
       Stack.Types.Curator
       Stack.Types.Dependency
@@ -306,12 +353,19 @@ library
       Stack.Types.GHCVariant
       Stack.Types.GhcOptionKey
       Stack.Types.GhcOptions
+      Stack.Types.GhcPkgExe
       Stack.Types.GhcPkgId
+      Stack.Types.GhciOpts
       Stack.Types.GlobalOpts
       Stack.Types.GlobalOptsMonoid
+      Stack.Types.HpcReportOpts
+      Stack.Types.IdeOpts
       Stack.Types.Installed
+      Stack.Types.InterfaceOpt
       Stack.Types.IsMutable
       Stack.Types.LockFileBehavior
+      Stack.Types.LsOpts
+      Stack.Types.MsysEnvironment
       Stack.Types.NamedComponent
       Stack.Types.Nix
       Stack.Types.Package
@@ -323,17 +377,22 @@ library
       Stack.Types.ProjectAndConfigMonoid
       Stack.Types.ProjectConfig
       Stack.Types.PvpBounds
-      Stack.Types.Resolver
       Stack.Types.Runner
       Stack.Types.SCM
+      Stack.Types.SDistOpts
       Stack.Types.SetupInfo
+      Stack.Types.SetupOpts
+      Stack.Types.Snapshot
       Stack.Types.SourceMap
       Stack.Types.StackYamlLoc
       Stack.Types.Storage
       Stack.Types.TemplateName
       Stack.Types.UnusedFlags
+      Stack.Types.UpgradeOpts
+      Stack.Types.UploadOpts
       Stack.Types.Version
       Stack.Types.VersionedDownloadInfo
+      Stack.Types.WantedCompilerSetter
       Stack.Uninstall
       Stack.Unpack
       Stack.Update
@@ -352,7 +411,7 @@ library
       src
   ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -Wmissing-export-lists -optP-Wno-nonportable-include-path -Widentities
   build-depends:
-      Cabal >=3.8.1.0
+      Cabal >=3.8.1.0 && <3.12
     , aeson >=2.0.3.0
     , aeson-warning-parser >=0.1.1
     , ansi-terminal >=1.0.2
@@ -378,7 +437,8 @@ library
     , fsnotify >=0.4.1
     , generic-deriving
     , ghc-boot
-    , hi-file-parser >=0.1.6.0
+    , hashable
+    , hi-file-parser >=0.1.7.0
     , hpack >=0.36.0
     , hpc
     , http-client
@@ -393,10 +453,10 @@ library
     , neat-interpolation
     , open-browser
     , optparse-applicative >=0.18.1.0
-    , pantry >=0.9.3.2 && <0.10.0
+    , pantry >=0.10.1
     , path >=0.9.5
     , path-io
-    , persistent >=2.14.0.0 && <2.15
+    , persistent >=2.14.0.0 && <2.18
     , persistent-sqlite
     , pretty
     , process >=1.6.13.2
@@ -406,7 +466,7 @@ library
     , rio-prettyprint >=0.1.8.0
     , split
     , stm
-    , tar
+    , tar >=0.6.2.0
     , template-haskell
     , text
     , time
@@ -474,7 +534,7 @@ executable stack
       app
   ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -Wmissing-export-lists -optP-Wno-nonportable-include-path -threaded -rtsopts
   build-depends:
-      Cabal >=3.8.1.0
+      Cabal >=3.8.1.0 && <3.12
     , aeson >=2.0.3.0
     , aeson-warning-parser >=0.1.1
     , ansi-terminal >=1.0.2
@@ -500,7 +560,8 @@ executable stack
     , fsnotify >=0.4.1
     , generic-deriving
     , ghc-boot
-    , hi-file-parser >=0.1.6.0
+    , hashable
+    , hi-file-parser >=0.1.7.0
     , hpack >=0.36.0
     , hpc
     , http-client
@@ -515,10 +576,10 @@ executable stack
     , neat-interpolation
     , open-browser
     , optparse-applicative >=0.18.1.0
-    , pantry >=0.9.3.2 && <0.10.0
+    , pantry >=0.10.1
     , path >=0.9.5
     , path-io
-    , persistent >=2.14.0.0 && <2.15
+    , persistent >=2.14.0.0 && <2.18
     , persistent-sqlite
     , pretty
     , process >=1.6.13.2
@@ -529,7 +590,7 @@ executable stack
     , split
     , stack
     , stm
-    , tar
+    , tar >=0.6.2.0
     , template-haskell
     , text
     , time
@@ -567,6 +628,7 @@ executable stack-integration-test
   main-is: IntegrationSpec.hs
   other-modules:
       StackTest
+      StackTest.Repl
       Paths_stack
   autogen-modules:
       Paths_stack
@@ -575,7 +637,7 @@ executable stack-integration-test
       tests/integration/lib
   ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -Wmissing-export-lists -optP-Wno-nonportable-include-path -threaded -rtsopts -with-rtsopts=-N
   build-depends:
-      Cabal >=3.8.1.0
+      Cabal >=3.8.1.0 && <3.12
     , aeson >=2.0.3.0
     , aeson-warning-parser >=0.1.1
     , ansi-terminal >=1.0.2
@@ -601,7 +663,8 @@ executable stack-integration-test
     , fsnotify >=0.4.1
     , generic-deriving
     , ghc-boot
-    , hi-file-parser >=0.1.6.0
+    , hashable
+    , hi-file-parser >=0.1.7.0
     , hpack >=0.36.0
     , hpc
     , hspec
@@ -618,10 +681,10 @@ executable stack-integration-test
     , open-browser
     , optparse-applicative >=0.18.1.0
     , optparse-generic
-    , pantry >=0.9.3.2 && <0.10.0
+    , pantry >=0.10.1
     , path >=0.9.5
     , path-io
-    , persistent >=2.14.0.0 && <2.15
+    , persistent >=2.14.0.0 && <2.18
     , persistent-sqlite
     , pretty
     , process >=1.6.13.2
@@ -631,7 +694,7 @@ executable stack-integration-test
     , rio-prettyprint >=0.1.8.0
     , split
     , stm
-    , tar
+    , tar >=0.6.2.0
     , template-haskell
     , text
     , time
@@ -691,7 +754,7 @@ test-suite stack-unit-test
       tests/unit
   ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -Wmissing-export-lists -optP-Wno-nonportable-include-path -threaded
   build-depends:
-      Cabal >=3.8.1.0
+      Cabal >=3.8.1.0 && <3.12
     , QuickCheck
     , aeson >=2.0.3.0
     , aeson-warning-parser >=0.1.1
@@ -718,7 +781,8 @@ test-suite stack-unit-test
     , fsnotify >=0.4.1
     , generic-deriving
     , ghc-boot
-    , hi-file-parser >=0.1.6.0
+    , hashable
+    , hi-file-parser >=0.1.7.0
     , hpack >=0.36.0
     , hpc
     , hspec
@@ -734,10 +798,10 @@ test-suite stack-unit-test
     , neat-interpolation
     , open-browser
     , optparse-applicative >=0.18.1.0
-    , pantry >=0.9.3.2 && <0.10.0
+    , pantry >=0.10.1
     , path >=0.9.5
     , path-io
-    , persistent >=2.14.0.0 && <2.15
+    , persistent >=2.14.0.0 && <2.18
     , persistent-sqlite
     , pretty
     , process >=1.6.13.2
@@ -749,7 +813,7 @@ test-suite stack-unit-test
     , split
     , stack
     , stm
-    , tar
+    , tar >=0.6.2.0
     , template-haskell
     , text
     , time

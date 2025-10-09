@@ -3,7 +3,13 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell   #-} -- keep TH usage here
 
--- | Constants used throughout the project.
+{-|
+Module      : Stack.Constants
+Description : Constants used throughout the project.
+License     : BSD-3-Clause
+
+Constants used throughout the project.
+-}
 
 module Stack.Constants
   ( buildPlanDir
@@ -25,11 +31,8 @@ module Stack.Constants
   , stackProgNameUpper
   , wiredInPackages
   , cabalPackageName
-  , implicitGlobalProjectDirDeprecated
   , implicitGlobalProjectDir
-  , defaultUserConfigPathDeprecated
   , defaultUserConfigPath
-  , defaultGlobalConfigPathDeprecated
   , defaultGlobalConfigPath
   , platformVariantEnvVar
   , compilerOptionsCabalFlag
@@ -89,6 +92,10 @@ module Stack.Constants
   , relDirMingw
   , relDirMingw32
   , relDirMingw64
+  , relDirClang32
+  , relDirClang64
+  , relDirClangArm64
+  , relDirUcrt64
   , relDirLocal
   , relDirUsr
   , relDirInclude
@@ -190,7 +197,7 @@ haskellFileExts = ["hs", "hsc", "lhs"]
 haskellDefaultPreprocessorExts :: [Text]
 haskellDefaultPreprocessorExts = ["gc", "chs", "hsc", "x", "y", "ly", "cpphs"]
 
--- | Name of the 'stack' program, uppercased
+-- | Name of the \'stack\' program, uppercased
 stackProgNameUpper :: String
 stackProgNameUpper = map toUpper stackProgName
 
@@ -250,28 +257,22 @@ wiredInPackages = case mparsed of
   Nothing -> impureThrow WiredInPackagesNotParsedBug
  where
   mparsed = mapM parsePackageName
-    [ "ghc-prim"
+    [ "rts"
+      -- Said to be not a \'real\' package
+    , "ghc-prim"
+      -- A magic package
+    , "ghc-bignum"
       -- A magic package
     , "integer-gmp"
       -- No longer magic > 1.0.3.0 (GHC >= 9.0) and deprecated in favour of
-      -- ghc-bignum. With GHC 9.6.5 at least, there seems to be no problem in
+      -- ghc-bignum. With GHC 9.8.4 at least, there seems to be no problem in
       -- using it.
     , "integer-simple"
       -- A magic package
     , "base"
       -- A magic package
-    , "rts"
-      -- Said to be not a \'real\' package
     , "template-haskell"
       -- A magic package
-    , "dph-seq"
-      -- Deprecated in favour of dph-prim-seq, which does not appear to be
-      -- magic. With GHC 9.6.5 at least, there seems to be no problem in using
-      -- it.
-    , "dph-par"
-      --  Deprecated in favour of dph-prim-par, which does not appear to be
-      -- magic. With GHC 9.6.5 at least, there seems to be no problem in using
-      -- it.
     , "ghc"
       -- A magic package
     , "interactive"
@@ -279,9 +280,7 @@ wiredInPackages = case mparsed of
       -- if they were defined in modules all sharing a common package
       -- interactive. See 'Note [The interactive package]' at
       -- https://gitlab.haskell.org/ghc/ghc/-/blob/master/compiler/GHC/Runtime/Context.hs
-      -- With GHC 9.6.5 at least, there seems to be no problem in using it.
-    , "ghc-bignum"
-      -- A magic package
+      -- With GHC 9.8.4 at least, there seems to be no problem in using it.
     ]
 
 -- | Just to avoid repetition and magic strings.
@@ -289,44 +288,26 @@ cabalPackageName :: PackageName
 cabalPackageName =
     mkPackageName "Cabal"
 
--- | Deprecated implicit global project directory used when outside of a project.
-implicitGlobalProjectDirDeprecated :: Path Abs Dir -- ^ Stack root.
-                                   -> Path Abs Dir
-implicitGlobalProjectDirDeprecated p =
-    p </>
-    $(mkRelDir "global")
-
 -- | Implicit global project directory used when outside of a project.
 -- Normally, @getImplicitGlobalProjectDir@ should be used instead.
-implicitGlobalProjectDir :: Path Abs Dir -- ^ Stack root.
-                         -> Path Abs Dir
-implicitGlobalProjectDir p =
-    p </>
-    $(mkRelDir "global-project")
+implicitGlobalProjectDir ::
+     Path Abs Dir -- ^ Stack root.
+  -> Path Abs Dir
+implicitGlobalProjectDir p = p </> $(mkRelDir "global-project")
 
--- | Deprecated default global config path.
-defaultUserConfigPathDeprecated :: Path Abs Dir -> Path Abs File
-defaultUserConfigPathDeprecated = (</> $(mkRelFile "stack.yaml"))
-
--- | Default global config path.
--- Normally, @getDefaultUserConfigPath@ should be used instead.
+-- | Default user global configuration path. Normally,
+-- @getDefaultUserConfigPath@ should be used instead.
 defaultUserConfigPath :: Path Abs Dir -> Path Abs File
 defaultUserConfigPath = (</> $(mkRelFile "config.yaml"))
 
--- | Deprecated default global config path.
--- Note that this will be @Nothing@ on Windows, which is by design.
-defaultGlobalConfigPathDeprecated :: Maybe (Path Abs File)
-defaultGlobalConfigPathDeprecated = parseAbsFile "/etc/stack/config"
-
--- | Default global config path.
--- Normally, @getDefaultGlobalConfigPath@ should be used instead.
--- Note that this will be @Nothing@ on Windows, which is by design.
+-- | Default global config path. On Windows, by design, this will be @Nothing@.
 defaultGlobalConfigPath :: Maybe (Path Abs File)
 defaultGlobalConfigPath = parseAbsFile "/etc/stack/config.yaml"
 
 -- | Path where build plans are stored.
-buildPlanDir :: Path Abs Dir -- ^ Stack root
-             -> Path Abs Dir
+buildPlanDir ::
+     Path Abs Dir -- ^ Stack root
+  -> Path Abs Dir
 buildPlanDir = (</> $(mkRelDir "build-plan"))
 
 -- | Path where binary caches of the build plans are stored.
@@ -517,6 +498,18 @@ relDirMingw32 = $(mkRelDir "mingw32")
 relDirMingw64 :: Path Rel Dir
 relDirMingw64 = $(mkRelDir "mingw64")
 
+relDirClang32 :: Path Rel Dir
+relDirClang32 = $(mkRelDir "clang32")
+
+relDirClang64 :: Path Rel Dir
+relDirClang64 = $(mkRelDir "clang64")
+
+relDirClangArm64 :: Path Rel Dir
+relDirClangArm64 = $(mkRelDir "clangarm64")
+
+relDirUcrt64 :: Path Rel Dir
+relDirUcrt64 = $(mkRelDir "ucrt64")
+
 relDirLocal :: Path Rel Dir
 relDirLocal = $(mkRelDir "local")
 
@@ -693,7 +686,8 @@ isStackUploadDisabled = STACK_DISABLE_STACK_UPLOAD
 -- | The footer to the help for Stack's subcommands
 globalFooter :: String
 globalFooter =
-  "Command 'stack --help' for global options that apply to all subcommands."
+     "Command 'stack --help' (or '-h') for global options that apply to all "
+  <> "subcommands."
 
 -- | The type for GitHub REST API HTTP \'Basic\' authentication.
 gitHubBasicAuthType :: ByteString

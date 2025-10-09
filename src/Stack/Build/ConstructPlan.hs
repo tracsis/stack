@@ -5,7 +5,14 @@
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE ViewPatterns          #-}
 
--- | Construct a @Plan@ for how to build
+{-|
+Module      : Stack.Build.ConstructPlan
+Description : Construct a @Plan@ for how to build.
+License     : BSD-3-Clause
+
+Construct a @Plan@ for how to build.
+-}
+
 module Stack.Build.ConstructPlan
   ( constructPlan
   ) where
@@ -30,7 +37,7 @@ import           Stack.Build.Source ( loadLocalPackage )
 import           Stack.Constants ( compilerOptionsCabalFlag )
 import           Stack.Package
                    ( applyForceCustomBuild, buildableExes, packageUnknownTools
-                   , processPackageDepsToList
+                   , processPackageDepsEither
                    )
 import           Stack.Prelude hiding ( loadPackage )
 import           Stack.SourceMap ( getPLIVersion, mkProjectPackage )
@@ -41,16 +48,17 @@ import           Stack.Types.Build
                    , taskProvides, taskTargetIsMutable, toCachePkgSrc
                    )
 import           Stack.Types.Build.ConstructPlan
-                   ( AddDepRes (..), CombinedMap, Ctx (..), M, PackageInfo (..)
-                   , ToolWarning(..), UnregisterState (..), W (..)
-                   , adrHasLibrary, adrVersion, toTask
+                   ( AddDepRes (..), CombinedMap, Ctx (..), M
+                   , MissingPresentDeps (..), PackageInfo (..), ToolWarning(..)
+                   , UnregisterState (..), W (..), adrHasLibrary, adrVersion
+                   , isAdrToInstall, toTask
                    )
 import           Stack.Types.Build.Exception
                    ( BadDependency (..), BuildException (..)
                    , BuildPrettyException (..), ConstructPlanException (..)
                    )
 import           Stack.Types.BuildConfig
-                   ( BuildConfig (..), HasBuildConfig (..), stackYamlL )
+                   ( BuildConfig (..), HasBuildConfig (..), configFileL )
 import           Stack.Types.BuildOpts ( BuildOpts (..) )
 import           Stack.Types.BuildOptsCLI
                    ( BuildOptsCLI (..), BuildSubset (..) )
@@ -58,13 +66,13 @@ import           Stack.Types.CompCollection ( collectionMember )
 import           Stack.Types.Compiler ( WhichCompiler (..) )
 import           Stack.Types.CompilerPaths
                    ( CompilerPaths (..), HasCompiler (..) )
+import           Stack.Types.ComponentUtils ( unqualCompFromText )
 import           Stack.Types.Config ( Config (..), HasConfig (..), stackRootL )
-import           Stack.Types.ConfigureOpts
-                   ( BaseConfigOpts (..), ConfigureOpts (..) )
+import           Stack.Types.ConfigureOpts ( BaseConfigOpts (..) )
 import qualified Stack.Types.ConfigureOpts as ConfigureOpts
 import           Stack.Types.Curator ( Curator (..) )
 import           Stack.Types.Dependency ( DepValue (..), isDepTypeLibrary )
-import           Stack.Types.DumpPackage ( DumpPackage (..), dpParentLibIdent )
+import           Stack.Types.DumpPackage ( DumpPackage (..), sublibParentPkgId )
 import           Stack.Types.EnvConfig ( EnvConfig (..), HasEnvConfig (..) )
 import           Stack.Types.EnvSettings
                    ( EnvSettings (..), minimalEnvSettings )
@@ -93,14 +101,14 @@ import           Stack.Types.Version
                    )
 import           System.Environment ( lookupEnv )
 
--- | Computes a build plan. This means figuring out which build 'Task's to take,
--- and the interdependencies among the build 'Task's. In particular:
+-- | Computes a build plan. This means figuring out which build t'Task's to
+-- take, and the interdependencies among the build t'Task's. In particular:
 --
 -- 1) It determines which packages need to be built, based on the transitive
--- deps of the current targets. For local packages, this is indicated by the
--- 'lpWanted' boolean. For extra packages to build, this comes from the
--- @extraToBuild0@ argument of type @Set PackageName@. These are usually
--- packages that have been specified on the command line.
+-- deps of the current targets. For project packages, this is indicated by the
+-- 'Stack.Types.Package.wanted' boolean. For extra packages to build, this comes
+-- from the @extraToBuild0@ argument of type @Set PackageName@. These are
+-- usually packages that have been specified on the command line.
 --
 -- 2) It will only rebuild an upstream package if it isn't present in the
 -- 'InstalledMap', or if some of its dependencies have changed.
@@ -187,13 +195,13 @@ constructPlan
                 else Map.empty
           }
       else do
-        stackYaml <- view stackYamlL
+        configFile <- view configFileL
         stackRoot <- view stackRootL
         isImplicitGlobal <-
           view $ configL . to (isPCGlobalProject . (.project))
         prettyThrowM $ ConstructPlanFailed
           errs
-          stackYaml
+          configFile
           stackRoot
           isImplicitGlobal
           parents
@@ -312,7 +320,7 @@ constructPlan
     pure $ pPackages <> deps
 
 -- | Determine which packages to unregister based on the given tasks and
--- already registered local packages.
+-- already registered project packages and local extra-deps.
 mkUnregisterLocal ::
      Map PackageName Task
      -- ^ Tasks
@@ -370,7 +378,7 @@ mkUnregisterLocal tasks dirtyReason localDumpPkgs initialBuildSteps =
    where
     gid = dp.ghcPkgId
     ident = dp.packageIdent
-    mParentLibId = dpParentLibIdent dp
+    mParentLibId = sublibParentPkgId dp
     deps = dp.depends
 
   maybeUnregisterReason ::
@@ -414,8 +422,8 @@ mkUnregisterLocal tasks dirtyReason localDumpPkgs initialBuildSteps =
       relevantPkgName :: PackageName
       relevantPkgName = maybe (pkgName ident) pkgName mParentLibId
 
--- | Given a 'LocalPackage' and its 'lpTestBench', adds a 'Task' for running its
--- tests and benchmarks.
+-- | Given a t'LocalPackage' and its 'testBench', adds a t'Task' for running
+-- its tests and benchmarks.
 --
 -- If @isAllInOne@ is 'True', then this means that the build step will also
 -- build the tests. Otherwise, this indicates that there's a cyclic dependency
@@ -432,26 +440,27 @@ addFinal ::
   -> Bool
      -- ^ Should Haddock documentation be built?
   -> M ()
-addFinal lp package isAllInOne buildHaddocks = do
+addFinal lp package allInOne buildHaddocks = do
   depsRes <- addPackageDeps package
   res <- case depsRes of
     Left e -> pure $ Left e
-    Right (missing, present, _minLoc) -> do
+    Right (MissingPresentDeps missing present _minLoc) -> do
+      let pkgConfigOpts = ConfigureOpts.packageConfigureOptsFromPackage package
       ctx <- ask
+      let configOpts = TaskConfigOpts
+            { missing
+            , envConfig = ctx.ctxEnvConfig
+            , baseConfigOpts = ctx.baseConfigOpts
+            , isLocalNonExtraDep = True
+            , isMutable = Mutable
+            , pkgConfigOpts
+            }
       pure $ Right Task
-        { configOpts = TaskConfigOpts missing $ \missing' ->
-            let allDeps = Map.union present missing'
-            in  ConfigureOpts.configureOpts
-                  (view envConfigL ctx)
-                  ctx.baseConfigOpts
-                  allDeps
-                  True -- local
-                  Mutable
-                  package
+        { configOpts
         , buildHaddocks
         , present
         , taskType = TTLocalMutable lp
-        , allInOne = isAllInOne
+        , allInOne
         , cachePkgSrc = CacheSrcLocal (toFilePath (parent lp.cabalFP))
         , buildTypeConfig = packageBuildTypeConfig package
         }
@@ -588,10 +597,10 @@ tellExecutablesUpstream name retrievePkgLoc loc flags = do
       p <- ctx.loadPackage pkgLoc flags [] []
       tellExecutablesPackage loc p
 
--- | For given 'InstallLocation' and 'Package' values, adds relevant executables
--- to the collected output. In most cases, the relevant executables are all the
--- executables of the package. If the package is a wanted local one, the
--- executables are those executables that are wanted executables.
+-- | For given 'InstallLocation' and t'Package' values, adds relevant
+-- executables to the collected output. In most cases, the relevant executables
+-- are all the executables of the package. If the package is a wanted local one,
+-- the executables are those executables that are wanted executables.
 tellExecutablesPackage :: InstallLocation -> Package -> M ()
 tellExecutablesPackage loc p = do
   cm <- asks (.combinedMap)
@@ -617,12 +626,13 @@ tellExecutablesPackage loc p = do
     | Set.null myComps = x
     | otherwise = Set.intersection x myComps
 
--- | Given a 'PackageSource' and perhaps an 'Installed' value, adds build
--- 'Task's for the package and its dependencies.
-installPackage :: PackageName
-               -> PackageSource
-               -> Maybe Installed
-               -> M (Either ConstructPlanException AddDepRes)
+-- | Given a 'PackageSource' and perhaps an 'Installed' value, adds
+-- build t'Task's for the package and its dependencies.
+installPackage ::
+     PackageName
+  -> PackageSource
+  -> Maybe Installed
+  -> M (Either ConstructPlanException AddDepRes)
 installPackage name ps minstalled = do
   ctx <- ask
   case ps of
@@ -667,9 +677,7 @@ installPackage name ps minstalled = do
               let isAllInOne = not splitRequired
               adr <- installPackageGivenDeps
                 isAllInOne lp.buildHaddocks ps tb minstalled deps
-              let finalAllInOne = case adr of
-                    ADRToInstall _ | splitRequired -> False
-                    _ -> True
+              let finalAllInOne = not (isAdrToInstall adr && splitRequired)
               -- FIXME: this redundantly adds the deps (but they'll all just
               -- get looked up in the map)
               addFinal lp tb finalAllInOne False
@@ -714,9 +722,9 @@ resolveDepsAndInstall isAllInOne buildHaddocks ps package minstalled = do
         installPackageGivenDeps
           isAllInOne buildHaddocks ps package minstalled deps
 
--- | Checks if we need to install the given 'Package', given the results
--- of 'addPackageDeps'. If dependencies are missing, the package is dirty, or
--- it's not installed, then it needs to be installed.
+-- | Checks if we need to install the given t'Package', given the results of
+-- 'addPackageDeps'. If dependencies are missing, the package is dirty, or it is
+-- not installed, then it needs to be installed.
 installPackageGivenDeps ::
      Bool
      -- ^ will the build step also build any tests?
@@ -725,42 +733,42 @@ installPackageGivenDeps ::
   -> PackageSource
   -> Package
   -> Maybe Installed
-  -> ( Set PackageIdentifier
-     , Map PackageIdentifier GhcPkgId
-     , IsMutable )
+  -> MissingPresentDeps
   -> M AddDepRes
-installPackageGivenDeps isAllInOne buildHaddocks ps package minstalled
-  (missing, present, minMutable) = do
+installPackageGivenDeps allInOne buildHaddocks ps package minstalled
+  (MissingPresentDeps missing present minMutable) = do
     let name = package.name
+    mRightVersionInstalled <- case minstalled of
+      Just installed -> if Set.null missing
+        then do
+          shouldInstall <-
+            checkDirtiness ps installed package present buildHaddocks
+          pure $ if shouldInstall then Nothing else Just installed
+        else do
+          let packageNameText = T.pack . packageNameString . pkgName
+              t = T.intercalate ", " $ map packageNameText (Set.toList missing)
+          tell mempty
+            { wDirty =
+                Map.singleton name $ "missing dependencies: " <> addEllipsis t
+            }
+          pure Nothing
+      Nothing -> pure Nothing
     ctx <- ask
-    mRightVersionInstalled <- case (minstalled, Set.null missing) of
-      (Just installed, True) -> do
-        shouldInstall <-
-          checkDirtiness ps installed package present buildHaddocks
-        pure $ if shouldInstall then Nothing else Just installed
-      (Just _, False) -> do
-        let t = T.intercalate ", " $
-                  map (T.pack . packageNameString . pkgName) (Set.toList missing)
-        tell mempty
-          { wDirty =
-              Map.singleton name $ "missing dependencies: " <> addEllipsis t
-          }
-        pure Nothing
-      (Nothing, _) -> pure Nothing
     let loc = psLocation ps
-        mutable = installLocationIsMutable loc <> minMutable
+        isMutable = installLocationIsMutable loc <> minMutable
+        pkgConfigOpts = ConfigureOpts.packageConfigureOptsFromPackage package
+        configOpts = TaskConfigOpts
+            { missing
+            , envConfig = ctx.ctxEnvConfig
+            , baseConfigOpts = ctx.baseConfigOpts
+            , isLocalNonExtraDep = psLocal ps
+            , isMutable
+            , pkgConfigOpts
+            }
     pure $ case mRightVersionInstalled of
       Just installed -> ADRFound loc installed
       Nothing -> ADRToInstall Task
-        { configOpts = TaskConfigOpts missing $ \missing' ->
-            let allDeps = Map.union present missing'
-            in  ConfigureOpts.configureOpts
-                  (view envConfigL ctx)
-                  ctx.baseConfigOpts
-                  allDeps
-                  (psLocal ps)
-                  mutable
-                  package
+        { configOpts
         , buildHaddocks
         , present
         , taskType =
@@ -768,8 +776,8 @@ installPackageGivenDeps isAllInOne buildHaddocks ps package minstalled
               PSFilePath lp ->
                 TTLocalMutable lp
               PSRemote pkgLoc _version _fromSnapshot _cp ->
-                TTRemotePackage mutable package pkgLoc
-        , allInOne = isAllInOne
+                TTRemotePackage isMutable package pkgLoc
+        , allInOne
         , cachePkgSrc = toCachePkgSrc ps
         , buildTypeConfig = packageBuildTypeConfig package
         }
@@ -798,23 +806,17 @@ addEllipsis t
 -- (3) whether the package itself is mutable or immutable.
 addPackageDeps ::
      Package
-  -> M ( Either
-           ConstructPlanException
-           ( Set PackageIdentifier
-           , Map PackageIdentifier GhcPkgId
-           , IsMutable
-           )
-       )
+  -> M (Either ConstructPlanException MissingPresentDeps)
 addPackageDeps package = do
   checkAndWarnForUnknownTools package
   let pkgId = packageIdentifier package
-  deps <- processPackageDepsToList package (processDep pkgId)
-  pure $ case partitionEithers deps of
+  result <- processPackageDepsEither package (processDep pkgId)
+  pure $ case result of
     -- Note that the Monoid for 'IsMutable' means that if any is 'Mutable',
     -- the result is 'Mutable'. Otherwise the result is 'Immutable'.
-    ([], pairs) -> Right $ mconcat pairs
-    (errs, _) ->
-      Left $ DependencyPlanFailures package (Map.fromList errs)
+    Right v -> Right v
+    Left errs ->
+      Left $ DependencyPlanFailures package errs
 
 -- | Given a dependency, yields either information for an error message or a
 -- triple indicating: (1) if the dependency is to be installed, its package
@@ -829,29 +831,32 @@ processDep ::
   -> DepValue
      -- ^ The version range and dependency type of the dependency.
   -> M ( Either
-           ( PackageName
-           , (VersionRange, Maybe (Version, BlobKey), BadDependency)
+           ( Map
+               PackageName
+               (VersionRange, Maybe (Version, BlobKey), BadDependency)
            )
-           (Set PackageIdentifier, Map PackageIdentifier GhcPkgId, IsMutable)
+           MissingPresentDeps
        )
 processDep pkgId name value = do
   eRes <- getCachedDepOrAddDep name
+  let failure mLatestApp err =
+        Left $ Map.singleton name (range, mLatestApp, err)
   case eRes of
     Left e -> do
       addParent
       let bd = case e of
             UnknownPackage name' -> assert (name' == name) NotInBuildPlan
             DependencyCycleDetected names -> BDDependencyCycleDetected names
-            -- ultimately we won't show any information on this to the user,
+            -- Ultimately we won't show any information on this to the user;
             -- we'll allow the dependency failures alone to display to avoid
-            -- spamming the user too much
+            -- spamming the user too much.
             DependencyPlanFailures _ _  ->
               Couldn'tResolveItsDependencies version
       mLatestApplicable <- getLatestApplicableVersionAndRev name range
-      pure $ Left (name, (range, mLatestApplicable, bd))
+      pure $ failure mLatestApplicable bd
     Right adr
       | isDepTypeLibrary value.depType && not (adrHasLibrary adr) ->
-          pure $ Left (name, (range, Nothing, HasNoLibrary))
+          pure $ failure Nothing HasNoLibrary
     Right adr -> do
       addParent
       inRange <- adrInRange pkgId name range adr
@@ -859,13 +864,7 @@ processDep pkgId name value = do
         then pure $ Right $ processAdr adr
         else do
           mLatestApplicable <- getLatestApplicableVersionAndRev name range
-          pure $ Left
-            ( name
-            , ( range
-              , mLatestApplicable
-              , DependencyMismatch $ adrVersion adr
-              )
-            )
+          pure $ failure mLatestApplicable (DependencyMismatch $ adrVersion adr)
  where
   range = value.versionRange
   version = pkgVersion pkgId
@@ -905,8 +904,11 @@ adrInRange ::
 adrInRange pkgId name range adr = if adrVersion adr `withinRange` range
   then pure True
   else do
-    allowNewer <- view $ configL . to (.allowNewer)
-    allowNewerDeps <- view $ configL . to (.allowNewerDeps)
+    config <- view configL
+    allowNewerCLI <- view $ envConfigL . to (.buildOptsCLI) . to (.allowNewer)
+    let allowNewerConfig = config.allowNewer
+        allowNewer = fromFirst False $ allowNewerCLI <> allowNewerConfig
+        allowNewerDeps = config.allowNewerDeps
     if allowNewer
       then case allowNewerDeps of
         Nothing -> do
@@ -989,17 +991,24 @@ adrInRange pkgId name range adr = if adrVersion adr `withinRange` range
 -- the dependency is, or will be when installed, mutable or immutable.
 processAdr ::
      AddDepRes
-  -> (Set PackageIdentifier, Map PackageIdentifier GhcPkgId, IsMutable)
+  -> MissingPresentDeps
 processAdr adr = case adr of
   ADRToInstall task ->
-    (Set.singleton $ taskProvides task, Map.empty, taskTargetIsMutable task)
-  ADRFound loc (Executable _) ->
-    (Set.empty, Map.empty, installLocationIsMutable loc)
-  ADRFound loc (Library ident installedInfo) ->
-    ( Set.empty
-    , installedMapGhcPkgId ident installedInfo
-    , installLocationIsMutable loc
-    )
+    MissingPresentDeps
+      { missingPackages = Set.singleton $ taskProvides task
+      , presentPackages = mempty
+      , isMutable = taskTargetIsMutable task
+      }
+  ADRFound loc installed ->
+    MissingPresentDeps
+      { missingPackages = mempty
+      , presentPackages = presentPackagesV
+      , isMutable = installLocationIsMutable loc
+      }
+   where
+    presentPackagesV = case installed of
+      Library ident installedInfo -> installedMapGhcPkgId ident installedInfo
+      _ -> Map.empty
 
 checkDirtiness ::
      PackageSource
@@ -1012,13 +1021,15 @@ checkDirtiness ::
 checkDirtiness ps installed package present buildHaddocks = do
   ctx <- ask
   moldOpts <- runRIO ctx $ tryGetFlagCache installed
-  let configureOpts = ConfigureOpts.configureOpts
+  let packageConfigureOpt =
+        ConfigureOpts.packageConfigureOptsFromPackage package
+      configureOpts = ConfigureOpts.configureOpts
         (view envConfigL ctx)
         ctx.baseConfigOpts
         present
         (psLocal ps)
         (installLocationIsMutable $ psLocation ps) -- should be Local i.e. mutable always
-        package
+        packageConfigureOpt
       components = case ps of
         PSFilePath lp ->
           Set.map (encodeUtf8 . renderComponent) lp.components
@@ -1101,7 +1112,7 @@ describeConfigDiff config old new
                 then id
                 else stripGhcOptions)
            . map T.pack
-           . (\(ConfigureOpts x y) -> x ++ y)
+           . ConfigureOpts.renderConfigureOpts
            . (.configureOpts)
    where
     -- options set by Stack
@@ -1171,7 +1182,6 @@ checkAndWarnForUnknownTools p = do
     fmap catMaybes $ forM unknownTools $ \toolName ->
       runMaybeT $ notOnPath toolName *> notPackageExe toolName *> warn toolName
   tell mempty { wWarnings = (map toolWarningText warnings ++) }
-  pure ()
  where
   -- From Cabal 2.0, build-tools can specify a pre-built executable that should
   -- already be on the PATH.
@@ -1184,7 +1194,8 @@ checkAndWarnForUnknownTools p = do
   -- From Cabal 1.12, build-tools can specify another executable in the same
   -- package.
   notPackageExe toolName =
-    MaybeT $ skipIf $ collectionMember toolName p.executables
+    MaybeT $ skipIf $
+      collectionMember (unqualCompFromText toolName) p.executables
   warn name = MaybeT . pure . Just $ ToolWarning (ExeName name) p.name
   skipIf p' = pure $ if p' then Nothing else Just ()
 
@@ -1231,9 +1242,10 @@ logDebugPlanS s msg = do
 -- value; and (2) a pair of an 'InstallLocation' value and an 'Installed' value.
 -- Checks that the version of the 'PackageSource' value and the version of the
 -- `Installed` value are the same.
-combineSourceInstalled :: PackageSource
-                       -> (InstallLocation, Installed)
-                       -> PackageInfo
+combineSourceInstalled ::
+     PackageSource
+  -> (InstallLocation, Installed)
+  -> PackageInfo
 combineSourceInstalled ps (location, installed) =
   assert (psVersion ps == installedVersion installed) $
     case location of

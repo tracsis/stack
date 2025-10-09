@@ -9,6 +9,11 @@
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE ViewPatterns          #-}
 
+{-|
+Module      : Stack.Setup
+License     : BSD-3-Clause
+-}
+
 module Stack.Setup
   ( setupEnv
   , ensureCompilerAndMsys
@@ -44,6 +49,7 @@ import           Data.Conduit.Lazy ( lazyConsume )
 import qualified Data.Conduit.List as CL
 import           Data.Conduit.Process.Typed ( createSource )
 import           Data.Conduit.Zlib ( ungzip )
+import qualified Data.Either.Extra as EE
 import           Data.List.Split ( splitOn )
 import qualified Data.Map as Map
 import qualified Data.Set as Set
@@ -68,17 +74,17 @@ import           Network.HTTP.StackClient
                    )
 import           Network.HTTP.Simple ( getResponseHeader )
 import           Path
-                   ( (</>), addExtension, filename, parent, parseAbsDir
-                   , parseAbsFile, parseRelDir, parseRelFile, takeDrive
-                   , toFilePath
+                   ( (</>), addExtension, fileExtension, filename, parent
+                   , parseAbsDir, parseAbsFile, parseRelDir, parseRelFile
+                   , takeDrive, toFilePath
                    )
 import           Path.CheckInstall ( warnInstallSearchPathIssues )
-import           Path.Extended ( fileExtension )
 import           Path.Extra ( toFilePathNoTrailingSep )
 import           Path.IO
                    ( canonicalizePath, doesFileExist, ensureDir, executable
-                   , getPermissions, ignoringAbsence, listDir, removeDirRecur
-                   , renameDir, renameFile, resolveFile', withTempDir
+                   , getPermissions, getTempDir, ignoringAbsence, listDir
+                   , removeDirRecur, removeFile, renameDir, renameFile
+                   , resolveFile', withTempDir
                    )
 import           RIO.List
                    ( headMaybe, intercalate, intersperse, isPrefixOf
@@ -122,7 +128,7 @@ import           Stack.SourceMap
 import           Stack.Storage.User ( loadCompilerPaths, saveCompilerPaths )
 import           Stack.Types.Build.Exception ( BuildPrettyException (..) )
 import           Stack.Types.BuildConfig
-                   ( BuildConfig (..), HasBuildConfig (..), projectRootL
+                   ( BuildConfig (..), HasBuildConfig (..), configFileRootL
                    , wantedCompilerVersionL
                    )
 import           Stack.Types.BuildOptsCLI ( BuildOptsCLI (..) )
@@ -157,10 +163,14 @@ import           Stack.Types.GHCVariant
                    ( GHCVariant (..), HasGHCVariant (..), ghcVariantName
                    , ghcVariantSuffix
                    )
+import           Stack.Types.GlobalOpts ( GlobalOpts (..) )
 import           Stack.Types.Platform
                    ( HasPlatform (..), PlatformVariant (..)
                    , platformOnlyRelDir )
-import           Stack.Types.Runner ( HasRunner (..) )
+import           Stack.Types.Runner
+                   ( HasRunner (..), Runner (..), mExecutablePathL
+                   , viewExecutablePath
+                   )
 import           Stack.Types.SetupInfo ( SetupInfo (..) )
 import           Stack.Types.SourceMap
                    ( SMActual (..), SMWanted (..), SourceMap (..) )
@@ -168,8 +178,9 @@ import           Stack.Types.Version
                    ( VersionCheck, stackMinorVersion, stackVersion )
 import           Stack.Types.VersionedDownloadInfo
                    ( VersionedDownloadInfo (..) )
+import           Stack.Types.WantedCompilerSetter ( WantedCompilerSetter (..) )
 import qualified System.Directory as D
-import           System.Environment ( getExecutablePath, lookupEnv )
+import           System.Environment ( lookupEnv )
 import           System.IO.Error ( isPermissionError )
 import           System.FilePath ( searchPathSeparator )
 import qualified System.FilePath as FP
@@ -612,14 +623,17 @@ defaultSetupInfoYaml :: String
 defaultSetupInfoYaml =
   "https://raw.githubusercontent.com/commercialhaskell/stackage-content/master/stack/stack-setup-2.yaml"
 
+-- | Type representing setup configurations.
 data SetupOpts = SetupOpts
-  { installIfMissing :: !Bool
+  { installGhcIfMissing :: !Bool
+  , installMsysIfMissing :: !Bool
   , useSystem :: !Bool
     -- ^ Should we use a system compiler installation, if available?
   , wantedCompiler :: !WantedCompiler
   , compilerCheck :: !VersionCheck
-  , stackYaml :: !(Maybe (Path Abs File))
-    -- ^ If we got the desired GHC version from that file
+  , configFile :: !(Maybe (Path Abs File))
+    -- ^ If we got the desired GHC version from that configuration file, which
+    -- may be either a user-specific global or a project-level one.
   , forceReinstall :: !Bool
   , sanityCheck :: !Bool
     -- ^ Run a sanity check on the selected GHC
@@ -645,18 +659,20 @@ setupEnv ::
 setupEnv needTargets buildOptsCLI mResolveMissingGHC = do
   config <- view configL
   bc <- view buildConfigL
-  let stackYaml = bc.stackYaml
+  -- We are indifferent as to whether the configuration file is a
+  -- user-specific global or a project-level one.
+  let eitherConfigFile = EE.fromEither bc.configFile
   platform <- view platformL
   wcVersion <- view wantedCompilerVersionL
-  wanted <- view wantedCompilerVersionL
-  actual <- either throwIO pure $ wantedToActual wanted
+  actual <- either throwIO pure $ wantedToActual wcVersion
   let wc = actual^.whichCompilerL
-  let sopts = SetupOpts
-        { installIfMissing = config.installGHC
+      sopts = SetupOpts
+        { installGhcIfMissing = config.installGHC
+        , installMsysIfMissing = config.installMsys
         , useSystem = config.systemGHC
         , wantedCompiler = wcVersion
         , compilerCheck = config.compilerCheck
-        , stackYaml = Just stackYaml
+        , configFile = Just eitherConfigFile
         , forceReinstall = False
         , sanityCheck = False
         , skipGhcCheck = config.skipGHCCheck
@@ -720,14 +736,13 @@ setupEnv needTargets buildOptsCLI mResolveMissingGHC = do
 
   distDir <- runReaderT distRelativeDir envConfig0 >>= canonicalizePath
 
-  executablePath <- liftIO getExecutablePath
-
-  utf8EnvVars <- withProcessContext menv $ getUtf8EnvVars compilerVer
+  mExecutablePath <- view mExecutablePathL
 
   mGhcRtsEnvVar <- liftIO $ lookupEnv "GHCRTS"
 
   envRef <- liftIO $ newIORef Map.empty
-  let getProcessContext' es = do
+  let msysEnv = maybe "" (T.pack . show) config.msysEnvironment
+      getProcessContext' es = do
         m <- readIORef envRef
         case Map.lookup es m of
           Just eo -> pure eo
@@ -744,7 +759,16 @@ setupEnv needTargets buildOptsCLI mResolveMissingGHC = do
                    else id)
 
               $ (if es.stackExe
-                   then Map.insert "STACK_EXE" (T.pack executablePath)
+                   then maybe
+                     -- We don't throw an exception if there is no Stack
+                     -- executable path, so that buildConfigCompleter does not
+                     -- need to specify a path.
+                     id
+                     ( \executablePath -> Map.insert
+                         "STACK_EXE"
+                         (T.pack $ toFilePath executablePath)
+                     )
+                     mExecutablePath
                    else id)
 
               $ (if es.localeUtf8
@@ -753,9 +777,9 @@ setupEnv needTargets buildOptsCLI mResolveMissingGHC = do
 
               $ case (sopts.skipMsys, platform) of
                   (False, Platform Cabal.I386   Cabal.Windows) ->
-                    Map.insert "MSYSTEM" "MINGW32"
+                    Map.insert "MSYSTEM" msysEnv
                   (False, Platform Cabal.X86_64 Cabal.Windows) ->
-                    Map.insert "MSYSTEM" "MINGW64"
+                    Map.insert "MSYSTEM" msysEnv
                   _ -> id
 
               -- See https://github.com/commercialhaskell/stack/issues/3444
@@ -1020,20 +1044,17 @@ warnUnsupportedCompiler ::
 warnUnsupportedCompiler ghcVersion = do
   notifyIfGhcUntested <- view $ configL . to (.notifyIfGhcUntested)
   if
-    | ghcVersion < mkVersion [7, 8] -> do
+    | ghcVersion < mkVersion [8, 4] -> do
         prettyWarnL
-          [ flow "Stack will almost certainly fail with GHC below version 7.8, \
+          [ flow "Stack will almost certainly fail with GHC below version 8.4, \
                  \requested"
           , fromString (versionString ghcVersion) <> "."
-          , flow "Valiantly attempting to run anyway, but I know this is \
-                 \doomed."
-          , flow "For more information, see:"
-          , style Url "https://github.com/commercialhaskell/stack/issues/648" <> "."
+          , flow "Valiantly attempting to run anyway, but this is doomed."
           ]
         pure True
-    | ghcVersion >= mkVersion [9, 9] && notifyIfGhcUntested -> do
+    | ghcVersion >= mkVersion [9, 11] && notifyIfGhcUntested -> do
         prettyWarnL
-          [ flow "Stack has not been tested with GHC versions 9.10 and above, \
+          [ flow "Stack has not been tested with GHC versions 9.12 and above, \
                  \and using"
           , fromString (versionString ghcVersion) <> ","
           , flow "this may fail."
@@ -1055,28 +1076,29 @@ warnUnsupportedCompilerCabal cp didWarn = do
   let cabalVersion = cp.cabalVersion
   notifyIfCabalUntested <- view $ configL . to (.notifyIfCabalUntested)
   if
-    | cabalVersion < mkVersion [1, 24, 0] -> do
+    | cabalVersion < mkVersion [2, 2] -> do
+            -- Due to a bug, Stack 2.15.1 does not support Cabal < 2.
+        let downgradeRecommendation = fillSep $
+                 [ flow "Stack 2.15.5 or earlier" ]
+              <> [ flow "(except Stack 2.15.1)" | cabalVersion < mkVersion [2] ]
         prettyWarnL
-          [ flow "Stack no longer supports Cabal versions below 1.24.0.0, but \
-                 \version"
+          [ flow "Stack uses the version of the Cabal package that comes with \
+                 \the specified version of GHC. However, Stack no longer \
+                 \supports such Cabal versions before 2.2. Version"
           , fromString (versionString cabalVersion)
-          , flow "was found. This invocation will most likely fail. To fix \
-                 \this, either use an older version of Stack or a newer \
-                 \resolver. Acceptable resolvers: lts-7.0/nightly-2016-05-26 \
-                 \or later."
+          , flow "was found. This invocation of Stack may fail. To fix this, \
+                 \either use"
+          , downgradeRecommendation
+          , flow "or use a snapshot that specifies a version of GHC that is \
+                 \8.4 or later. Stackage LTS Haskell 12.0"
+          , parens (style Shell "lts-12.0")
+          , flow "or later or Nightly 2018-03-13"
+          , parens (style Shell "nightly-2018-03-13")
+          , flow "or later specify such GHC versions."
           ]
-    | cabalVersion < mkVersion [2, 2, 0] -> do
+    | cabalVersion >= mkVersion [3, 13] && notifyIfCabalUntested ->
         prettyWarnL
-          [ flow "Stack's support of Cabal versions below 2.2.0.0 is \
-                 \deprecated and may be removed from the next version of \
-                 \ Stack. Cabal version"
-          , fromString (versionString cabalVersion)
-          , flow "was found. Consider using a resolver that is \
-                 \lts-12.0 or later or nightly-2018-03-13 or later."
-          ]
-    | cabalVersion >= mkVersion [3, 11] && notifyIfCabalUntested ->
-        prettyWarnL
-          [ flow "Stack has not been tested with Cabal versions 3.12 and \
+          [ flow "Stack has not been tested with Cabal versions 3.14 and \
                  \above, but version"
           , fromString (versionString cabalVersion)
           , flow "was found, this may fail."
@@ -1100,7 +1122,7 @@ ensureMsys sopts getSetupInfo' = do
       case getInstalledTool installed (mkPackageName "msys2") (const True) of
         Just tool -> pure (Just tool)
         Nothing
-          | sopts.installIfMissing -> do
+          | sopts.installMsysIfMissing -> do
               si <- runMemoized getSetupInfo'
               let msysDir = fillSep
                     [ style Dir "msys2-yyyymmdd"
@@ -1119,7 +1141,7 @@ ensureMsys sopts getSetupInfo' = do
                          tool
                          (installMsys2Windows si)
           | otherwise -> do
-              prettyWarnS "Continuing despite missing tool: MSYS2."
+              prettyWarnS "Stack is not using a Stack-supplied MSYS2."
               pure Nothing
     _ -> pure Nothing
 
@@ -1154,13 +1176,18 @@ installGhcBindist sopts getSetupInfo' installed = do
             (Just tool, False) -> [(tool, compilerBuild)]
             _ -> [])
         possibleCompilers
+      globalOpts = config.runner.globalOpts
+      wantedCompilerSetter
+        | isJust globalOpts.compiler = CompilerAtCommandLine
+        | isJust globalOpts.snapshot = SnapshotAtCommandLine
+        | otherwise = YamlConfiguration sopts.configFile
   logDebug $
        "Found already installed GHC builds: "
     <> mconcat (intersperse ", " (map (fromString . compilerBuildName . snd) existingCompilers))
   case existingCompilers of
     (tool, build_):_ -> pure (tool, build_)
     []
-      | sopts.installIfMissing -> do
+      | sopts.installGhcIfMissing -> do
           si <- runMemoized getSetupInfo'
           downloadAndInstallPossibleCompilers
             (map snd possibleCompilers)
@@ -1198,7 +1225,7 @@ installGhcBindist sopts getSetupInfo' installed = do
               [] -> CompilerBuildStandard
               (_, compilerBuild):_ -> compilerBuild)
             sopts.compilerCheck
-            sopts.stackYaml
+            wantedCompilerSetter
             suggestion
 
 -- | Ensure compiler is installed.
@@ -1573,11 +1600,11 @@ buildGhcFromSource getSetupInfo' installed (CompilerRepository url) commitId fla
             stack args = proc "stack" args'' runProcess_
              where
               args'' = "--stack-yaml=" <> relFileHadrianStackDotYaml' : args'
-              -- If a resolver is specified on the command line, Stack will
-              -- apply it. This allows the resolver specified in Hadrian's
+              -- If a snapshot is specified on the command line, Stack will
+              -- apply it. This allows the snapshot specified in Hadrian's
               -- stack.yaml file to be overridden.
-              args' = maybe args addResolver config.resolver
-              addResolver resolver = "--snapshot=" <> show resolver : args
+              args' = maybe args addSnapshot config.snapshot
+              addSnapshot snapshot = "--snapshot=" <> show snapshot : args
             happy = stack ["install", "happy"]
             alex = stack ["install", "alex"]
             -- Executed in the Stack environment, because GHC is required.
@@ -1669,6 +1696,10 @@ getGhcBuilds = do
     Just ghcBuild -> pure [ghcBuild]
     Nothing -> determineGhcBuild
  where
+  -- The GHCup project is also interested in the algorithm below, as it copies
+  -- it at GHCup.Platform.getStackGhcBuilds. If you change this algorithm, it
+  -- would be a courtesy to bring that to the attention of the GHCup project
+  -- maintainers.
   determineGhcBuild = do
     -- TODO: a more reliable, flexible, and data driven approach would be to
     -- actually download small "test" executables (from setup-info) that link to
@@ -1852,7 +1883,7 @@ sysRelease =
     )
     (liftIO getRelease)
 
--- | Ensure Docker container-compatible 'stack' executable is downloaded
+-- | Ensure Docker container-compatible \'stack\' executable is downloaded
 ensureDockerStackExe :: HasConfig env => Platform -> RIO env (Path Abs File)
 ensureDockerStackExe containerPlatform = do
   config <- view configL
@@ -1931,17 +1962,28 @@ getInstalledTool ::
 getInstalledTool installed name goodVersion = Tool <$>
   maximumByMaybe (comparing pkgVersion) (filterTools name goodVersion installed)
 
+-- | Obtain and install the specified tool, using the specified download
+-- information and installer. Also deletes the archive file for the tool after
+-- installation.
 downloadAndInstallTool ::
      (HasTerm env, HasBuildConfig env)
   => Path Abs Dir
+     -- ^ Location of the directory for tools.
   -> DownloadInfo
+     -- ^ Information about the file to obtain.
   -> Tool
+     -- ^ The tool in question.
   -> (  Path Abs File
+        -- Location of archive file.
      -> ArchiveType
+        -- Type of archive file.
      -> Path Abs Dir
+        -- Tempory directory to use.
      -> Path Abs Dir
+        -- Destination directory for installed tool.
      -> RIO env ()
      )
+     -- ^ Installer.
   -> RIO env Tool
 downloadAndInstallTool programsDir downloadInfo tool installer = do
   ensureDir programsDir
@@ -1954,6 +1996,7 @@ downloadAndInstallTool programsDir downloadInfo tool installer = do
   installer file at tempDir dir
   markInstalled programsDir tool
   liftIO $ ignoringAbsence (removeDirRecur tempDir)
+  liftIO $ ignoringAbsence (removeFile file)
   pure tool
 
 -- Exceptions thrown by this function are caught by
@@ -2158,8 +2201,8 @@ downloadOrUseLocal downloadLabel downloadInfo destination =
       pure path
     (parseRelFile -> Just path) -> do
       warnOnIgnoredChecks
-      root <- view projectRootL
-      pure (root </> path)
+      configFileRoot <- view configFileRootL
+      pure (configFileRoot </> path)
     _ -> prettyThrowIO $ URLInvalid url
  where
   url = T.unpack downloadInfo.url
@@ -2411,19 +2454,26 @@ withUnpackedTarball7z name si archiveFile archiveType destDir = do
       Nothing -> prettyThrowIO $ TarballFileInvalid name archiveFile
       Just x -> parseRelFile $ T.unpack x
   run7z <- setup7z si
-  -- We use a short name for the temporary directory to reduce the risk of a
-  -- filepath length of more than 260 characters, which can be problematic for
-  -- 7-Zip even if Long Filepaths are enabled on Windows.
+  -- We aim to reduce the risk of a filepath length of more than 260 characters,
+  -- which can be problematic for 7-Zip if Windows is not 'long file paths'
+  -- enabled. We use a short name for the temporary directory ...
   let tmpName = "stack-tmp"
       destDrive = takeDrive destDir
   ensureDir (parent destDir)
+  tempDrive <- takeDrive <$> getTempDir
+  -- We use a temporary directory with likely a short absolute path ...
+  let withTempDir' = if tempDrive == destDrive
+        then
+          -- We use the system temporary directory if we can, as a Standard user
+          -- may well not have permission to create a directory in the root of
+          -- the system drive.
+          withSystemTempDir
+        else
+          -- Otherwise we use a temporary directory in the root of the
+          -- destination drive.
+          withTempDir destDrive
   withRunInIO $ \run ->
-  -- We use a temporary directory in the same drive as that of 'destDir' to
-  -- reduce the risk of a filepath length of more than 260 characters, which can
-  -- be problematic for 7-Zip even if Long Filepaths are enabled on Windows. We
-  -- do not use the system temporary directory as it may be on a different
-  -- drive.
-    withTempDir destDrive tmpName $ \tmpDir ->
+    withTempDir' tmpName $ \tmpDir ->
       run $ do
         liftIO $ ignoringAbsence (removeDirRecur destDir)
         run7z tmpDir archiveFile
@@ -2587,144 +2637,15 @@ removeHaskellEnvVars =
   -- https://github.com/commercialhaskell/stack/issues/3444
   Map.delete "GHCRTS"
 
--- | Get map of environment variables to set to change the GHC's encoding to
--- UTF-8.
-getUtf8EnvVars ::
-     (HasPlatform env, HasProcessContext env, HasTerm env)
-  => ActualCompiler
-  -> RIO env (Map Text Text)
-getUtf8EnvVars compilerVer =
-  if getGhcVersion compilerVer >= mkVersion [7, 10, 3]
-    -- GHC_CHARENC supported by GHC >=7.10.3
-    then pure $ Map.singleton "GHC_CHARENC" "UTF-8"
-    else legacyLocale
- where
-  legacyLocale = do
-    menv <- view processContextL
-    Platform _ os <- view platformL
-    if os == Cabal.Windows
-      then
-        -- On Windows, locale is controlled by the code page, so we don't set
-        -- any environment variables.
-        pure Map.empty
-      else do
-        let checkedVars = map checkVar (Map.toList $ view envVarsL menv)
-            -- List of environment variables that will need to be updated to set
-            -- UTF-8 (because they currently do not specify UTF-8).
-            needChangeVars = concatMap fst checkedVars
-            -- Set of locale-related environment variables that have already
-            -- have a value.
-            existingVarNames = Set.unions (map snd checkedVars)
-            -- True if a locale is already specified by one of the "global"
-            -- locale variables.
-            hasAnyExisting =
-              any (`Set.member` existingVarNames) ["LANG", "LANGUAGE", "LC_ALL"]
-        if null needChangeVars && hasAnyExisting
-          then
-            -- If no variables need changes and at least one "global" variable
-            -- is set, no changes to environment need to be made.
-            pure Map.empty
-          else do
-            -- Get a list of known locales by running @locale -a@.
-            elocales <- tryAny (fst <$> proc "locale" ["-a"] readProcess_)
-            let
-                -- Filter the list to only include locales with UTF-8 encoding.
-                utf8Locales =
-                  case elocales of
-                    Left _ -> []
-                    Right locales ->
-                      filter
-                        isUtf8Locale
-                        ( T.lines $
-                          T.decodeUtf8With
-                            T.lenientDecode $
-                            LBS.toStrict locales
-                        )
-                mfallback = getFallbackLocale utf8Locales
-            when
-              (isNothing mfallback)
-              ( prettyWarnS
-                  "Unable to set locale to UTF-8 encoding; GHC may \
-                  \fail with 'invalid character'"
-              )
-            let
-                -- Get the new values of variables to adjust.
-                changes =
-                  Map.unions $
-                  map
-                    (adjustedVarValue menv utf8Locales mfallback)
-                    needChangeVars
-                -- Get the values of variables to add.
-                adds
-                  | hasAnyExisting =
-                      -- If we already have a "global" variable, then nothing
-                      -- needs to be added.
-                      Map.empty
-                  | otherwise =
-                      -- If we don't already have a "global" variable, then set
-                      -- LANG to the fallback.
-                      case mfallback of
-                        Nothing -> Map.empty
-                        Just fallback ->
-                          Map.singleton "LANG" fallback
-            pure (Map.union changes adds)
-  -- Determines whether an environment variable is locale-related and, if so,
-  -- whether it needs to be adjusted.
-  checkVar :: (Text, Text) -> ([Text], Set Text)
-  checkVar (k,v) =
-    if k `elem` ["LANG", "LANGUAGE"] || "LC_" `T.isPrefixOf` k
-      then if isUtf8Locale v
-             then ([], Set.singleton k)
-             else ([k], Set.singleton k)
-      else ([], Set.empty)
-  -- Adjusted value of an existing locale variable.  Looks for valid UTF-8
-  -- encodings with same language /and/ territory, then with same language, and
-  -- finally the first UTF-8 locale returned by @locale -a@.
-  adjustedVarValue ::
-       ProcessContext
-    -> [Text]
-    -> Maybe Text
-    -> Text
-    -> Map Text Text
-  adjustedVarValue menv utf8Locales mfallback k =
-    case Map.lookup k (view envVarsL menv) of
-      Nothing -> Map.empty
-      Just v ->
-        case concatMap
-               (matchingLocales utf8Locales)
-               [ T.takeWhile (/= '.') v <> "."
-               , T.takeWhile (/= '_') v <> "_"] of
-          (v':_) -> Map.singleton k v'
-          [] -> case mfallback of
-                  Just fallback -> Map.singleton k fallback
-                  Nothing -> Map.empty
-  -- Determine the fallback locale, by looking for any UTF-8 locale prefixed
-  -- with the list in @fallbackPrefixes@, and if not found, picking the first
-  -- UTF-8 encoding returned by @locale -a@.
-  getFallbackLocale :: [Text] -> Maybe Text
-  getFallbackLocale utf8Locales =
-    case concatMap (matchingLocales utf8Locales) fallbackPrefixes of
-      (v:_) -> Just v
-      [] -> case utf8Locales of
-              [] -> Nothing
-              (v:_) -> Just v
-  -- Filter the list of locales for any with the given prefixes
-  -- (case-insensitive).
-  matchingLocales :: [Text] -> Text -> [Text]
-  matchingLocales utf8Locales prefix =
-    filter (\v -> T.toLower prefix `T.isPrefixOf` T.toLower v) utf8Locales
-  -- Does the locale have one of the encodings in @utf8Suffixes@
-  -- (case-insensitive)?
-  isUtf8Locale locale =
-    any (\ v -> T.toLower v `T.isSuffixOf` T.toLower locale) utf8Suffixes
-  -- Prefixes of fallback locales (case-insensitive)
-  fallbackPrefixes = ["C.", "en_US.", "en_"]
-  -- Suffixes of UTF-8 locales (case-insensitive)
-  utf8Suffixes = [".UTF-8", ".utf8"]
+-- | Map of environment variables to set to change the GHC's encoding to UTF-8.
+utf8EnvVars :: Map Text Text
+utf8EnvVars =
+  -- GHC_CHARENC supported by GHC >=7.10.3
+  Map.singleton "GHC_CHARENC" "UTF-8"
 
 -- Binary Stack upgrades
 
--- | Information on a binary release of Stack
+-- | Information on a binary release of Stack.
 data StackReleaseInfo
   = SRIGitHub !Value
     -- ^ Metadata downloaded from GitHub releases about available binaries.
@@ -2737,11 +2658,14 @@ data HaskellStackOrg = HaskellStackOrg
   }
   deriving Show
 
+-- | Download information on a binary release of Stack. If there is no given
+-- GitHub user, GitHub repository and version, then first tries
+-- @haskellstack.org@.
 downloadStackReleaseInfo ::
      (HasLogFunc env, HasPlatform env)
-  => Maybe String -- GitHub org
-  -> Maybe String -- GitHub repo
-  -> Maybe String -- ^ optional version
+  => Maybe String -- ^ Optional GitHub user.
+  -> Maybe String -- ^ Optional GitHub repository.
+  -> Maybe String -- ^ Optional version.
   -> RIO env StackReleaseInfo
 downloadStackReleaseInfo Nothing Nothing Nothing = do
   platform <- view platformL
@@ -2848,6 +2772,9 @@ downloadStackReleaseInfoGitHub morg mrepo mver = liftIO $ do
     then pure $ SRIGitHub $ getResponseBody res
     else prettyThrowIO $ StackReleaseInfoNotFound url
 
+-- | Yield a list of the preferred GHC variants for the platform. The first item
+-- of each pair indicates if the operating system is Windows. The second item
+-- is the name of the GHC variant in Stack's @setup-info@ dictionary.
 preferredPlatforms ::
      (MonadReader env m, HasPlatform env, MonadThrow m)
   => m [(Bool, String)]
@@ -2876,6 +2803,7 @@ preferredPlatforms = do
         | otherwise = ["-static", ""]
   pure $ map (\suffix -> (isWindows, concat [os, "-", arch, suffix])) suffixes
 
+-- | Download a Stack executable.
 downloadStackExe ::
      HasConfig env
   => [(Bool, String)] -- ^ acceptable platforms
@@ -2923,10 +2851,10 @@ downloadStackExe platforms0 archiveInfo destDir checkPath testExe = do
 
   prettyInfoS "Download complete, testing executable."
 
-  -- We need to call getExecutablePath before we overwrite the
-  -- currently running binary: after that, Linux will append
-  -- (deleted) to the filename.
-  currExe <- liftIO getExecutablePath >>= parseAbsFile
+  -- We need to preserve the name of the executable file before we overwrite the
+  -- currently running binary: after that, Linux will append (deleted) to the
+  -- filename.
+  currExe <- viewExecutablePath
 
   liftIO $ do
     setFileExecutable (toFilePath tmpFile)
@@ -3086,6 +3014,7 @@ performPathChecking newExeFile currExeFile = do
                   <> flow "sudo file copy worked!"
         | otherwise -> throwM e
 
+-- | If available, yields the version of the given binary release of Stack.
 getDownloadVersion :: StackReleaseInfo -> Maybe Version
 getDownloadVersion (SRIGitHub val) = do
   Object o <- Just val

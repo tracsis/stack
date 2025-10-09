@@ -1,12 +1,17 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 
--- | Simple interface to complicated program arguments.
---
--- This is a "fork" of the @optparse-simple@ package that has some workarounds
--- for optparse-applicative issues that become problematic with programs that
--- have many options and subcommands. Because it makes the interface more
--- complex, these workarounds are not suitable for pushing upstream to
--- optparse-applicative.
+{-|
+Module      : Options.Applicative.Complicated
+Description : Simple interface to complicated program arguments.
+License     : BSD-3-Clause
+
+Simple interface to complicated program arguments.
+
+This is a "fork" of the @optparse-simple@ package that has some workarounds for
+optparse-applicative issues that become problematic with programs that have many
+options and subcommands. Because it makes the interface more complex, these
+workarounds are not suitable for pushing upstream to optparse-applicative.
+-}
 
 module Options.Applicative.Complicated
   ( addCommand
@@ -20,9 +25,9 @@ import           Control.Monad.Trans.Writer ( runWriter, tell )
 import           Options.Applicative
                    ( Parser, ParserFailure, ParserHelp, ParserResult (..)
                    , abortOption, command, execParserPure, footer, fullDesc
-                   , handleParseResult, header, help, info, infoOption, long
-                   , metavar, noBacktrack, prefs, progDesc, showHelpOnEmpty
-                   , hsubparser
+                   , handleParseResult, header, help, hsubparser, info
+                   , infoOption, long, metavar, noBacktrack, prefs, progDesc
+                   , short, showHelpOnEmpty
                    )
 import           Options.Applicative.Builder.Extra ( showHelpText )
 import           Stack.Prelude
@@ -186,4 +191,5 @@ helpOption :: Parser (a -> a)
 helpOption =
   abortOption showHelpText $
        long "help"
+    <> short 'h'
     <> help "Show this help text."

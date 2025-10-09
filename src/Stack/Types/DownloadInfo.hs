@@ -2,6 +2,11 @@
 {-# LANGUAGE NoFieldSelectors  #-}
 {-# LANGUAGE OverloadedStrings #-}
 
+{-|
+Module      : Stack.Types.DownloadInfo
+License     : BSD-3-Clause
+-}
+
 module Stack.Types.DownloadInfo
   ( DownloadInfo (..)
   , parseDownloadInfoFromObject
@@ -14,7 +19,6 @@ import           Data.Aeson.WarningParser
                    )
 import           Stack.Prelude
 
--- | Build of the compiler distribution (e.g. standard, gmp4, tinfo6)
 -- | Information for a file to download.
 data DownloadInfo = DownloadInfo
   { url :: Text
@@ -28,7 +32,7 @@ data DownloadInfo = DownloadInfo
 instance FromJSON (WithJSONWarnings DownloadInfo) where
   parseJSON = withObjectWarnings "DownloadInfo" parseDownloadInfoFromObject
 
--- | Parse JSON in existing object for 'DownloadInfo'
+-- | Parse JSON in existing object for t'DownloadInfo'
 parseDownloadInfoFromObject :: Object -> WarningParser DownloadInfo
 parseDownloadInfoFromObject o = do
   url <- o ..: "url"

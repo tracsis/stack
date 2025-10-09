@@ -1,18 +1,20 @@
-ARG BUILD_ON_IMAGE=glcr.b-data.ch/ghc/ghc-musl
+ARG BUILD_ON_IMAGE=quay.io/benz0li/ghc-musl
 ARG GHC_VERSION=latest
+ARG SUBTAG
 ARG HLS_VERSION
 ARG STACK_VERSION
 
 ARG HLS_GHC_VERSION=${HLS_VERSION:+$GHC_VERSION}
-ARG HLS_SFX=/${HLS_GHC_VERSION:-all}/hls:${HLS_VERSION:-none}
+ARG HLS_IMAGE_TAG=${HLS_VERSION:-none}-ghc${HLS_GHC_VERSION:-all}
 
 ARG STACK_VERSION_OVERRIDE=${STACK_VERSION}
 
-FROM ${BUILD_ON_IMAGE}:${GHC_VERSION} as files
+FROM ${BUILD_ON_IMAGE}:${GHC_VERSION}${SUBTAG:+-}${SUBTAG} AS files
 
 RUN mkdir /files
 
-COPY conf /files
+COPY conf/shell /files
+COPY conf/stack /files
 COPY scripts /files
 
 ## Ensure file modes are correct
@@ -20,13 +22,13 @@ RUN find /files -type d -exec chmod 755 {} \; \
   && find /files -type f -exec chmod 644 {} \; \
   && find /files/usr/local/bin -type f -exec chmod 755 {} \;
 
-FROM ${BUILD_ON_IMAGE}${HLS_SFX} as hls
+FROM quay.io/benz0li/hlssi:${HLS_IMAGE_TAG} AS hlssi
 
-FROM glcr.b-data.ch/ndmitchell/hlsi:latest as hlsi
+FROM quay.io/benz0li/hlsi:latest AS hlsi
 
-FROM docker.io/koalaman/shellcheck:stable as sci
+FROM docker.io/koalaman/shellcheck:stable AS sci
 
-FROM ${BUILD_ON_IMAGE}:${GHC_VERSION}
+FROM ${BUILD_ON_IMAGE}:${GHC_VERSION}${SUBTAG:+-}${SUBTAG}
 
 COPY --from=files /files /
 
@@ -55,11 +57,14 @@ RUN sysArch="$(uname -m)" \
 
 ## Update environment
 ARG USE_ZSH_FOR_ROOT
-ARG SET_LANG
-ARG SET_TZ
+ARG LANG
+ARG TZ
 
-ENV TZ=${SET_TZ:-$TZ} \
-    LANG=${SET_LANG:-$LANG}
+ARG LANG_OVERRIDE=${LANG}
+ARG TZ_OVERRIDE=${TZ}
+
+ENV LANG=${LANG_OVERRIDE:-$LANG} \
+    TZ=${TZ_OVERRIDE:-$TZ}
 
   ## Change root's shell to ZSH
 RUN if [ -n "$USE_ZSH_FOR_ROOT" ]; then \
@@ -67,14 +72,13 @@ RUN if [ -n "$USE_ZSH_FOR_ROOT" ]; then \
     fix-chsh.sh; \
     chsh -s /bin/zsh; \
   fi \
-  ## Update timezone if needed
+  ## Update timezone if requested
   && if [ "$TZ" != "" ]; then \
     apk add --no-cache tzdata; \
-    echo "Setting TZ to $TZ"; \
-    ln -snf "/usr/share/zoneinfo/$TZ" /etc/localtime \
-      && echo "$TZ" > /etc/timezone; \
   fi \
-  ## Add/Update locale if needed
+  ## Info about timezone
+  && echo "TZ is set to $TZ" \
+  ## Add/Update locale if requested
   && if [ "$LANG" != "C.UTF-8" ]; then \
     if [ -n "$LANG" ]; then \
       apk add --no-cache musl-locales musl-locales-lang; \
@@ -83,11 +87,13 @@ RUN if [ -n "$USE_ZSH_FOR_ROOT" ]; then \
     sed -i "s/LANG:-C.UTF-8/LANG:-$LANG/" /etc/profile.d/*locale.sh; \
     sed -i "s/LC_COLLATE=C/LC_COLLATE=$LANG/" /etc/profile.d/*locale.sh; \
     sed -i "s/LC_COLLATE:-C/LC_COLLATE:-$LANG/" /etc/profile.d/*locale.sh; \
-  fi
+  fi \
+  ## Info about locale
+  && echo "LANG is set to $LANG"
 
 ## Copy binaries as late as possible to avoid cache busting
 ## Install HLS
-COPY --from=hls /usr/local /usr/local
+COPY --from=hlssi /usr/local /usr/local
 ## Install HLint
 COPY --from=hlsi /usr/local /usr/local
 ## Install ShellCheck
@@ -108,7 +114,7 @@ RUN if [ -n "$STACK_VERSION_OVERRIDE" ]; then \
     curl -sSLO https://github.com/commercialhaskell/stack/releases/download/v"$STACK_VERSION"/stack-"$STACK_VERSION"-linux-"$(uname -m)".tar.gz.sha256; \
     sha256sum -cs stack-"$STACK_VERSION"-linux-"$(uname -m)".tar.gz.sha256; \
     tar -xzf stack-"$STACK_VERSION"-linux-"$(uname -m)".tar.gz; \
-    if dpkg --compare-versions "${GHC_VERSION%.*}" le "9.2"; then \
+    if dpkg --compare-versions "$GHC_VERSION" lt "9.2.8"; then \
       mv -f stack-"$STACK_VERSION"-linux-"$(uname -m)"/stack /usr/bin/stack; \
     else \
       mv -f stack-"$STACK_VERSION"-linux-"$(uname -m)"/stack /usr/local/bin/stack; \

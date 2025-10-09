@@ -1,7 +1,13 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE DataKinds         #-}
 
--- | Finding files.
+{-|
+Module      : Path.Find
+Description : Finding files.
+License     : BSD-3-Clause
+
+Finding files.
+-}
 
 module Path.Find
   ( findFileUp
@@ -19,33 +25,36 @@ import           System.PosixCompat.Files
                    ( getSymbolicLinkStatus, isSymbolicLink )
 
 -- | Find the location of a file matching the given predicate.
-findFileUp :: (MonadIO m, MonadThrow m)
-           => Path Abs Dir              -- ^ Start here.
-           -> (Path Abs File -> Bool)   -- ^ Predicate to match the file.
-           -> Maybe (Path Abs Dir)      -- ^ Do not ascend above this directory.
-           -> m (Maybe (Path Abs File)) -- ^ Absolute file path.
+findFileUp ::
+     (MonadIO m, MonadThrow m)
+  => Path Abs Dir              -- ^ Start here.
+  -> (Path Abs File -> Bool)   -- ^ Predicate to match the file.
+  -> Maybe (Path Abs Dir)      -- ^ Do not ascend above this directory.
+  -> m (Maybe (Path Abs File)) -- ^ Absolute file path.
 findFileUp = findPathUp snd
 
 -- | Find the location of a directory matching the given predicate.
-findDirUp :: (MonadIO m,MonadThrow m)
-          => Path Abs Dir               -- ^ Start here.
-          -> (Path Abs Dir -> Bool)     -- ^ Predicate to match the directory.
-          -> Maybe (Path Abs Dir)       -- ^ Do not ascend above this directory.
-          -> m (Maybe (Path Abs Dir))   -- ^ Absolute directory path.
+findDirUp ::
+     (MonadIO m,MonadThrow m)
+  => Path Abs Dir               -- ^ Start here.
+  -> (Path Abs Dir -> Bool)     -- ^ Predicate to match the directory.
+  -> Maybe (Path Abs Dir)       -- ^ Do not ascend above this directory.
+  -> m (Maybe (Path Abs Dir))   -- ^ Absolute directory path.
 findDirUp = findPathUp fst
 
 -- | Find the location of a path matching the given predicate.
-findPathUp :: (MonadIO m,MonadThrow m)
-           => (([Path Abs Dir],[Path Abs File]) -> [Path Abs t])
-              -- ^ Choose path type from pair.
-           -> Path Abs Dir
-              -- ^ Start here.
-           -> (Path Abs t -> Bool)
-              -- ^ Predicate to match the path.
-           -> Maybe (Path Abs Dir)
-              -- ^ Do not ascend above this directory.
-           -> m (Maybe (Path Abs t))
-              -- ^ Absolute path.
+findPathUp ::
+     (MonadIO m,MonadThrow m)
+  => (([Path Abs Dir],[Path Abs File]) -> [Path Abs t])
+     -- ^ Choose path type from pair.
+  -> Path Abs Dir
+     -- ^ Start here.
+  -> (Path Abs t -> Bool)
+     -- ^ Predicate to match the path.
+  -> Maybe (Path Abs Dir)
+     -- ^ Do not ascend above this directory.
+  -> m (Maybe (Path Abs t))
+     -- ^ Absolute path.
 findPathUp pathType dir p upperBound = do
   entries <- listDir dir
   case L.find p (pathType entries) of
@@ -61,14 +70,15 @@ findPathUp pathType dir p upperBound = do
 --
 -- TODO: write one of these that traverses symbolic links but
 -- efficiently ignores loops.
-findFiles :: Path Abs Dir
-             -- ^ Root directory to begin with.
-          -> (Path Abs File -> Bool)
-             -- ^ Predicate to match files.
-          -> (Path Abs Dir -> Bool)
-             -- ^ Predicate for which directories to traverse.
-          -> IO [Path Abs File]
-             -- ^ List of matching files.
+findFiles ::
+     Path Abs Dir
+     -- ^ Root directory to begin with.
+  -> (Path Abs File -> Bool)
+     -- ^ Predicate to match files.
+  -> (Path Abs Dir -> Bool)
+     -- ^ Predicate for which directories to traverse.
+  -> IO [Path Abs File]
+     -- ^ List of matching files.
 findFiles dir p traversep = do
   (dirs,files) <- catchJust (\ e -> if isPermissionError e
                                       then Just ()

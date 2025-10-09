@@ -3,13 +3,16 @@
 {-# LANGUAGE OverloadedRecordDot   #-}
 {-# LANGUAGE OverloadedStrings     #-}
 
--- | Types and functions related to Stack's @upgrade@ command.
+{-|
+Module      : Stack.Upgrade
+Description : Function related to Stack's @upgrade@ command.
+License     : BSD-3-Clause
+
+Function related to Stack's @upgrade@ command.
+-}
+
 module Stack.Upgrade
-  ( UpgradeOpts (..)
-  , BinaryOpts (..)
-  , SourceOpts (..)
-  , upgradeCmd
-  , upgrade
+  ( upgradeCmd
   ) where
 
 import qualified Data.Text as T
@@ -34,12 +37,14 @@ import           Stack.Types.Config ( Config (..), HasConfig (..), buildOptsL )
 import           Stack.Types.GlobalOpts ( GlobalOpts (..) )
 import           Stack.Types.Runner ( Runner, globalOptsL )
 import           Stack.Types.StackYamlLoc ( StackYamlLoc (..) )
+import           Stack.Types.UpgradeOpts
+                   ( BinaryOpts (..), SourceOpts (..), UpgradeOpts (..) )
 import           System.Process ( rawSystem, readProcess )
 
 -- | Type representing \'pretty\' exceptions thrown by functions in the
 -- "Stack.Upgrade" module.
 data UpgradePrettyException
-  = ResolverOptionInvalid
+  = SnapshotOptionInvalid
   | NeitherBinaryOrSourceSpecified
   | ExecutableFailure
   | CommitsNotFound String String
@@ -48,12 +53,12 @@ data UpgradePrettyException
   deriving (Show, Typeable)
 
 instance Pretty UpgradePrettyException where
-  pretty ResolverOptionInvalid =
+  pretty SnapshotOptionInvalid =
     "[S-8761]"
     <> line
     <> fillSep
          [ "The"
-         , style Shell "--resolver"
+         , style Shell "--snapshot"
          , flow "option cannot be used with Stack's"
          , style Shell "upgrade"
          , "command."
@@ -86,40 +91,12 @@ instance Pretty UpgradePrettyException where
 
 instance Exception UpgradePrettyException
 
--- | Type representing options for upgrading Stack with a binary executable
--- file.
-data BinaryOpts = BinaryOpts
-  { platform :: !(Maybe String)
-  , force :: !Bool
-    -- ^ Force a download, even if the downloaded version is older than what we
-    -- are.
-  , onlyLocalBin :: !Bool
-    -- ^ Only download to Stack's local binary directory.
-  , version :: !(Maybe String)
-    -- ^ Specific version to download
-  , gitHubOrg :: !(Maybe String)
-  , gitHubRepo :: !(Maybe String)
-  }
-  deriving Show
-
--- | Type representing options for upgrading Stack from source code.
-newtype SourceOpts
-  = SourceOpts (Maybe (String, String)) -- repo and branch
-  deriving Show
-
--- | Type representing command line options for the @stack upgrade@ command.
-data UpgradeOpts = UpgradeOpts
-  { binary :: !(Maybe BinaryOpts)
-  , source :: !(Maybe SourceOpts)
-  }
-  deriving Show
-
 -- | Function underlying the @stack upgrade@ command.
 upgradeCmd :: UpgradeOpts -> RIO Runner ()
 upgradeCmd upgradeOpts = do
   go <- view globalOptsL
-  case go.resolver of
-    Just _ -> prettyThrowIO ResolverOptionInvalid
+  case go.snapshot of
+    Just _ -> prettyThrowIO SnapshotOptionInvalid
     Nothing -> withGlobalProject $ upgrade maybeGitHash upgradeOpts
 
 upgrade ::
@@ -283,8 +260,8 @@ sourceUpgrade builtHash (SourceOpts gitRepo) =
                 pure $ Just dir
 
     let modifyGO dir go = go
-          { resolver = Nothing -- always use the resolver settings in the
-                                     -- stack.yaml file
+          { snapshot = Nothing -- always use the snapshot settings in the
+                               -- stack.yaml file
           , stackYaml = SYLOverride $ dir </> stackDotYaml
           }
         boptsCLI = defaultBuildOptsCLI { targetsCLI = ["stack"] }

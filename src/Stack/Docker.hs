@@ -3,7 +3,14 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings   #-}
 
--- | Run commands in Docker containers
+{-|
+Module      : Stack.Docker
+Description : Run commands in Docker containers.
+License     : BSD-3-Clause
+
+Run commands in Docker containers.
+-}
+
 module Stack.Docker
   ( dockerCmdName
   , dockerHelpOptName
@@ -18,6 +25,7 @@ module Stack.Docker
   , runContainerAndExit
   ) where
 
+import           Control.Monad.Extra ( whenJust )
 import qualified Crypto.Hash as Hash ( Digest, MD5, hash )
 import           Data.Aeson ( eitherDecode )
 import           Data.Aeson.Types ( FromJSON (..), (.!=) )
@@ -43,7 +51,7 @@ import           Path.Extra ( toFilePathNoTrailingSep )
 import           Path.IO
                    ( copyFile, doesDirExist, doesFileExist, ensureDir
                    , getCurrentDir, getHomeDir, getModificationTime, listDir
-                   , removeDirRecur, removeFile, resolveFile'
+                   , removeDirRecur, removeFile
                    )
 import qualified RIO.Directory ( makeAbsolute )
 import           RIO.Process
@@ -76,12 +84,12 @@ import           Stack.Types.Docker
                   )
 import           Stack.Types.DockerEntrypoint
                    ( DockerEntrypoint (..), DockerUser (..) )
-import           Stack.Types.Runner ( HasDockerEntrypointMVar (..), terminalL )
-import           Stack.Types.Version ( showStackVersion, withinRange )
-import           System.Environment
-                   ( getArgs, getEnv, getEnvironment, getExecutablePath
-                   , getProgName
+import           Stack.Types.Runner
+                   ( HasDockerEntrypointMVar (..), progNameL, terminalL
+                   , viewExecutablePath
                    )
+import           Stack.Types.Version ( showStackVersion, withinRange )
+import           System.Environment ( getArgs, getEnv, getEnvironment )
 import qualified System.FilePath as FP
 import           System.IO.Error ( isDoesNotExistError )
 import qualified System.Posix.User as User
@@ -125,18 +133,18 @@ getCmdArgs docker imageInfo isRemoteDocker = do
     case config.docker.stackExe of
         Just DockerStackExeHost
           | config.platform == dockerContainerPlatform -> do
-              exePath <- resolveFile' =<< liftIO getExecutablePath
+              exePath <- viewExecutablePath
               cmdArgs args exePath
           | otherwise -> throwIO UnsupportedStackExeHostPlatformException
         Just DockerStackExeImage -> do
-            progName <- liftIO getProgName
+            progName <- view progNameL
             pure (FP.takeBaseName progName, args, [], [])
         Just (DockerStackExePath path) -> cmdArgs args path
         Just DockerStackExeDownload -> exeDownload args
         Nothing
           | config.platform == dockerContainerPlatform -> do
               (exePath, exeTimestamp, misCompatible) <-
-                  do exePath <- resolveFile' =<< liftIO getExecutablePath
+                  do exePath <- viewExecutablePath
                      exeTimestamp <- getModificationTime exePath
                      isKnown <-
                          loadDockerImageExeCache
@@ -211,8 +219,6 @@ runContainerAndExit = do
   isStdoutTerminal <- view terminalL
   let dockerHost = lookup "DOCKER_HOST" env
       dockerCertPath = lookup "DOCKER_CERT_PATH" env
-      bamboo = lookup "bamboo_buildKey" env
-      jenkins = lookup "JENKINS_HOME" env
       msshAuthSock = lookup "SSH_AUTH_SOCK" env
       muserEnv = lookup "USER" env
       isRemoteDocker = maybe False (isPrefixOf "tcp://") dockerHost
@@ -241,15 +247,9 @@ runContainerAndExit = do
       platformVariant = show $ hashRepoName image
       stackRoot = view stackRootL config
       sandboxHomeDir = sandboxDir </> homeDirName
-      isTerm = not docker.detach &&
-               isStdinTerminal &&
-               isStdoutTerminal &&
-               isStderrTerminal
-      keepStdinOpen = not docker.detach &&
-                      -- Workaround for https://github.com/docker/docker/issues/12319
-                      -- This is fixed in Docker 1.9.1, but will leave the workaround
-                      -- in place for now, for users who haven't upgraded yet.
-                      (isTerm || (isNothing bamboo && isNothing jenkins))
+      isTerm = isStdinTerminal && isStdoutTerminal && isStderrTerminal
+      allocatePseudoTty = not docker.detach && isTerm
+      keepStdinOpen = not docker.detach
   let mpath = T.pack <$> lookupImageEnv "PATH" imageEnvVars
   when (isNothing mpath) $ do
     prettyWarnL
@@ -334,7 +334,7 @@ runContainerAndExit = do
         , case docker.containerName of
             Just name -> ["--name=" ++ name]
             Nothing -> []
-        , ["-t" | isTerm]
+        , ["-t" | allocatePseudoTty]
         , ["-i" | keepStdinOpen]
         , docker.runArgs
         , [image]
@@ -361,9 +361,10 @@ runContainerAndExit = do
     sshRelDir = relDirDotSsh
 
 -- | Inspect Docker image or container.
-inspect :: (HasProcessContext env, HasLogFunc env)
-        => String
-        -> RIO env (Maybe Inspect)
+inspect ::
+     (HasProcessContext env, HasLogFunc env)
+  => String
+  -> RIO env (Maybe Inspect)
 inspect image = do
   results <- inspects [image]
   case Map.toList results of
@@ -372,9 +373,10 @@ inspect image = do
     _ -> throwIO (InvalidInspectOutputException "expect a single result")
 
 -- | Inspect multiple Docker images and/or containers.
-inspects :: (HasProcessContext env, HasLogFunc env)
-         => [String]
-         -> RIO env (Map Text Inspect)
+inspects ::
+     (HasProcessContext env, HasLogFunc env)
+  => [String]
+  -> RIO env (Map Text Inspect)
 inspects [] = pure Map.empty
 inspects images = do
   maybeInspectOut <-
@@ -404,10 +406,11 @@ pull = do
   either throwIO (pullImage docker) docker.image
 
 -- | Pull Docker image from registry.
-pullImage :: (HasProcessContext env, HasTerm env)
-          => DockerOpts
-          -> String
-          -> RIO env ()
+pullImage ::
+     (HasProcessContext env, HasTerm env)
+  => DockerOpts
+  -> String
+  -> RIO env ()
 pullImage docker image = do
   prettyInfoL
     [ flow "Pulling image from registry:"
@@ -499,10 +502,9 @@ entrypoint config@Config{} de = do
       estackUserEntry0 <- liftIO $ tryJust (guard . isDoesNotExistError) $
         User.getUserEntryForName stackUserName
       -- Switch UID/GID if needed, and update user's home directory
-      case de.user of
-        Nothing -> pure ()
-        Just (DockerUser 0 _ _ _) -> pure ()
-        Just du -> withProcessContext envOverride $
+      whenJust de.user $ \du -> case du of
+        DockerUser 0 _ _ _ -> pure ()
+        _ -> withProcessContext envOverride $
           updateOrCreateStackUser estackUserEntry0 homeDir du
       case estackUserEntry0 of
         Left _ -> pure ()
@@ -566,8 +568,7 @@ entrypoint config@Config{} de = do
       User.setGroupID du.gid
       handleSetGroups du.groups
       User.setUserID du.uid
-      _ <- Files.setFileCreationMask du.umask
-      pure ()
+      void $ Files.setFileCreationMask du.umask
   stackUserName = "stack" :: String
 
 -- | Remove the contents of a directory, without removing the directory itself.
@@ -590,7 +591,7 @@ removeDirectoryContents path excludeDirs excludeFiles = do
                         (removeFile f))
 
 -- | Produce a strict 'S.ByteString' from the stdout of a process. Throws a
--- 'ReadProcessException' exception if the process fails.
+-- 'Rio.Process.ReadProcessException' exception if the process fails.
 --
 -- The stderr output is passed straight through, which is desirable for some
 -- cases e.g. docker pull, in which docker uses stderr for progress output.
@@ -605,7 +606,7 @@ readDockerProcess args = BL.toStrict <$> proc "docker" args readProcessStdout_
 homeDirName :: Path Rel Dir
 homeDirName = relDirUnderHome
 
--- | Directory where 'stack' executable is bind-mounted in Docker container
+-- | Directory where \'stack\' executable is bind-mounted in Docker container
 -- This refers to a path in the Linux *container*, and so should remain a
 -- 'FilePath' (not 'Path Abs Dir') so that it works when the host runs Windows.
 hostBinDir :: FilePath

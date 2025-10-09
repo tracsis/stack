@@ -8,10 +8,10 @@ import Data.List (stripPrefix)
 
 main :: IO ()
 main = do
-  for_ ["lts-20.26", "lts-22.21"] $ \snapshot -> do
+  for_ ["lts-20.26", "lts-23.24"] $ \snapshot -> do
     stack ["init", "--force", "--snapshot", snapshot]
     str <- readFile "stack.yaml"
-    case mapMaybe (stripPrefix "resolver: ") $ lines str of
+    case mapMaybe (stripPrefix "snapshot: ") $ lines str of
       [x] ->
         if filter (/= '\r') x == snapshot
           then pure ()

@@ -3,7 +3,14 @@
 {-# LANGUAGE NoFieldSelectors      #-}
 {-# LANGUAGE OverloadedRecordDot   #-}
 
--- | Configuration options for building.
+{-|
+Module      : Stack.Types.BuildOpts
+Description : Configuration options for building.
+License     : BSD-3-Clause
+
+Configuration options for building.
+-}
+
 module Stack.Types.BuildOpts
   ( BuildOpts (..)
   , HaddockOpts (..)
@@ -16,6 +23,7 @@ module Stack.Types.BuildOpts
 import           Stack.Prelude
 import           Stack.Types.BuildOptsMonoid
                    ( CabalVerbosity (..), ProgressBarFormat (..) )
+import           Stack.Types.Component ( StackUnqualCompName )
 
 -- | Build options that is interpreted by the build command. This is built up
 -- from BuildOptsCLI and BuildOptsMonoid
@@ -32,6 +40,15 @@ data BuildOpts = BuildOpts
     -- ^ Open haddocks in the browser?
   , haddockDeps :: !(Maybe Bool)
     -- ^ Build haddocks for dependencies?
+  , haddockExecutables :: !Bool
+    -- ^ Also build Haddock documentation for all executable components, like
+    -- @runghc Setup.hs haddock --executables@.
+  , haddockTests :: !Bool
+    -- ^ Also build Haddock documentation for all test suite components, like
+    -- @runghc Setup.hs haddock --tests@.
+  , haddockBenchmarks :: !Bool
+    -- ^ Also build Haddock documentation for all benchmark components, like
+    -- @runghc Setup.hs haddock --benchmarks@.
   , haddockInternal :: !Bool
     -- ^ Build haddocks for all symbols and packages, like
     -- @cabal haddock --internal@
@@ -52,7 +69,8 @@ data BuildOpts = BuildOpts
   , keepTmpFiles :: !Bool
     -- ^ Keep intermediate files and build directories
   , forceDirty :: !Bool
-    -- ^ Force treating all local packages as having dirty files
+    -- ^ Force treating all project packages and local extra-deps as having
+    -- dirty files.
   , tests :: !Bool
     -- ^ Turn on tests for local targets
   , testOpts :: !TestOpts
@@ -69,7 +87,7 @@ data BuildOpts = BuildOpts
     -- ^ Ask Cabal to be verbose in its builds
   , splitObjs :: !Bool
     -- ^ Whether to enable split-objs.
-  , skipComponents :: ![Text]
+  , skipComponents :: ![StackUnqualCompName]
     -- ^ Which components to skip when building
   , interleavedOutput :: !Bool
     -- ^ Should we use the interleaved GHC output when building
@@ -91,7 +109,7 @@ data TestOpts = TestOpts
   { rerunTests :: !Bool -- ^ Whether successful tests will be run gain
   , additionalArgs :: ![String] -- ^ Arguments passed to the test program
   , coverage :: !Bool -- ^ Generate a code coverage report
-  , disableRun :: !Bool -- ^ Disable running of tests
+  , runTests :: !Bool -- ^ Enable running of tests
   , maximumTimeSeconds :: !(Maybe Int) -- ^ test suite timeout in seconds
   , allowStdin :: !Bool -- ^ Whether to allow standard input
   }
@@ -101,8 +119,8 @@ data TestOpts = TestOpts
 data BenchmarkOpts = BenchmarkOpts
   { additionalArgs :: !(Maybe String)
     -- ^ Arguments passed to the benchmark program
-  , disableRun :: !Bool
-    -- ^ Disable running of benchmarks
+  , runBenchmarks :: !Bool
+    -- ^ Enable running of benchmarks
   }
   deriving (Eq, Show)
 

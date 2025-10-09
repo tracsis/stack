@@ -1,5 +1,10 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 
+{-|
+Module      : Stack.Types.CompilerBuild
+License     : BSD-3-Clause
+-}
+
 module Stack.Types.CompilerBuild
   ( CompilerBuild (..)
   , compilerBuildName
@@ -11,6 +16,7 @@ import           Data.Aeson.Types ( FromJSON, parseJSON, withText )
 import           Data.Text as T
 import           Stack.Prelude
 
+-- | Build of the compiler distribution (e.g. standard, gmp4, tinfo6)
 data CompilerBuild
   = CompilerBuildStandard
   | CompilerBuildSpecialized String

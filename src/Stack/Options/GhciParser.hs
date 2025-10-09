@@ -1,6 +1,14 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 
+{-|
+Module      : Stack.Options.GhciParser
+Description : Parse arguments for Stack's @ghci@ and @repl@ commands.
+License     : BSD-3-Clause
+
+Function to parse arguments for Stack's @ghci@ and @repl@ commands.
+-}
+
 module Stack.Options.GhciParser
   ( ghciOptsParser
   ) where
@@ -14,21 +22,20 @@ import           Options.Applicative.Builder.Extra
                    ( boolFlags, boolFlagsNoDefault, fileExtCompleter
                    , textArgument, textOption
                    )
-import           Stack.Config ( packagesParser )
-import           Stack.Ghci ( GhciOpts (..) )
-import           Stack.Options.BuildParser ( flagsParser )
-import           Stack.Options.Completion
-                   ( ghcOptsCompleter, targetCompleter )
+import           Stack.Options.Completion ( ghcOptsCompleter, targetCompleter )
+import           Stack.Options.FlagsParser ( flagsParser )
+import           Stack.Options.PackagesParser ( packagesParser )
 import           Stack.Prelude
+import           Stack.Types.GhciOpts ( GhciOpts (..) )
 
--- | Parser for GHCI options
+-- | Parse command line arguments for Stack's @ghci@ and @repl@ commands.
 ghciOptsParser :: Parser GhciOpts
 ghciOptsParser = GhciOpts
   <$> many (textArgument
         (  metavar "TARGET/FILE"
         <> completer (targetCompleter <> fileExtCompleter [".hs", ".lhs"])
-        <> help "If none specified, use all local packages. See \
-                \https://docs.haskellstack.org/en/stable/build_command/#target-syntax \
+        <> help "If none specified, use all project packages. See \
+                \https://docs.haskellstack.org/en/stable/commands/build_command/#target-syntax \
                 \for details. If a path to a .hs or .lhs file is specified, it \
                 \will be loaded."
         ))
@@ -79,12 +86,6 @@ ghciOptsParser = GhciOpts
   <*> switch
         (  long "load-local-deps"
         <> help "Load all local dependencies of your targets."
-        )
-  -- TODO: deprecate this? probably useless.
-  <*> switch
-        (  long "skip-intermediate-deps"
-        <> help "Skip loading intermediate target dependencies."
-        <> internal
         )
   <*> optional (boolFlagsNoDefault
         "package-hiding"

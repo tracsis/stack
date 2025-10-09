@@ -4,22 +4,30 @@
 {-# LANGUAGE OverloadedRecordDot   #-}
 {-# LANGUAGE OverloadedStrings     #-}
 
--- | Types and functions related to Stack's @ghci@ and @repl@ commands.
+{-|
+Module      : Stack.Ghci
+License     : BSD-3-Clause
+
+Types and functions related to Stack's @ghci@ and @repl@ commands.
+-}
+
 module Stack.Ghci
   ( GhciOpts (..)
   , GhciPkgInfo (..)
-  , GhciException (..)
   , GhciPrettyException (..)
+  , ModuleMap
   , ghciCmd
   , ghci
   ) where
 
+import           Control.Monad.Extra ( whenJust )
 import           Control.Monad.State.Strict ( State, execState, get, modify )
 import           Data.ByteString.Builder ( byteString )
 import qualified Data.ByteString.Char8 as S8
 import qualified Data.ByteString.Lazy as LBS
 import qualified Data.List as L
 import           Data.List.Extra ( (!?) )
+import qualified Data.Map as Map
 import qualified Data.Map.Strict as M
 import qualified Data.Set as S
 import qualified Data.Text as T
@@ -32,8 +40,7 @@ import           RIO.NonEmpty ( nonEmpty )
 import           RIO.Process ( exec, withWorkingDir )
 import           Stack.Build ( buildLocalTargets )
 import           Stack.Build.Installed ( getInstalled, toInstallMap )
-import           Stack.Build.Source
-                   ( getLocalFlags, localDependencies, projectLocalPackages )
+import           Stack.Build.Source ( localDependencies, projectLocalPackages )
 import           Stack.Build.Target ( NeedTargets (..), parseTargets )
 import           Stack.Constants
                    ( relDirGhciScript, relDirStackProgName, relFileCabalMacrosH
@@ -45,7 +52,8 @@ import           Stack.Ghci.Script
                    , scriptToLazyByteString
                    )
 import           Stack.Package
-                   ( buildableExes, buildableForeignLibs, getPackageOpts
+                   ( buildableExes, buildableForeignLibs, buildableSubLibs
+                   , buildableTestSuites, buildableBenchmarks, getPackageOpts
                    , hasBuildableMainLibrary, listOfPackageDeps
                    , packageFromPackageDescription, readDotBuildinfo
                    , resolvePackageDescription, topSortPackageComponent
@@ -56,21 +64,22 @@ import           Stack.Runners ( ShouldReexec (..), withConfig, withEnvConfig )
 import           Stack.Types.Build.Exception
                    ( BuildPrettyException (..), pprintTargetParseErrors )
 import           Stack.Types.BuildConfig
-                   ( BuildConfig (..), HasBuildConfig (..), stackYamlL )
+                   ( BuildConfig (..), HasBuildConfig (..), configFileL )
 import           Stack.Types.BuildOpts ( BuildOpts (..) )
 import qualified Stack.Types.BuildOpts as BenchmarkOpts ( BenchmarkOpts (..) )
 import qualified Stack.Types.BuildOpts as TestOpts ( TestOpts (..) )
 import           Stack.Types.BuildOptsCLI
-                   ( ApplyCLIFlag, BuildOptsCLI (..), defaultBuildOptsCLI )
-import           Stack.Types.CompCollection ( getBuildableListText )
+                   ( ApplyCLIFlag (..), BuildOptsCLI (..), defaultBuildOptsCLI )
 import           Stack.Types.CompilerPaths
                    ( CompilerPaths (..), HasCompiler (..) )
 import           Stack.Types.Config ( Config (..), HasConfig (..), buildOptsL )
+import           Stack.Types.Config.Exception ( ConfigPrettyException (..) )
 import           Stack.Types.EnvConfig
                    ( EnvConfig (..), HasEnvConfig (..), actualCompilerVersionL
                    , shaPathForBytes
                    )
 import           Stack.Types.EnvSettings ( defaultEnvSettings )
+import           Stack.Types.GhciOpts ( GhciOpts (..) )
 import           Stack.Types.Installed ( InstallMap, InstalledMap )
 import           Stack.Types.NamedComponent
                    ( NamedComponent (..), isCLib, isCSubLib, renderComponentTo
@@ -92,42 +101,15 @@ import           Stack.Types.SourceMap
 import           System.IO ( putStrLn )
 import           System.Permissions ( setScriptPerms )
 
--- | Type representing exceptions thrown by functions exported by the
--- "Stack.Ghci" module.
-data GhciException
-  = InvalidPackageOption !String
-  | LoadingDuplicateModules
-  | MissingFileTarget !String
-  | Can'tSpecifyFilesAndTargets
-  | Can'tSpecifyFilesAndMainIs
-  deriving (Show, Typeable)
-
-instance Exception GhciException where
-  displayException (InvalidPackageOption name) =
-    "Error: [S-6716]\n"
-    ++ "Failed to parse '--package' option " ++ name ++ "."
-  displayException LoadingDuplicateModules = unlines
-    [ "Error: [S-9632]"
-    , "Not attempting to start ghci due to these duplicate modules."
-    , "Use '--no-load' to try to start it anyway, without loading any \
-      \modules (but these are still likely to cause errors)."
-    ]
-  displayException (MissingFileTarget name) =
-    "Error: [S-3600]\n"
-    ++ "Cannot find file target " ++ name ++ "."
-  displayException Can'tSpecifyFilesAndTargets =
-    "Error: [S-9906]\n"
-    ++ "Cannot use 'stack ghci' with both file targets and package targets."
-  displayException Can'tSpecifyFilesAndMainIs =
-    "Error: [S-5188]\n"
-    ++ "Cannot use 'stack ghci' with both file targets and '--main-is' \
-       \flag."
-
 -- | Type representing \'pretty\' exceptions thrown by functions exported by the
 -- "Stack.Ghci" module.
 data GhciPrettyException
   = GhciTargetParseException ![StyleDoc]
   | CandidatesIndexOutOfRangeBug
+  | InvalidPackageOption !String
+  | FileTargetIsInvalidAbsFile !String
+  | Can'tSpecifyFilesAndTargets
+  | Can'tSpecifyFilesAndMainIs
   deriving (Show, Typeable)
 
 instance Pretty GhciPrettyException where
@@ -142,27 +124,42 @@ instance Pretty GhciPrettyException where
          ]
   pretty CandidatesIndexOutOfRangeBug = bugPrettyReport "[S-1939]" $
     flow "figureOutMainFile: index out of range."
+  pretty (InvalidPackageOption name) =
+       "[S-6716]"
+    <> line
+    <> fillSep
+         [ flow "Failed to parse"
+         , style Shell "--package"
+         , "option"
+         , style Target (fromString name) <> "."
+         ]
+  pretty (FileTargetIsInvalidAbsFile name) =
+       "[S-3600]"
+    <> line
+    <> fillSep
+         [ flow "Cannot work out a valid path for file target"
+         , style File (fromString name) <> "."
+         ]
+  pretty Can'tSpecifyFilesAndTargets =
+       "[S-9906]"
+    <> line
+    <> fillSep
+         [ flow "Cannot use"
+         , style Shell "stack ghci"
+         , flow "with both file targets and package targets."
+         ]
+  pretty Can'tSpecifyFilesAndMainIs =
+       "[S-5188]"
+    <> line
+    <> fillSep
+         [ flow "Cannot use"
+         , style Shell "stack ghci"
+         , flow "with both file targets and"
+         , style Shell "--main-is"
+         , "flag."
+         ]
 
 instance Exception GhciPrettyException
-
--- | Typre respresenting command line options for the @stack ghci@ and
--- @stack repl@ commands.
-data GhciOpts = GhciOpts
-  { targets            :: ![Text]
-  , args               :: ![String]
-  , ghcOptions         :: ![String]
-  , flags              :: !(Map ApplyCLIFlag (Map FlagName Bool))
-  , ghcCommand         :: !(Maybe FilePath)
-  , noLoadModules      :: !Bool
-  , additionalPackages :: ![String]
-  , mainIs             :: !(Maybe Text)
-  , loadLocalDeps      :: !Bool
-  , skipIntermediate   :: !Bool
-  , hidePackages       :: !(Maybe Bool)
-  , noBuild            :: !Bool
-  , onlyMain           :: !Bool
-  }
-  deriving Show
 
 -- | Type representing information required to load a package or its components.
 --
@@ -187,8 +184,10 @@ data GhciPkgDesc = GhciPkgDesc
   , target :: !Target
   }
 
--- Mapping from a module name to a map with all of the paths that use that name.
--- Each of those paths is associated with a set of components that contain it.
+-- | Type synonym representing maps from a module name to a map with all of the
+-- paths that use that name. Each of those paths is associated with a set of
+-- components that contain it.
+
 -- The purpose of this complex structure is for use in
 -- 'checkForDuplicateModules'.
 type ModuleMap =
@@ -212,15 +211,14 @@ ghciCmd ghciOpts =
         bopts <- view buildOptsL
         -- override env so running of tests and benchmarks is disabled
         let boptsLocal = bopts
-              { testOpts = bopts.testOpts { TestOpts.disableRun = True }
+              { testOpts = bopts.testOpts { TestOpts.runTests = False }
               , benchmarkOpts =
-                  bopts.benchmarkOpts { BenchmarkOpts.disableRun = True }
+                  bopts.benchmarkOpts { BenchmarkOpts.runBenchmarks = False }
               }
         local (set buildOptsL boptsLocal) (ghci ghciOpts)
 
--- | Launch a GHCi session for the given local package targets with the
--- given options and configure it with the load paths and extensions
--- of those targets.
+-- | Launch a GHCi session for the given project package targets with the given
+-- options and configure it with the load paths and extensions of those targets.
 ghci :: HasEnvConfig env => GhciOpts -> RIO env ()
 ghci opts = do
   let buildOptsCLI = defaultBuildOptsCLI
@@ -247,9 +245,7 @@ ghci opts = do
   (inputTargets, mfileTargets) <- case etargets of
     Right packageTargets -> pure (packageTargets, Nothing)
     Left rawFileTargets -> do
-      case mainIsTargets of
-        Nothing -> pure ()
-        Just _ -> throwM Can'tSpecifyFilesAndMainIs
+      whenJust mainIsTargets $ \_ -> prettyThrowM Can'tSpecifyFilesAndMainIs
       -- Figure out targets based on filepath targets
       (targetMap, fileInfo, extraFiles) <- findFileTargets locals rawFileTargets
       pure (targetMap, Just (fileInfo, extraFiles))
@@ -281,7 +277,7 @@ ghci opts = do
         case targets of
           TargetAll _  -> [T.pack (packageNameString pn)]
           TargetComps comps -> [renderPkgComponent (pn, c) | c <- toList comps]
-  -- Build required dependencies and setup local packages.
+  -- Build required dependencies and setup project packages.
   buildDepsAndInitialSteps opts $
     concatMap (\(pn, (_, t)) -> pkgTargets pn t) localTargets
   targetWarnings localTargets nonLocalTargets mfileTargets
@@ -317,7 +313,7 @@ preprocessTargets buildOptsCLI sma rawTargets = do
         let fp = T.unpack fp0
         mpath <- forgivingResolveFile' fp
         case mpath of
-          Nothing -> throwM (MissingFileTarget fp)
+          Nothing -> prettyThrowM (FileTargetIsInvalidAbsFile fp)
           Just path -> pure path
       pure (Left fileTargets)
     else do
@@ -330,7 +326,7 @@ preprocessTargets buildOptsCLI sma rawTargets = do
             Just (TargetParseException xs) ->
               prettyThrowM $ GhciTargetParseException xs
             _ -> throwM pex
-      unless (null fileTargetsRaw) $ throwM Can'tSpecifyFilesAndTargets
+      unless (null fileTargetsRaw) $ prettyThrowM Can'tSpecifyFilesAndTargets
       pure (Right normalTargets.targets)
 
 parseMainIsTargets ::
@@ -431,8 +427,7 @@ getAllLocalTargets ghciOpts targets0 mainIsTargets localMap = do
   -- Figure out
   let extraLoadDeps =
         getExtraLoadDeps ghciOpts.loadLocalDeps localMap directlyWanted
-  if    (ghciOpts.skipIntermediate && not ghciOpts.loadLocalDeps)
-     || null extraLoadDeps
+  if null extraLoadDeps
     then pure directlyWanted
     else do
       let extraList' =
@@ -454,12 +449,6 @@ getAllLocalTargets ghciOpts targets0 mainIsTargets localMap = do
                       \your targets:"
                : extraList
                )
-          <> line
-          <> fillSep
-               [ "(Use"
-               , style Shell "--skip-intermediate-deps"
-               , flow "to omit these.)"
-               ]
       pure (directlyWanted ++ extraLoadDeps)
 
 getAllNonLocalTargets ::
@@ -473,11 +462,11 @@ getAllNonLocalTargets targets = do
 buildDepsAndInitialSteps :: HasEnvConfig env => GhciOpts -> [Text] -> RIO env ()
 buildDepsAndInitialSteps ghciOpts localTargets = do
   let targets = localTargets ++ map T.pack ghciOpts.additionalPackages
-  -- If necessary, do the build, for local packagee targets, only do
+  -- If necessary, do the build, for project packagee targets, only do
   -- 'initialBuildSteps'.
-  case nonEmpty targets of
-    -- only new local targets could appear here
-    Just nonEmptyTargets | not ghciOpts.noBuild -> do
+  whenJust (nonEmpty targets) $ \nonEmptyTargets ->
+    unless ghciOpts.noBuild $ do
+      -- only new project package targets could appear here
       eres <- buildLocalTargets nonEmptyTargets
       case eres of
         Right () -> pure ()
@@ -486,14 +475,12 @@ buildDepsAndInitialSteps ghciOpts localTargets = do
             Just (PrettyException prettyErr) -> prettyError $ pretty prettyErr
             Nothing -> prettyError $ fromString (displayException err)
           prettyWarn "Build failed, but trying to launch GHCi anyway"
-    _ ->
-      pure ()
 
 checkAdditionalPackages :: MonadThrow m => [String] -> m [PackageName]
 checkAdditionalPackages pkgs = forM pkgs $ \name -> do
   let mres = (pkgName <$> parsePackageIdentifier name)
         <|> parsePackageNameThrowing name
-  maybe (throwM $ InvalidPackageOption name) pure mres
+  maybe (prettyThrowM $ InvalidPackageOption name) pure mres
 
 runGhci ::
      HasEnvConfig env
@@ -861,8 +848,7 @@ loadGhciPkgDesc buildOptsCLI name cabalFP target = do
       config = PackageConfig
         { enableTests = True
         , enableBenchmarks = True
-        , flags =
-            getLocalFlags buildOptsCLI name `M.union` sourceMapFlags
+        , flags = getCliFlags <> sourceMapFlags
         , ghcOptions = sourceMapGhcOptions
         , cabalConfigOpts = sourceMapCabalConfigOpts
         , compilerVersion = compilerVersion
@@ -893,6 +879,14 @@ loadGhciPkgDesc buildOptsCLI name cabalFP target = do
     , cabalFP
     , target
     }
+ where
+  cliFlags = buildOptsCLI.flags
+  -- | All CLI Cabal flags for a package.
+  getCliFlags :: Map FlagName Bool
+  getCliFlags = Map.unions
+    [ Map.findWithDefault Map.empty (ACFByName name) cliFlags
+    , Map.findWithDefault Map.empty ACFAllProjectPackages cliFlags
+    ]
 
 getGhciPkgInfos ::
      HasEnvConfig env
@@ -955,21 +949,27 @@ makeGhciPkgInfo installMap installedMap locals addPkgs mfileTargets pkgDesc = do
 -- (differently).
 wantedPackageComponents :: BuildOpts -> Target -> Package -> Set NamedComponent
 wantedPackageComponents _ (TargetComps cs) _ = cs
-wantedPackageComponents bopts (TargetAll PTProject) pkg = S.fromList $
+wantedPackageComponents bopts (TargetAll PTProject) pkg =
      ( if hasBuildableMainLibrary pkg
-         then CLib : map CSubLib buildableForeignLibs'
-         else []
+         then S.insert CLib (S.mapMonotonic CSubLib buildableForeignLibs')
+         else S.empty
      )
-  <> map CExe buildableExes'
-  <> map CSubLib buildableSubLibs
-  <> (if bopts.tests then map CTest buildableTestSuites else [])
-  <> (if bopts.benchmarks then map CBench buildableBenchmarks else [])
+  <> S.mapMonotonic CExe buildableExes'
+  <> S.mapMonotonic CSubLib buildableSubLibs'
+  <> ( if bopts.tests
+         then S.mapMonotonic CTest buildableTestSuites'
+         else S.empty
+     )
+  <> ( if bopts.benchmarks
+         then S.mapMonotonic CBench buildableBenchmarks'
+         else S.empty
+     )
  where
-  buildableForeignLibs' = S.toList $ buildableForeignLibs pkg
-  buildableSubLibs = getBuildableListText pkg.subLibraries
-  buildableExes' = S.toList $ buildableExes pkg
-  buildableTestSuites = getBuildableListText pkg.testSuites
-  buildableBenchmarks = getBuildableListText pkg.benchmarks
+  buildableForeignLibs' = buildableForeignLibs pkg
+  buildableSubLibs' = buildableSubLibs pkg
+  buildableExes' = buildableExes pkg
+  buildableTestSuites' = buildableTestSuites pkg
+  buildableBenchmarks' = buildableBenchmarks pkg
 wantedPackageComponents _ _ _ = S.empty
 
 checkForIssues :: HasTerm env => [GhciPkgInfo] -> RIO env ()
@@ -1089,14 +1089,14 @@ checkForIssues pkgs =
 checkForDuplicateModules :: HasTerm env => [GhciPkgInfo] -> RIO env ()
 checkForDuplicateModules pkgs =
   unless (null duplicates) $
+    -- Two or more files with the same module name are treated as a warning
+    -- rather than an error. See:
+    -- https://github.com/commercialhaskell/stack/issues/5407#issuecomment-707339928
     prettyWarn $
          flow "Multiple files use the same module name:"
       <> line
       <> bulletedList (map prettyDuplicate duplicates)
       <> line
-    -- MSS 2020-10-13 Disabling, may remove entirely in the future
-    -- See: https://github.com/commercialhaskell/stack/issues/5407#issuecomment-707339928
-    -- throwM LoadingDuplicateModules
  where
   duplicates ::
     [(ModuleName, Map (Path Abs File) (Set (PackageName, NamedComponent)))]
@@ -1136,44 +1136,52 @@ targetWarnings localTargets nonLocalTargets mfileTargets = do
       , parens $ fillSep $ punctuate "," $ map
           (style Good . fromPackageName)
           nonLocalTargets
-      , flow "are not local packages, and so cannot be directly loaded. In \
+      , flow "are not project packages, and so cannot be directly loaded. In \
              \future versions of Stack, this might be supported - see"
-      , style Url "https://github.com/commercialhaskell/stack/issues/1441"
-      , "."
+      , style Url "https://github.com/commercialhaskell/stack/issues/1441" <> "."
       , flow "It can still be useful to specify these, as they will be passed \
-             \to ghci via -package flags."
+             \to ghci via"
+      , style Shell "-package"
+      , "flags."
       ]
   when (null localTargets && isNothing mfileTargets) $ do
     smWanted <- view $ buildConfigL . to (.smWanted)
-    stackYaml <- view stackYamlL
-    prettyNote $ vsep
-      [ flow "No local targets specified, so a plain ghci will be started with \
-             \no package hiding or package options."
-      , ""
-      , flow $ T.unpack $ utf8BuilderToText $
-               "You are using snapshot: " <>
-               display smWanted.snapshotLocation
-      , ""
-      , flow "If you want to use package hiding and options, then you can try \
-             \one of the following:"
-      , ""
-      , bulletedList
-          [ fillSep
-              [ flow "If you want to start a different project configuration \
-                     \than"
-              , pretty stackYaml <> ","
-              , flow "then you can use"
-              , style Shell "stack init"
-              , flow "to create a new stack.yaml for the packages in the \
-                     \current directory."
-              , line
-              ]
-          , flow "If you want to use the project configuration at"
-          , pretty stackYaml <> ","
-          , flow "then you can add to its 'packages' field."
-          ]
-      , ""
-      ]
+    configFile <- view configFileL
+    case configFile of
+      -- A user-specific global configuration file
+      Left _ -> prettyThrowM ConfigFileNotProjectLevelBug
+      -- A project-level configuration file
+      Right projectConfigFile -> prettyNote $ vsep
+        [ flow "No project package targets specified, so a plain ghci will be \
+               \started with no package hiding or package options."
+        , ""
+        , flow $ T.unpack $ utf8BuilderToText $
+                 "You are using snapshot: " <>
+                 display smWanted.snapshotLocation
+        , ""
+        , flow "If you want to use package hiding and options, then you can try \
+               \one of the following:"
+        , ""
+        , bulletedList
+            [ fillSep
+                [ flow "If you want to start a different project configuration \
+                       \than"
+                , pretty projectConfigFile <> ","
+                , flow "then you can use"
+                , style Shell "stack init"
+                , flow "to create a new"
+                , style File "stack.yaml"
+                , flow "for the packages in the current directory."
+                , line
+                ]
+            , flow "If you want to use the project configuration at"
+            , pretty projectConfigFile <> ","
+            , flow "then you can add to the value of its"
+            , style Shell "packages"
+            , "key."
+            ]
+        , ""
+        ]
 
 -- Adds in intermediate dependencies between ghci targets. Note that it will
 -- return a Lib component for these intermediate dependencies even if they don't

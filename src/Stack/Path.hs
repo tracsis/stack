@@ -4,15 +4,24 @@
 {-# LANGUAGE OverloadedRecordDot   #-}
 {-# LANGUAGE OverloadedStrings     #-}
 
--- | Types and functions related to Stack's @path@ command.
+{-|
+Module      : Stack.Path
+Description : Types and functions related to Stack's @path@ command.
+License     : BSD-3-Clause
+
+Types and functions related to Stack's @path@ command.
+-}
+
 module Stack.Path
   ( EnvConfigPathInfo
+  , UseHaddocks
   , path
   , pathsFromRunner
   , pathsFromConfig
   , pathsFromEnvConfig
   ) where
 
+import           Control.Exception ( throw )
 import           Data.List ( intercalate )
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
@@ -30,14 +39,13 @@ import           Stack.Prelude hiding ( pi )
 import           Stack.Runners
                    ( ShouldReexec (..), withConfig, withDefaultEnvConfig )
 import           Stack.Types.BuildConfig
-                   ( BuildConfig (..), HasBuildConfig (..), projectRootL
-                   , stackYamlL
-                   )
+                   ( BuildConfig (..), HasBuildConfig (..), configFileL )
 import           Stack.Types.BuildOptsMonoid ( buildOptsMonoidHaddockL )
 import           Stack.Types.CompilerPaths
                    ( CompilerPaths (..), HasCompiler (..), getCompilerPath )
 import           Stack.Types.Config
-                   ( Config (..), HasConfig (..), stackGlobalConfigL )
+                   ( Config (..), HasConfig (..), userGlobalConfigFileL )
+import           Stack.Types.Config.Exception ( ConfigPrettyException (..) )
 import           Stack.Types.EnvConfig
                    ( EnvConfig, HasEnvConfig (..), bindirCompilerTools
                    , hpcReportDir, installationRootDeps, installationRootLocal
@@ -162,6 +170,8 @@ fillEnvConfigPathInfo = do
     , compiler
     }
 
+-- | Type representing information needed to generate an appropriate string for
+-- paths of interest to a user which require an 'EnvConfig'.
 data EnvConfigPathInfo = EnvConfigPathInfo
   { buildConfig  :: !BuildConfig
   , snapDb       :: !(Path Abs Dir)
@@ -214,15 +224,18 @@ instance HasBuildConfig EnvConfigPathInfo where
   buildConfigL =
     lens (.buildConfig) (\x y -> x { buildConfig = y }) . buildConfigL
 
+-- | Type representing whether or not building Haddocks is required.
 data UseHaddocks a
   = UseHaddocks a
+    -- ^ Building Haddocks is required.
   | WithoutHaddocks a
+    -- ^ Building Haddocks is not required.
 
--- | The paths of interest to a user which do require a 'Config' or 'EnvConfig'.
--- The first tuple string is used for a description that the optparse flag uses,
--- and the second string as a machine-readable key and also for @--foo@ flags.
--- The user can choose a specific path to list like @--stack-root@. But really
--- it's mainly for the documentation aspect.
+-- | The paths of interest to a user which do require a t'Config' or
+-- 'EnvConfig'. The first tuple string is used for a description that the
+-- optparse flag uses, and the second string as a machine-readable key and also
+-- for @--foo@ flags. The user can choose a specific path to list like
+-- @--stack-root@. But really it's mainly for the documentation aspect.
 pathsFromRunner :: (String, Text)
 pathsFromRunner = ("Global Stack root directory", stackRootOptionName')
 
@@ -232,13 +245,13 @@ pathsFromRunner = ("Global Stack root directory", stackRootOptionName')
 -- can choose a specific path to list like @--stack-root@. But really it's
 -- mainly for the documentation aspect.
 --
--- When printing output we generate @Config@ and pass it to the function
+-- When printing output we generate t'Config' and pass it to the function
 -- to generate an appropriate string. Trailing slashes are removed, see #506.
 pathsFromConfig :: [(String, Text, Config -> Text)]
 pathsFromConfig =
-  [ ( "Global Stack configuration file"
+  [ ( "User-specific global configuration file"
     , T.pack stackGlobalConfigOptionName
-    , view (stackGlobalConfigL . to toFilePath . to T.pack)
+    , view (userGlobalConfigFileL . to toFilePath . to T.pack)
     )
   , ( "Install location for GHC and other core tools (see 'stack ls tools' command)"
     , "programs"
@@ -256,19 +269,19 @@ pathsFromConfig =
 -- can choose a specific path to list like @--project-root@. But really it's
 -- mainly for the documentation aspect.
 --
--- When printing output we generate @EnvConfigPathInfo@ and pass it to the
+-- When printing output we generate t'EnvConfigPathInfo' and pass it to the
 -- function to generate an appropriate string. Trailing slashes are removed, see
 -- #506.
 pathsFromEnvConfig :: [(String, Text, UseHaddocks (EnvConfigPathInfo -> Text))]
 pathsFromEnvConfig =
-  [ ( "Project root (derived from stack.yaml file)"
+  [ ( "Project root (derived from the project-level configuration file; \
+      \stack.yaml, by default)"
     , "project-root"
-    , WithoutHaddocks $
-        view (projectRootL . to toFilePathNoTrailingSep . to T.pack)
+    , WithoutHaddocks $ view (configFileL . to toProjectConfigFileRootPath)
     )
-  , ( "Configuration location (where the stack.yaml file is)"
+  , ( "Project-level configuration file (stack.yaml, by default)"
     , "config-location"
-    , WithoutHaddocks $ view (stackYamlL . to toFilePath . to T.pack)
+    , WithoutHaddocks $ view (configFileL . to toProjectConfigFilePath)
     )
   , ( "PATH environment variable"
     , "bin-path"
@@ -350,6 +363,17 @@ pathsFromEnvConfig =
     , WithoutHaddocks $ T.pack . toFilePathNoTrailingSep . (.hpcDir)
     )
   ]
+ where
+  toProjectConfigFileRootPath :: Either (Path Abs File) (Path Abs File) -> Text
+  toProjectConfigFileRootPath (Left _) =
+    throw $ PrettyException ConfigFileNotProjectLevelBug
+  toProjectConfigFileRootPath (Right projectConfigFile) =
+    T.pack $ toFilePathNoTrailingSep $ parent projectConfigFile
+  toProjectConfigFilePath :: Either (Path Abs File) (Path Abs File) -> Text
+  toProjectConfigFilePath (Left _) =
+    throw $ PrettyException ConfigFileNotProjectLevelBug
+  toProjectConfigFilePath (Right projectConfigFile) =
+    T.pack $ toFilePath projectConfigFile
 
 -- | 'Text' equivalent of 'stackRootOptionName'.
 stackRootOptionName' :: Text

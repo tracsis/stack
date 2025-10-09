@@ -10,10 +10,19 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -Wno-unused-top-binds -Wno-identities #-}
 
--- | Work with SQLite database used for caches across a single project.
+{-|
+Module      : Stack.Storage.Project
+Description : Work with SQLite DB for caches across a project.
+License     : BSD-3-Clause
+
+Work with SQLite database used for caches across a single project.
+-}
+
 module Stack.Storage.Project
   ( initProjectStorage
   , ConfigCacheKey
+  , ConfigCacheParent (..)
+  , ConfigCacheParentId
   , configCacheKey
   , loadConfigCache
   , saveConfigCache
@@ -33,12 +42,15 @@ import           Database.Persist.TH
 import           Pantry.SQLite ( initStorage, withStorage_ )
 import           Stack.Prelude
 import           Stack.Storage.Util
-                   ( handleMigrationException, updateList, updateSet )
+                   ( handleMigrationException, listUpdateDiff, setUpdateDiff
+                   , updateCollection
+                   )
 import           Stack.Types.Build ( CachePkgSrc, ConfigCache (..) )
 import           Stack.Types.BuildConfig
                    ( BuildConfig (..), HasBuildConfig (..) )
 import           Stack.Types.Cache ( ConfigCacheType )
-import           Stack.Types.ConfigureOpts  ( ConfigureOpts (..) )
+import           Stack.Types.ConfigureOpts
+                   ( ConfigureOpts (..), configureOptsFromDb )
 import           Stack.Types.GhcPkgId ( GhcPkgId )
 import           Stack.Types.Storage ( ProjectStorage (..) )
 
@@ -47,7 +59,7 @@ share [ mkPersist sqlSettings
       ]
       [persistLowerCase|
 ConfigCacheParent sql="config_cache"
-  directory FilePath "default=(hex(randomblob(16)))"
+  directory FilePath default="(hex(randomblob(16)))"
   type ConfigCacheType
   pkgSrc CachePkgSrc
   active Bool
@@ -108,27 +120,22 @@ type ConfigCacheKey = Unique ConfigCacheParent
 configCacheKey :: Path Abs Dir -> ConfigCacheType -> ConfigCacheKey
 configCacheKey dir = UniqueConfigCacheParent (toFilePath dir)
 
--- | Internal helper to read the 'ConfigCache'
+-- | Internal helper to read the t'ConfigCache'
 readConfigCache ::
      (HasBuildConfig env, HasLogFunc env)
   => Entity ConfigCacheParent
   -> ReaderT SqlBackend (RIO env) ConfigCache
 readConfigCache (Entity parentId configCacheParent) = do
   let pkgSrc = configCacheParent.configCacheParentPkgSrc
-  pathRelated <-
-    map ((.configCacheDirOptionValue) . entityVal) <$>
+  pathRelatedInfo <-
     selectList
       [ConfigCacheDirOptionParent ==. parentId]
       [Asc ConfigCacheDirOptionIndex]
-  nonPathRelated <-
-    map ((.configCacheNoDirOptionValue) . entityVal) <$>
+  nonPathRelatedInfo <-
     selectList
       [ConfigCacheNoDirOptionParent ==. parentId]
       [Asc ConfigCacheNoDirOptionIndex]
-  let configureOpts = ConfigureOpts
-        { pathRelated
-        , nonPathRelated
-        }
+  let configureOpts = configureOptsFromDb pathRelatedInfo nonPathRelatedInfo
   deps <-
     Set.fromList . map ((.configCacheDepValue) . entityVal) <$>
     selectList [ConfigCacheDepParent ==. parentId] []
@@ -146,7 +153,7 @@ readConfigCache (Entity parentId configCacheParent) = do
     , pathEnvVar
     }
 
--- | Load 'ConfigCache' from the database.
+-- | Load t'ConfigCache' from the database.
 loadConfigCache ::
      (HasBuildConfig env, HasLogFunc env)
   => ConfigCacheKey
@@ -161,7 +168,7 @@ loadConfigCache key =
             Just <$> readConfigCache parentEntity
         | otherwise -> pure Nothing
 
--- | Insert or update 'ConfigCache' to the database.
+-- | Insert or update t'ConfigCache' to the database.
 saveConfigCache ::
      (HasBuildConfig env, HasLogFunc env)
   => ConfigCacheKey
@@ -192,39 +199,35 @@ saveConfigCache key@(UniqueConfigCacheParent dir type_) new =
             , ConfigCacheParentPathEnvVar =. new.pathEnvVar
             ]
           pure (parentId, Just old)
-    updateList
-      ConfigCacheDirOption
-      ConfigCacheDirOptionParent
-      parentId
-      ConfigCacheDirOptionIndex
+    updateCollection
+      (listUpdateDiff ConfigCacheDirOptionIndex)
+      (uncurry $ ConfigCacheDirOption parentId)
+      [ConfigCacheDirOptionParent ==. parentId]
       (maybe [] (.configureOpts.pathRelated) mold)
       new.configureOpts.pathRelated
-    updateList
-      ConfigCacheNoDirOption
-      ConfigCacheNoDirOptionParent
-      parentId
-      ConfigCacheNoDirOptionIndex
+    updateCollection
+      (listUpdateDiff ConfigCacheNoDirOptionIndex)
+      (uncurry $ ConfigCacheNoDirOption parentId)
+      [ConfigCacheNoDirOptionParent ==. parentId]
       (maybe [] (.configureOpts.nonPathRelated) mold)
       new.configureOpts.nonPathRelated
-    updateSet
-      ConfigCacheDep
-      ConfigCacheDepParent
-      parentId
-      ConfigCacheDepValue
+    updateCollection
+      (setUpdateDiff ConfigCacheDepValue)
+      (ConfigCacheDep parentId)
+      [ConfigCacheDepParent ==. parentId]
       (maybe Set.empty (.deps) mold)
       new.deps
-    updateSet
-      ConfigCacheComponent
-      ConfigCacheComponentParent
-      parentId
-      ConfigCacheComponentValue
+    updateCollection
+      (setUpdateDiff ConfigCacheComponentValue)
+      (ConfigCacheComponent parentId)
+      [ConfigCacheComponentParent ==. parentId]
       (maybe Set.empty (.components) mold)
       new.components
 
--- | Mark 'ConfigCache' as inactive in the database.
--- We use a flag instead of deleting the records since, in most cases, the same
--- cache will be written again within in a few seconds (after
--- `cabal configure`), so this avoids unnecessary database churn.
+-- | Mark t'ConfigCache' as inactive in the database. We use a flag instead of
+-- deleting the records since, in most cases, the same cache will be written
+-- again within in a few seconds (after `cabal configure`), so this avoids
+-- unnecessary database churn.
 deactiveConfigCache :: HasBuildConfig env => ConfigCacheKey -> RIO env ()
 deactiveConfigCache (UniqueConfigCacheParent dir type_) =
   withProjectStorage $

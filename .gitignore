@@ -7,12 +7,14 @@ dist-newstyle/
 # Haskell Tool Stack-related
 .stack-work/
 tests/integration/tests/**/*.yaml.lock
+etc/scripts/stack.yaml.lock
 
 # Stack's GitHub workflow-related
 _release/
 
 # MkDocs-related
 _site/
+.python-doc-virtualenv
 
 # Haskell Language Server-related
 hie.yaml
@@ -20,6 +22,9 @@ hie.yaml
 # Stan-related
 .hie
 stan.html
+
+# Cabal (the tool)-related
+cabal.project.local
 
 # Emacs-related
 .dir-locals.el

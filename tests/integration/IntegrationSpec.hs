@@ -31,6 +31,7 @@ import           RIO.Process
                    )
 import qualified RIO.Set as Set
 import qualified RIO.Text as T
+import           RIO.Time ( defaultTimeLocale, diffUTCTime, formatTime, getCurrentTime )
 import           System.Environment ( getExecutablePath, lookupEnv )
 import           System.Info ( os )
 import           System.PosixCompat.Files ( createSymbolicLink )
@@ -43,6 +44,7 @@ main = runSimpleApp $ do
   logInfo "Initiating Stack integration test running"
 
   options <- getRecord "Stack integration tests"
+  startTime <- getCurrentTime
   results <- runApp options $ do
     logInfo "Running with the following environment"
     proc "env" [] runProcess_
@@ -62,10 +64,12 @@ main = runSimpleApp $ do
               loop (idx + 1) rest' (res <> accum)
 
     loop (1 :: Int) (Set.toList tests) mempty
-
+  finalTime <- getCurrentTime
   let (successes, failures) = partition ((== ExitSuccess) . snd)
                             $ Map.toList results
-
+  let timeDiff = diffUTCTime finalTime startTime
+  let timeDiffStr = formatTime defaultTimeLocale "%H:%M:%S - total %s seconds" timeDiff
+  logInfo $ "Integration tests ran in : " <> fromString timeDiffStr
   unless (null successes) $ do
     logInfo "Successful tests:"
     for_ successes $ \(x, _) -> logInfo $ "- " <> display x
@@ -77,6 +81,7 @@ main = runSimpleApp $ do
       logInfo "Failed tests:"
       for_ failures $ \(x, ec) -> logInfo $ "- " <> display x <> " - " <> displayShow ec
       exitFailure
+
 
 data Options = Options
   { optSpeed :: Maybe Speed
@@ -103,6 +108,9 @@ exeExt = if isWindows then ".exe" else ""
 
 isWindows :: Bool
 isWindows = os == "mingw32"
+
+isLinux :: Bool
+isLinux = os == "linux"
 
 runApp :: Options -> RIO App a -> RIO SimpleApp a
 runApp options inner = do
@@ -220,18 +228,27 @@ test testDir = withDir $ \dir -> withHome $ do
     copyTree (testDir </> "files") dir
 
     withSystemTempFile (name <.> "log") $ \logfp logh -> do
-      ec <- withWorkingDir dir
-          $ withModifyEnvVars (Map.insert "TEST_DIR" $ fromString testDir)
-          $ proc runghc
-              [ "-clear-package-db"
-              , "-global-package-db"
-              , "-i" ++ libDir
-              , mainFile
-              ]
-           $ runProcess
-           . setStdin closed
-           . setStdout (useHandleOpen logh)
-           . setStderr (useHandleOpen logh)
+      let args =
+            [ "-clear-package-db"
+            , "-global-package-db"
+            , "-i" ++ libDir
+            , mainFile
+            ]
+          args' = if isLinux
+            then
+              -- We seek to use lld as the linker on Linux, as it is much faster
+              -- than the default linker. The executable assumes lld is on the
+              -- PATH.
+              "--" : "-optl-fuse-ld=lld" : args
+            else
+              args
+      ec <- withWorkingDir dir $
+              withModifyEnvVars (Map.insert "TEST_DIR" $ fromString testDir) $
+                proc runghc args' $
+                    runProcess
+                  . setStdin closed
+                  . setStdout (useHandleOpen logh)
+                  . setStderr (useHandleOpen logh)
       hClose logh
 
       case ec of

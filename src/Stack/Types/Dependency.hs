@@ -2,6 +2,11 @@
 {-# LANGUAGE NoFieldSelectors    #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 
+{-|
+Module      : Stack.Types.Dependency
+License     : BSD-3-Clause
+-}
+
 module Stack.Types.Dependency
   ( DepValue (..)
   , DepType (..)
@@ -12,6 +17,7 @@ module Stack.Types.Dependency
   , libraryDepFromVersionRange
   , isDepTypeLibrary
   , getDepSublib
+  , depValueToTarget
   ) where
 
 import qualified Data.Map as Map
@@ -21,6 +27,8 @@ import           Distribution.Types.VersionRange ( VersionRange )
 import           Stack.Prelude
 import           Stack.Types.ComponentUtils
                    ( StackUnqualCompName (..), fromCabalName )
+import           Stack.Types.NamedComponent ( NamedComponent(..) )
+import           Stack.Types.SourceMap ( PackageType (..), Target (..) )
 
 -- | The value for a map from dependency name. This contains both the version
 -- range and the type of dependency.
@@ -82,3 +90,12 @@ libraryDepFromVersionRange range = DepValue
   { versionRange = range
   , depType = AsLibrary defaultDepLibrary
   }
+
+depValueToTarget :: DepValue -> Target
+depValueToTarget dv = case dv.depType of
+  AsLibrary dlib -> TargetComps (completeSet dlib)
+  AsBuildTool -> TargetAll PTDependency
+ where
+  completeSet dlib =
+    (if dlib.main then Set.insert CLib else id) $ sublibSet dlib
+  sublibSet dlib = Set.mapMonotonic CSubLib dlib.subLib

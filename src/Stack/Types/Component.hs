@@ -10,9 +10,15 @@
 {-# LANGUAGE OverloadedRecordDot        #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 
--- | A module providing the types that represent different sorts of components
--- of a package (library and sub-library, foreign library, executable, test
--- suite and benchmark).
+{-|
+Module      : Stack.Types.Component
+License     : BSD-3-Clause
+
+A module providing the types that represent different sorts of components of a
+package (library and sub-library, foreign library, executable, test suite and
+benchmark).
+-}
+
 module Stack.Types.Component
   ( StackLibrary (..)
   , StackForeignLibrary (..)
@@ -22,6 +28,7 @@ module Stack.Types.Component
   , StackUnqualCompName (..)
   , StackBuildInfo (..)
   , HasName
+  , HasQualiName
   , HasBuildInfo
   , HasComponentInfo
   ) where
@@ -34,7 +41,8 @@ import           Distribution.Simple ( Extension, Language )
 import           Distribution.Utils.Path ( PackageDir, SourceDir, SymbolicPath )
 import           GHC.Records ( HasField (..) )
 import           Stack.Prelude
-import           Stack.Types.ComponentUtils ( StackUnqualCompName (..) )
+import           Stack.Types.ComponentUtils
+                   ( StackUnqualCompName (..), emptyCompName )
 import           Stack.Types.Dependency ( DepValue )
 import           Stack.Types.NamedComponent ( NamedComponent (..) )
 
@@ -166,22 +174,22 @@ type HasBuildInfo component = HasField "buildInfo" component StackBuildInfo
 
 instance HasField "qualifiedName" StackLibrary NamedComponent where
   getField v
-    | rawName == mempty = CLib
+    | rawName == emptyCompName = CLib
     | otherwise = CSubLib rawName
     where
-      rawName = v.name.unqualCompToText
+      rawName = v.name
 
 instance HasField "qualifiedName" StackForeignLibrary NamedComponent where
-  getField = CFlib . (.name.unqualCompToText)
+  getField = CFlib . (.name)
 
 instance HasField "qualifiedName" StackExecutable NamedComponent where
-  getField = CExe . (.name.unqualCompToText)
+  getField = CExe . (.name)
 
 instance HasField "qualifiedName" StackTestSuite NamedComponent where
-  getField = CTest . (.name.unqualCompToText)
+  getField = CTest . (.name)
 
 instance HasField "qualifiedName" StackBenchmark NamedComponent where
-  getField = CTest . (.name.unqualCompToText)
+  getField = CBench . (.name)
 
 -- | Type synonym for a 'HasField' constraint which represent a virtual field,
 -- computed from the type, the NamedComponent constructor and the name.

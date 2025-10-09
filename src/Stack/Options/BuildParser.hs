@@ -1,28 +1,31 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 
+{-|
+Module      : Stack.Options.BuildParser
+License     : BSD-3-Clause
+-}
+
 module Stack.Options.BuildParser
   ( buildOptsParser
-  , flagsParser
-  , targetsParser
   ) where
 
 import qualified Data.List as L
-import qualified Data.Map as Map
 import qualified Data.Text as T
 import           Options.Applicative
                    ( Parser, completer, flag, flag', help, internal, long
-                   , metavar, option, strOption, switch, value
+                   , metavar, strOption, switch, value
                    )
 import           Options.Applicative.Args ( cmdOption )
-import           Options.Applicative.Builder.Extra ( textArgument, textOption )
-import           Stack.Options.Completion
-                   ( flagCompleter, ghcOptsCompleter, targetCompleter )
-import           Stack.Options.PackageParser ( readFlag )
+import           Options.Applicative.Builder.Extra
+                   ( firstBoolFlagsNoDefault, textArgument, textOption )
+import           Stack.Options.Completion ( ghcOptsCompleter, targetCompleter )
+import           Stack.Options.FlagsParser ( flagsParser )
+import           Stack.Options.Utils ( hideMods )
 import           Stack.Prelude
 import           Stack.Types.BuildOptsCLI
-                   ( ApplyCLIFlag, BuildCommand, BuildOptsCLI (..)
-                   , BuildSubset (..), FileWatchOpts (..)
+                   ( BuildCommand, BuildOptsCLI (..), BuildSubset (..)
+                   , FileWatchOpts (..)
                    )
 
 -- | Parser for CLI-only build arguments
@@ -61,6 +64,10 @@ buildOptsParser cmd = BuildOptsCLI
       )
   <*> progsOptionsParser
   <*> flagsParser
+  <*> firstBoolFlagsNoDefault
+        "allow-newer"
+        "ignoring of lower and upper version bounds in Cabal files."
+        (hideMods False)
   <*> (   flag' BSOnlyDependencies
             (  long "dependencies-only"
             <> help "A synonym for --only-dependencies."
@@ -116,25 +123,17 @@ buildOptsParser cmd = BuildOptsCLI
         <> internal
         )
 
+-- | Parser for build targets.
 targetsParser :: Parser [Text]
 targetsParser =
   many (textArgument
     (  metavar "TARGET"
     <> completer targetCompleter
-    <> help "If none specified, use all local packages. See \
-            \https://docs.haskellstack.org/en/stable/build_command/#target-syntax \
+    <> help "Can be specified multiple times. If none specified, use all \
+            \project packages. See \
+            \https://docs.haskellstack.org/en/stable/commands/build_command/#target-syntax \
             \for details."
     ))
-
-flagsParser :: Parser (Map.Map ApplyCLIFlag (Map.Map FlagName Bool))
-flagsParser = Map.unionsWith Map.union
-  <$> many (option readFlag
-       (  long "flag"
-       <> completer flagCompleter
-       <> metavar "PACKAGE:[-]FLAG"
-       <> help "Override flags set in stack.yaml (applies to local packages \
-               \and extra-deps)."
-       ))
 
 progsOptionsParser :: Parser [(Text, [Text])]
 progsOptionsParser =

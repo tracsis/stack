@@ -3,7 +3,14 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings   #-}
 
--- | Types and functions related to Stack's @new@ command.
+{-|
+Module      : Stack.New
+Description : Types and functions related to Stack's @new@ command.
+License     : BSD-3-Clause
+
+Types and functions related to Stack's @new@ command.
+-}
+
 module Stack.New
   ( NewOpts (..)
   , TemplateName
@@ -11,6 +18,7 @@ module Stack.New
   , new
   ) where
 
+import           Control.Monad.Extra ( whenJust )
 import           Control.Monad.Trans.Writer.Strict ( execWriterT )
 import           Data.Aeson as A
 import qualified Data.Aeson.KeyMap as KeyMap
@@ -236,7 +244,7 @@ newCmd (newOpts, initOpts) =
     exists <- doesFileExist $ dir </> stackDotYaml
     when (newOpts.init && (initOpts.forceOverwrite || not exists)) $ do
       go <- view globalOptsL
-      initProject dir initOpts go.resolver
+      initProject dir initOpts go.snapshot
 
 -- | Create a new project with the given options.
 new :: HasConfig env => NewOpts -> Bool -> RIO env (Path Abs Dir)
@@ -332,9 +340,10 @@ loadTemplate name logIt = do
       downloadFromUrl settings templateDir
 
  where
-  loadLocalFile :: Path b File
-                -> (ByteString -> Either String Text)
-                -> RIO env Text
+  loadLocalFile ::
+       Path b File
+    -> (ByteString -> Either String Text)
+    -> RIO env Text
   loadLocalFile path extract = do
     logDebug $
          "Opening local template: \""
@@ -385,10 +394,11 @@ loadTemplate name logIt = do
       (useCachedVersionOrThrow url path)
     loadLocalFile path extract
 
-  useCachedVersionOrThrow :: String
-                          -> Path Abs File
-                          -> VerifiedDownloadException
-                          -> RIO env ()
+  useCachedVersionOrThrow ::
+       String
+    -> Path Abs File
+    -> VerifiedDownloadException
+    -> RIO env ()
   useCachedVersionOrThrow url path exception = do
     exists <- doesFileExist path
 
@@ -406,7 +416,7 @@ loadTemplate name logIt = do
 data TemplateDownloadSettings = TemplateDownloadSettings
   { downloadUrl :: String
   , basicAuth :: Maybe (ByteString, ByteString)
-    -- ^ Optional HTTP 'Basic' authentication (type, credentials)
+    -- ^ Optional HTTP \'Basic\' authentication (type, credentials)
   , extract :: ByteString -> Either String Text
   }
 
@@ -570,7 +580,7 @@ applyTemplate project template nonceParams dir templateText = do
     prettyNote $
       missingParameters
         missingKeys
-        config.userConfigPath
+        config.userGlobalConfigFile
   pure $ M.fromList results
  where
   onlyMissingKeys (Mustache.VariableNotFound ks) = map T.unpack ks
@@ -593,8 +603,7 @@ applyTemplate project template nonceParams dir templateText = do
          )
     <> blankLine
     <> fillSep
-         [ flow "You can provide them in Stack's global YAML configuration \
-                \file"
+         [ flow "You can provide them in Stack's global configuration file"
          , "(" <> pretty userConfigPath <> ")"
          , "like this:"
          ]
@@ -660,17 +669,15 @@ writeTemplateFiles files =
 runTemplateInits :: HasConfig env => Path Abs Dir -> RIO env ()
 runTemplateInits dir = do
   config <- view configL
-  case config.scmInit of
-    Nothing -> pure ()
-    Just Git -> withWorkingDir (toFilePath dir) $
+  whenJust config.scmInit $ \Git ->
+    withWorkingDir (toFilePath dir) $
       catchAny
         (proc "git" ["init"] runProcess_)
-        ( \_ -> prettyWarn $
-                  fillSep
-                    [ flow "Stack failed to run a"
-                    , style Shell (flow "git init")
-                    , flow "command. Ignoring..."
-                    ]
+        ( \_ -> prettyWarnL
+            [ flow "Stack failed to run a"
+            , style Shell (flow "git init")
+            , flow "command. Ignoring..."
+            ]
         )
 
 --------------------------------------------------------------------------------

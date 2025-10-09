@@ -1,6 +1,11 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE NoFieldSelectors  #-}
 
+{-|
+Module      : Stack.Types.GlobalOptsMonoid
+License     : BSD-3-Clause
+-}
+
 module Stack.Types.GlobalOptsMonoid
   ( GlobalOptsMonoid (..)
   ) where
@@ -10,7 +15,7 @@ import           Stack.Prelude
 import           Stack.Types.ConfigMonoid ( ConfigMonoid )
 import           Stack.Types.DockerEntrypoint ( DockerEntrypoint )
 import           Stack.Types.LockFileBehavior ( LockFileBehavior )
-import           Stack.Types.Resolver ( AbstractResolver )
+import           Stack.Types.Snapshot ( AbstractSnapshot )
 
 -- | Parsed global command-line options monoid.
 data GlobalOptsMonoid = GlobalOptsMonoid
@@ -29,11 +34,11 @@ data GlobalOptsMonoid = GlobalOptsMonoid
     -- ^ Whether to include debug information about the construction of the
     -- build plan in logs.
   , configMonoid     :: !ConfigMonoid
-    -- ^ Config monoid, for passing into 'loadConfig'
-  , resolver         :: !(First (Unresolved AbstractResolver))
-    -- ^ Resolver override
-  , resolverRoot     :: !(First FilePath)
-    -- ^ root directory for resolver relative path
+    -- ^ Config monoid, for passing into 'Stack.Config.loadConfig'
+  , snapshot         :: !(First (Unresolved AbstractSnapshot))
+    -- ^ Snapshot override
+  , snapshotRoot     :: !(First FilePath)
+    -- ^ root directory for snapshot relative path
   , compiler         :: !(First WantedCompiler)
     -- ^ Compiler override
   , terminal         :: !(First Bool)
@@ -45,7 +50,7 @@ data GlobalOptsMonoid = GlobalOptsMonoid
   , stackYaml        :: !(First FilePath)
     -- ^ Override project stack.yaml
   , lockFileBehavior :: !(First LockFileBehavior)
-    -- ^ See 'globalLockFileBehavior'
+    -- ^ See 'Stack.Types.GlobalOpts.lockFileBehavior'
   }
   deriving Generic
 
