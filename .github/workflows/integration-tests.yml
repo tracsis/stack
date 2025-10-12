@@ -218,6 +218,7 @@ jobs:
         name: Linux-ARM64
         path: _release
     - name: Hash and sign assets
+      if: false
       shell: bash
       env:
         RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
