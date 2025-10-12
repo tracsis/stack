@@ -313,7 +313,7 @@ generalGhcOptions bconfig boptsCli isTarget isLocal = concat
       then Map.findWithDefault [] AGOTargets config.ghcOptionsByCat
       else []
   , concat [["-fhpc"] | isLocal && bopts.testOpts.coverage]
-  , if bopts.libProfile || bopts.exeProfile
+  , if isLocal && (bopts.libProfile || bopts.exeProfile)
       then ["-fprof-auto", "-fprof-cafs"]
       else []
   , [ "-g" | not $ bopts.libStrip || bopts.exeStrip ]
