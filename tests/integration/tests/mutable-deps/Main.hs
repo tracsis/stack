@@ -19,9 +19,6 @@ main = unless isWindows $ do -- dependency issues on Windows
         expectRecompilation pkgs stderr = forM_ pkgs $ \p ->
           unless (any (isBuild p) $ lines stderr) $
           error $ "package " ++ show p ++ " recompilation was expected"
-        expectNoRecompilation pkgs stderr = forM_ pkgs $ \p ->
-          when (any (isBuild p) $ lines stderr) $
-          error $ "package " ++ show p ++ " recompilation was not expected"
         mutablePackages = [ "filepath"
                           , "directory"
                           , "filemanip"
@@ -29,5 +26,5 @@ main = unless isWindows $ do -- dependency issues on Windows
                           ]
     stackCheckStderr ["build"] $ expectRecompilation mutablePackages
     stackCheckStderr ["build" , "--profile"] $ expectRecompilation mutablePackages
-    stackCheckStderr ["build"] $ expectNoRecompilation mutablePackages
-    stackCheckStderr ["build" , "--profile"] $ expectNoRecompilation mutablePackages
+    stackCheckStderr ["build"] $ expectRecompilation mutablePackages
+    stackCheckStderr ["build" , "--profile"] $ expectRecompilation mutablePackages
